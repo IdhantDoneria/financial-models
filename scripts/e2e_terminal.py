@@ -73,7 +73,12 @@ def serve() -> http.server.ThreadingHTTPServer:
 
 def main() -> int:
     headed = "--headed" in sys.argv
-    srv = serve()
+    # --url https://… tests a deployed instance instead of the local tree.
+    target = None
+    if "--url" in sys.argv:
+        target = sys.argv[sys.argv.index("--url") + 1].rstrip("/") + "/"
+    srv = None if target else serve()
+    base = target or f"http://127.0.0.1:{PORT}/"
     failures: list[str] = []
     proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
 
@@ -91,8 +96,8 @@ def main() -> int:
                    _fulfill_external)
         page.on("console", lambda m: m.type == "error" and print(f"  [console] {m.text[:200]}"))
 
-        print("· loading terminal + booting Pyodide (downloads on first run)…")
-        page.goto(f"http://127.0.0.1:{PORT}/", timeout=60_000)
+        print(f"· loading terminal at {base} + booting Pyodide…")
+        page.goto(base, timeout=60_000)
         page.wait_for_function("window.TERMINAL_READY === true", timeout=300_000)
         print("· runtime online")
 
@@ -134,7 +139,8 @@ def main() -> int:
 
         page.screenshot(path=str(ROOT / "docs" / "design" / "terminal-screenshot.png"))
         browser.close()
-    srv.shutdown()
+    if srv:
+        srv.shutdown()
 
     if failures:
         print("\nFAILURES:")
