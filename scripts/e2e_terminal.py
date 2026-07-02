@@ -84,6 +84,75 @@ def serve() -> http.server.ThreadingHTTPServer:
     return srv
 
 
+def _synthetic_10q(path: Path) -> Path:
+    """Small quarterly filing whose figures the extractor must recover."""
+    from reportlab.lib.pagesizes import LETTER
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.platypus import Paragraph, SimpleDocTemplate
+
+    styles = getSampleStyleSheet()
+    doc = SimpleDocTemplate(str(path), pagesize=LETTER)
+    doc.build([Paragraph(t, styles["Normal"]) for t in (
+        "Acme Corporation", "NYSE: ACME",
+        "Form 10-Q — For the quarter ended March 31, 2026",
+        "Consolidated Financial Statements (in $ millions)",
+        "Total revenue     $ 3,112", "Net income        $ 457",
+        "Total debt        $ 3,500", "Cash and cash equivalents $ 850",
+        "Weighted-average shares outstanding 425 million",
+        "Share price $ 87.50", "Beta 1.15", "Revenue growth 3%",
+        "Operating margin 18%", "Effective tax rate 22%",
+    )])
+    return path
+
+
+def run_ib_desk_scenario(page) -> list[str]:
+    """Exercise the PDF analyzer: upload -> auto run -> all three exports."""
+    failures: list[str] = []
+    pdf = _synthetic_10q(Path("/tmp/e2e_synth_10q.pdf"))
+
+    print("· IB DESK: opening analyzer (installs PDF/export backends)…")
+    page.fill("#cmd", "IB")
+    page.click("#go")
+    page.wait_for_selector("#ibrun", timeout=30_000)
+    page.set_input_files("#ibfile", str(pdf))
+    try:
+        page.wait_for_selector("#ibrun:not([disabled])", timeout=240_000)
+    except Exception:
+        return [f"IB: extraction never became ready — status: {page.inner_text('#ostat')}"]
+    grid = page.inner_text("#ogrid")
+    found = grid.count("PDF")
+    print(f"  extraction ok — {found} fields scraped from the filing")
+    if "COMPANY" not in grid or found < 6:
+        failures.append(f"IB: too few fields extracted ({found})")
+
+    page.click("#ibrun")
+    try:
+        page.wait_for_selector("#report table", timeout=180_000)
+    except Exception:
+        return failures + [f"IB: report never rendered — {page.inner_text('#ostat')}"]
+    rows = page.locator("#report table >> nth=0 >> tr").count() - 1
+    errs = page.locator("#report tr.err").count()
+    print(f"  report ok — {rows} models, {errs} errors")
+    if rows != 10 or errs:
+        failures.append(f"IB: expected 10 clean models, got rows={rows} errors={errs}")
+
+    sig = {"pdf": b"%PDF-", "docx": b"PK", "xlsx": b"PK"}
+    for fmt, magic in sig.items():
+        try:
+            with page.expect_download(timeout=120_000) as dl:
+                page.click(f"#exp-{fmt}")
+            target = Path(f"/tmp/e2e_report.{fmt}")
+            dl.value.save_as(target)
+            blob = target.read_bytes()
+            ok = blob[: len(magic)] == magic and len(blob) > 2000
+            print(f"  export {fmt}: {dl.value.suggested_filename} · {len(blob):,} bytes {'ok' if ok else 'BAD'}")
+            if not ok:
+                failures.append(f"IB: {fmt} export invalid")
+        except Exception as exc:
+            failures.append(f"IB: {fmt} export failed — {str(exc)[:120]}")
+    return failures
+
+
 def main() -> int:
     headed = "--headed" in sys.argv
     # --url https://… tests a deployed instance instead of the local tree.
@@ -151,6 +220,8 @@ def main() -> int:
         print(f"· DOC panel: {doc_len} chars, {katex} KaTeX spans")
         if doc_len < 400:
             failures.append("DOC panel suspiciously short")
+
+        failures += run_ib_desk_scenario(page)
 
         page.screenshot(path=str(ROOT / "docs" / "design" / "terminal-screenshot.png"))
         browser.close()

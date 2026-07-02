@@ -32,9 +32,13 @@ DEST = ROOT / "public" / "py" / "src"
 DATA_DEST = ROOT / "public" / "data" / "ff_factors.csv"
 MANIFEST = ROOT / "public" / "py" / "manifest.json"
 
-#: Top-level model/source files shipped to the browser. The pipeline package is
-#: excluded: it depends on native PDF/export backends unavailable in WASM.
-INCLUDE = sorted(p.name for p in SRC.glob("*.py"))
+#: Source files shipped to the browser: every top-level model module plus the
+#: PDF-analyzer pipeline package (whose PDF/export backends import lazily, so
+#: the WASM runtime installs only the pure-Python ones it can support).
+INCLUDE = sorted(
+    p.relative_to(SRC).as_posix()
+    for p in list(SRC.glob("*.py")) + list(SRC.glob("pipeline/*.py"))
+)
 
 
 def _sha256(path: Path) -> str:
@@ -42,14 +46,15 @@ def _sha256(path: Path) -> str:
 
 
 def sync_sources() -> dict:
-    """Copy ``src/*.py`` to ``public/py/src`` and return the manifest dict."""
+    """Copy the included sources to ``public/py/src`` and return the manifest."""
     DEST.mkdir(parents=True, exist_ok=True)
     # Remove stale copies so deletions in src/ propagate.
-    for old in DEST.glob("*.py"):
-        if old.name not in INCLUDE:
+    for old in DEST.rglob("*.py"):
+        if old.relative_to(DEST).as_posix() not in INCLUDE:
             old.unlink()
     files = []
     for name in INCLUDE:
+        (DEST / name).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(SRC / name, DEST / name)
         files.append({"path": f"src/{name}", "sha256": _sha256(SRC / name)})
     manifest = {

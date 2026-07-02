@@ -21,6 +21,7 @@ pdfminer.six==20260107
 # Report export
 reportlab==5.0.0
 openpyxl==3.1.5
+python-docx==1.2.0
 # Google Docs export (optional; requires user-supplied OAuth credentials)
 google-api-python-client==2.198.0
 google-auth==2.55.1

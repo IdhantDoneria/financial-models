@@ -134,3 +134,18 @@ public/
   `load_factors()` resolves offline (its designed fallback path).
 - CI guard: `tests/test_web_assets.py` asserts `public/py/` is in sync with
   `src/` so the deployed models can never drift from the tested ones.
+
+## 8 · IB Desk (mnemonic `IB` / `PDF` / `REPORT`)
+
+The analyzer view reuses the panel grid: INPUTS hosts a 5-step form
+(① upload 10-K/10-Q · ② period basis AUTO/ANNUAL/QUARTERLY with ×4 flow
+annualisation · ③ assumption engine AUTO/MANUAL — auto scrapes the live
+risk-free from the US Treasury FiscalData API, manual exposes all 16
+`ManualOverrides` sliders with dirty-tracking so untouched knobs keep bot
+values · ④ model checkboxes · ⑤ run + export). EXTRACTED DATA replaces
+OUTPUT, with per-field `PDF` / `AUTO-ASSUMED` / `LIVE` badges. The CHART tab
+becomes the report summary; DOC shows the assumption-rationale audit trail.
+Exports (PDF / Google-Docs .docx / Excel) are rendered by the same
+`src/pipeline` exporters inside WASM and downloaded as blobs. The analyzer's
+pure-Python backends (pypdf, pdfminer.six, reportlab, openpyxl, python-docx)
+micropip-install lazily on first open, keeping the main boot fast.

@@ -200,3 +200,231 @@ def run_model(mnemonic: str, params_json: str) -> str:
         "figure": figure,
         "calc_ms": round(calc_ms, 2),
     })
+
+
+# =========================================================================== #
+# IB DESK — PDF analyzer (upload -> extract -> assume -> run -> export)
+#
+# Pipeline imports live inside the functions: the analyzer's pure-Python
+# backends (pypdf, pdfminer.six, reportlab, openpyxl, python-docx) are
+# micropip-installed on first use, after the main terminal has booted.
+# =========================================================================== #
+import base64
+import re as _re
+
+_ANALYZER: dict[str, Any] = {"data": None, "report": None, "period": None}
+
+#: Fields the UI reports as FOUND/MISSING (order = display order).
+_KEY_FIELDS = (
+    "company_name", "ticker", "fiscal_year", "revenue", "free_cash_flows",
+    "net_income", "total_debt", "cash_and_equivalents", "shares_outstanding",
+    "current_price", "dividend_per_share", "beta", "revenue_growth",
+    "operating_margin", "tax_rate",
+)
+
+_QUARTERLY_RE = _re.compile(
+    r"(?i)\b(10-Q|quarterly report|three months ended|for the quarter ended|"
+    r"third quarter|first quarter|second quarter|fourth quarter)\b")
+_ANNUAL_RE = _re.compile(
+    r"(?i)\b(10-K|annual report|fiscal year ended|for the year ended|"
+    r"twelve months ended|full[- ]year)\b")
+
+
+def _detect_period(text: str) -> str:
+    """Classify the filing as annual or quarterly from its own language."""
+    q = len(_QUARTERLY_RE.findall(text))
+    a = len(_ANNUAL_RE.findall(text))
+    return "quarterly" if q > a else "annual"
+
+
+def _annualise_quarterly(data: Any) -> None:
+    """Scale quarterly *flow* figures to annual run-rates, in place.
+
+    Stocks (debt, cash, shares, price, beta) are point-in-time and unchanged;
+    flows (revenue, net income, FCF, dividend) are multiplied by 4 and the
+    quarter-over-quarter growth rate is compounded to an annual rate.
+    """
+    for field_name in ("revenue", "net_income"):
+        value = getattr(data, field_name)
+        if value is not None:
+            setattr(data, field_name, value * 4.0)
+    data.free_cash_flows = [f * 4.0 for f in data.free_cash_flows]
+    if data.dividend_per_share is not None:
+        data.dividend_per_share *= 4.0
+    if data.revenue_growth is not None:
+        data.revenue_growth = (1.0 + data.revenue_growth) ** 4 - 1.0
+
+
+def analyze_pdf(pdf_bytes: Any, period_mode: str = "auto") -> str:
+    """Extract financials from an uploaded PDF; returns a JSON payload.
+
+    Args:
+        pdf_bytes: The raw PDF (JS ``Uint8Array`` proxy or Python bytes).
+        period_mode: ``"auto"`` (detect from the filing's language),
+            ``"annual"`` or ``"quarterly"``.
+    """
+    from src.pipeline import PDFExtractor
+
+    raw = bytes(pdf_bytes.to_py()) if hasattr(pdf_bytes, "to_py") else bytes(pdf_bytes)
+    try:
+        data = PDFExtractor().extract(raw)
+    except Exception as exc:
+        return json.dumps({"ok": False, "error": f"{type(exc).__name__}: {exc}"})
+
+    period = period_mode if period_mode in ("annual", "quarterly") \
+        else _detect_period(data.raw_text)
+    if period == "quarterly":
+        _annualise_quarterly(data)
+
+    _ANALYZER.update(data=data, report=None, period=period)
+    fields = _clean(data.to_dict())
+    missing = [k for k in _KEY_FIELDS
+               if fields.get(k) in (None, [], "") and k != "free_cash_flows"
+               or (k == "free_cash_flows" and not fields.get(k))]
+    return json.dumps({
+        "ok": True, "fields": fields, "missing": missing, "period": period,
+        "backends": fields.get("backends_used", []),
+    })
+
+
+def run_report(params_json: str) -> str:
+    """Build assumptions (auto or manual) and run the selected models.
+
+    ``params_json``: ``{"mode": "auto"|"manual", "selected": [names],
+    "live_rf": float|null, "rf_source": str, "overrides": {field: value}}``.
+    In auto mode ``live_rf`` (scraped from the US Treasury FiscalData API in
+    the browser) replaces the assumer's default risk-free rate.
+    """
+    from src.pipeline import (
+        AnalysisRunner, AutoAssumer, ManualAssumer, ManualOverrides,
+    )
+
+    p = json.loads(params_json)
+    data = _ANALYZER["data"]
+    if data is None:
+        return json.dumps({"ok": False, "error": "No PDF analysed yet — upload a filing first."})
+
+    auto_kwargs = {}
+    if p.get("live_rf") is not None:
+        auto_kwargs["risk_free_rate"] = float(p["live_rf"])
+    auto = AutoAssumer(**auto_kwargs)
+
+    if p.get("mode") == "manual":
+        allowed = set(ManualOverrides.__dataclass_fields__)
+        raw_overrides = {k: v for k, v in (p.get("overrides") or {}).items()
+                         if k in allowed and v is not None}
+        for int_field in ("var_horizon_days", "monte_carlo_paths"):
+            if int_field in raw_overrides:
+                raw_overrides[int_field] = int(raw_overrides[int_field])
+        assumptions = ManualAssumer(auto).build(data, ManualOverrides(**raw_overrides))
+        mode = "manual"
+    else:
+        assumptions = auto.build(data)
+        mode = "auto"
+
+    report = AnalysisRunner(data).run(assumptions, list(p.get("selected") or []), mode)
+    _ANALYZER["report"] = report
+
+    summary = report.summary_frame().to_dict(orient="records")
+    rationale = {f"{model} · {param}": text
+                 for (model, param), text in assumptions.rationale.items()}
+    return json.dumps({
+        "ok": True, "mode": mode, "summary": summary,
+        "results": _clean(report.results), "errors": report.errors,
+        "market_context": _clean(assumptions.market_context),
+        "rationale": rationale,
+        "rf_source": p.get("rf_source") or "default (Damodaran base case 4.25%)",
+    })
+
+
+def _fmt_docx(value: Any) -> str:
+    """Human formatting for report values (mirrors the terminal grid)."""
+    if isinstance(value, float):
+        if abs(value) >= 1e5:
+            return f"{value:,.0f}"
+        if abs(value) >= 100:
+            return f"{value:,.2f}"
+        return f"{value:.6g}"
+    if isinstance(value, list):
+        return f"series · {len(value)} pts"
+    return str(value)
+
+
+def _build_docx(report: Any, path: str) -> None:
+    """Write the analysis as a .docx — the format Google Docs imports natively."""
+    import docx  # python-docx (lxml comes from the Pyodide distribution)
+
+    doc = docx.Document()
+    company = report.company.company_name or "Uploaded company"
+    doc.add_heading(f"Financial Model Report — {company}", level=0)
+    meta = doc.add_paragraph()
+    meta.add_run(
+        f"Mode: {report.mode.upper()}   ·   Period basis: "
+        f"{(_ANALYZER['period'] or 'annual').upper()}   ·   "
+        f"Generated by FINMODELS Terminal (in-browser Python)").italic = True
+
+    doc.add_heading("Extracted financials", level=1)
+    table = doc.add_table(rows=0, cols=2)
+    table.style = "Light Grid Accent 1"
+    for key, value in report.company.to_dict().items():
+        if key == "backends_used" or value in (None, [], ""):
+            continue
+        cells = table.add_row().cells
+        cells[0].text = key.replace("_", " ")
+        cells[1].text = _fmt_docx(value)
+
+    doc.add_heading("Assumptions (market context)", level=1)
+    table = doc.add_table(rows=0, cols=2)
+    table.style = "Light Grid Accent 1"
+    for key, value in report.assumptions.market_context.items():
+        cells = table.add_row().cells
+        cells[0].text = key.replace("_", " ")
+        cells[1].text = _fmt_docx(value)
+
+    doc.add_heading("Model results", level=1)
+    for model_name, results in report.results.items():
+        doc.add_heading(model_name, level=2)
+        table = doc.add_table(rows=0, cols=2)
+        table.style = "Light Grid Accent 1"
+        for key, value in results.items():
+            cells = table.add_row().cells
+            cells[0].text = key.replace("_", " ")
+            cells[1].text = _fmt_docx(value)
+
+    if report.errors:
+        doc.add_heading("Models not run", level=1)
+        for model_name, err in report.errors.items():
+            doc.add_paragraph(f"{model_name}: {err}")
+    doc.save(path)
+
+
+def export_report(fmt: str) -> str:
+    """Render the last report as pdf / docx / xlsx; returns base64 JSON."""
+    from src.pipeline import export_pdf, export_xlsx
+
+    report = _ANALYZER["report"]
+    if report is None:
+        return json.dumps({"ok": False, "error": "Run a report before exporting."})
+
+    company = (report.company.company_name or "company").strip()
+    slug = _re.sub(r"[^A-Za-z0-9]+", "_", company).strip("_").lower() or "company"
+    path = f"/tmp/{slug}_report.{fmt}"
+    try:
+        if fmt == "pdf":
+            export_pdf(report, path)
+            mime = "application/pdf"
+        elif fmt == "xlsx":
+            export_xlsx(report, path)
+            mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        elif fmt == "docx":
+            _build_docx(report, path)
+            mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        else:
+            return json.dumps({"ok": False, "error": f"Unknown format {fmt!r}"})
+    except Exception as exc:
+        return json.dumps({"ok": False, "error": f"{type(exc).__name__}: {exc}"})
+
+    with open(path, "rb") as fh:
+        payload = base64.b64encode(fh.read()).decode()
+    return json.dumps({"ok": True, "filename": f"{slug}_report.{fmt}",
+                       "mime": mime, "b64": payload})

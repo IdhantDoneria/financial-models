@@ -28,22 +28,28 @@ def _sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _included() -> list[Path]:
+    return sorted(list(SRC.glob("*.py")) + list(SRC.glob("pipeline/*.py")))
+
+
 def test_every_src_module_is_synced_byte_identical():
-    for src_file in sorted(SRC.glob("*.py")):
-        web_file = WEB / src_file.name
+    for src_file in _included():
+        web_file = WEB / src_file.relative_to(SRC)
         assert web_file.exists(), f"{web_file} missing — {RESYNC}"
-        assert _sha(src_file) == _sha(web_file), f"{src_file.name} drifted — {RESYNC}"
+        assert _sha(src_file) == _sha(web_file), \
+            f"{src_file.relative_to(SRC)} drifted — {RESYNC}"
 
 
 def test_no_stale_files_in_web_copy():
-    stale = {p.name for p in WEB.glob("*.py")} - {p.name for p in SRC.glob("*.py")}
+    stale = ({p.relative_to(WEB).as_posix() for p in WEB.rglob("*.py")}
+             - {p.relative_to(SRC).as_posix() for p in _included()})
     assert not stale, f"stale synced files {stale} — {RESYNC}"
 
 
 def test_manifest_matches_sources():
     manifest = json.loads(MANIFEST.read_text())
     listed = {f["path"]: f["sha256"] for f in manifest["files"]}
-    expected = {f"src/{p.name}": _sha(p) for p in SRC.glob("*.py")}
+    expected = {f"src/{p.relative_to(SRC).as_posix()}": _sha(p) for p in _included()}
     assert listed == expected, f"manifest out of date — {RESYNC}"
 
 
