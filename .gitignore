@@ -20,6 +20,11 @@ env/
 
 # Cached market data (regenerated on demand from Ken French's library)
 data/cache/
+# Synthetic PDFs / user-generated export artifacts
+data/samples/
+exports/
+# Google OAuth token (never commit)
+token.json
 
 # OS / editor
 .DS_Store

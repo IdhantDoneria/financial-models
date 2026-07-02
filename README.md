@@ -138,6 +138,27 @@ Every model inherits `BaseFinancialModel`, which supplies the logger and a famil
 `_require_*` validators. **Model logic is strictly separated from UI logic** — the notebook
 widgets only call the public interface.
 
+## 📄 Company PDF Analyzer
+
+Upload a company financial PDF (10-K, 10-Q, annual report, investor deck) and the
+pipeline scrapes the numbers, applies assumptions, runs any subset of the ten
+models, and hands you a downloadable report.
+
+**Pipeline** — `src/pipeline/`:
+
+| Stage | Module | What it does |
+|---|---|---|
+| 1 · Extract | `pdf_extractor.py` | Cascade of **PyMuPDF → pdfplumber → pypdf → pdfminer.six**, then regex heuristics scrape revenue, FCFs, debt, cash, shares, price, β, growth, margin, tax rate. |
+| 2 · Assume | `assumptions.py` | **Auto** — IB-style heuristic (WACC via CAPM, terminal g ≤ risk-free rate, sector-neutral β, Damodaran-style defaults). **Manual** — read-through of user overrides from the notebook sliders. |
+| 3 · Run | `runner.py` | Instantiates each selected model and collects results into an `AnalysisReport`. |
+| 4 · Export | `exporters.py` | **PDF** (reportlab, multi-page), **Excel** (openpyxl, one sheet per model), **Google Docs** (googleapiclient; [3-step setup](docs/google_docs_setup.md)). |
+
+**Notebook UI** (in `notebooks/financial_models.ipynb` → section 5):
+① `FileUpload` widget → ② extracted-data preview → ③ model checkboxes with select-all/clear-all → ④ **Auto** / **Manual** toggle (sliders for `r_f`, β, WACC, terminal *g*, σ, option T, VaR confidence/horizon, MC paths, strike/spot ratio, dividend growth) → ⑤ **Run** → ⑥ **⬇ PDF / ⬇ Excel / ⬇ Google Doc** buttons.
+
+Tested end-to-end: synthetic 10-K → extract → run all 10 models → export PDF+XLSX
+(see `tests/pipeline/test_pipeline.py`).
+
 ## Testing & scoring
 
 ```bash
