@@ -35,8 +35,21 @@ PORT = 8123
 CDN_CACHE = Path(os.environ.get("E2E_CDN_CACHE", "/tmp/e2e-cdn-cache"))
 
 
+#: Host under test (set in main when --url is used); never served from cache so
+#: a fresh deployment is always what gets exercised.
+_TARGET_HOST: str | None = None
+
+
 def _fulfill_external(route) -> None:
     url = route.request.url
+    if _TARGET_HOST and _TARGET_HOST in url:
+        try:
+            resp = requests.get(url, timeout=120)
+        except Exception:
+            return route.abort()
+        return route.fulfill(status=resp.status_code, body=resp.content,
+                             headers={"content-type": resp.headers.get(
+                                 "content-type", "application/octet-stream")})
     key = CDN_CACHE / (url.replace("://", "_").replace("/", "_")[:200])
     meta = key.with_suffix(key.suffix + ".ct")
     if not key.exists():
@@ -77,6 +90,8 @@ def main() -> int:
     target = None
     if "--url" in sys.argv:
         target = sys.argv[sys.argv.index("--url") + 1].rstrip("/") + "/"
+        global _TARGET_HOST
+        _TARGET_HOST = target.split("//", 1)[-1].split("/", 1)[0]
     srv = None if target else serve()
     base = target or f"http://127.0.0.1:{PORT}/"
     failures: list[str] = []
