@@ -1,0 +1,11 @@
+# Keep Vercel deploys lean — only the static public/ site is served.
+venv/
+.venv/
+__pycache__/
+.pytest_cache/
+data/cache/
+notebooks/
+tests/
+scripts/
+*.ipynb
+.git/
