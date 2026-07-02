@@ -1,0 +1,57 @@
+{
+  "synced_at_utc": "2026-07-02T17:08:34+00:00",
+  "files": [
+    {
+      "path": "src/__init__.py",
+      "sha256": "43e78e062ba37286e59c12fd0c6e154c8f821ac3fc87e4eead32d99f75896f1b"
+    },
+    {
+      "path": "src/base_model.py",
+      "sha256": "a8bd4193b7fa8322d5e121a6e407f6eff0efa5e681aeb02c913644de41ad7b5a"
+    },
+    {
+      "path": "src/binomial.py",
+      "sha256": "e03f5848907b0e3aa77e4bfa426d2b6cc952c69535f979dff55ef4652e4be278"
+    },
+    {
+      "path": "src/black_scholes.py",
+      "sha256": "20968a304a5fa3853fb9fccdec18c57883ef6d341acb54b0b707f182f2b92bef"
+    },
+    {
+      "path": "src/capm.py",
+      "sha256": "e6768de703a564a906f85f3168404b6fa40321257b4b047a4aa11f78f3f641a5"
+    },
+    {
+      "path": "src/dcf.py",
+      "sha256": "8c6729befddc7c2e5bfae695836baa6ab69830b876afd1db2e329d3c9fec98ca"
+    },
+    {
+      "path": "src/fama_french.py",
+      "sha256": "511a963a85969caca25b282cdca02df61559db18ae61a016cb85e25000117823"
+    },
+    {
+      "path": "src/gordon_growth.py",
+      "sha256": "35cac1deda1152a7f593bea5743868f04198706fce4bdc73a2006eb6a39a8ba4"
+    },
+    {
+      "path": "src/monte_carlo.py",
+      "sha256": "6cd31fa9dcc5b7e1f147e8c68d73ab8c7311df48eda7f8133ebfa51bd2440812"
+    },
+    {
+      "path": "src/mpt.py",
+      "sha256": "5e6ed426a451ab4b37de5d3a5482a61d2bbda5a331ec1779f9206fed774030e5"
+    },
+    {
+      "path": "src/scorer.py",
+      "sha256": "9fb2484c98c02f36977b90913f2d5e4439c6a7632ea5e1e14b3cab261ed1e7a2"
+    },
+    {
+      "path": "src/stochastic_volatility.py",
+      "sha256": "064eda4e7daa8eed4dbaf8a8ca4966c5fa76b1adb08c84114ae40996f658baa8"
+    },
+    {
+      "path": "src/var_cvar.py",
+      "sha256": "fceeffef7c12f6f3353399f2dd2e7adcaa15c452ba893f25e5017558e9336aef"
+    }
+  ]
+}

@@ -2,7 +2,12 @@
 
 **Ten canonical models of quantitative finance — mathematically validated, pedagogically documented, and production-hardened — in one integrated Python + Jupyter codebase.**
 
-Each model is a self-contained class with a common interface (`calculate()` · `explain()` · `visualize()`), literature-sourced numerical benchmarks, and an automated scorer that grades it on three metrics. **All ten models score 10/10 on all three metrics**, and the full suite is covered by 75 passing tests.
+> **▶ Run them live: [financial-models-six.vercel.app](https://financial-models-six.vercel.app)** — a
+> Bloomberg-terminal-style interface where all ten models execute **in your browser**
+> (the actual `src/*.py` files, running on CPython compiled to WebAssembly — no server).
+> Type a mnemonic (`BSM`, `DCF`, `HES`, …) and press `<GO>`.
+
+Each model is a self-contained class with a common interface (`calculate()` · `explain()` · `visualize()`), literature-sourced numerical benchmarks, and an automated scorer that grades it on three metrics. **All ten models score 10/10 on all three metrics**, and the full suite is covered by 88 passing tests.
 
 ---
 
@@ -127,9 +132,18 @@ financial-models/
 │   └── scorer.py                  # automated 3-metric scoring engine
 ├── tests/
 │   ├── conftest.py                # representative instance factory
-│   └── test_models.py             # 75 tests: accuracy · interface · robustness · scoring
+│   ├── test_models.py             # 75 tests: accuracy · interface · robustness · scoring
+│   ├── test_web_assets.py         # guard: browser terminal runs the tested sources
+│   └── pipeline/test_pipeline.py  # 8 tests: PDF analyzer end-to-end
 ├── scripts/build_notebook.py      # regenerates the notebook from source
-├── public/index.html              # static showcase site (Vercel deploy target)
+├── scripts/sync_web_assets.py     # syncs src/ + FF data into public/ for the terminal
+├── scripts/e2e_terminal.py        # headless-Chromium check: all 10 models in-browser
+├── public/
+│   ├── index.html · assets/       # FINMODELS terminal (Bloomberg-style, Pyodide)
+│   ├── py/                        # synced model sources + web_bridge.py + manifest
+│   ├── data/ff_factors.csv        # bundled Ken French factor snapshot
+│   └── about.html                 # static project overview page
+├── docs/design/terminal-spec.md   # terminal design specification
 ├── docs/design/mockup.html        # design-first UI wireframe
 ├── requirements.txt · vercel.json · .gitignore · LICENSE
 ```
@@ -162,7 +176,7 @@ Tested end-to-end: synthetic 10-K → extract → run all 10 models → export P
 ## Testing & scoring
 
 ```bash
-pytest tests/ -q          # 75 tests
+pytest tests/ -q          # 88 tests
 ```
 
 The suite validates: every model's benchmarks (numerical accuracy), the
@@ -184,14 +198,35 @@ factors = FamaFrenchModel.load_factors()   # downloads, parses %→decimal, cach
 The loader caches to `data/cache/` to avoid repeated downloads, falls back to the cache on
 network failure, and raises a clear `ModelError` if neither source is available.
 
+## 🖥️ FINMODELS Terminal (the deployed site)
+
+The Vercel deployment is not a static showcase — it is the product. All ten models run
+**live in the browser**:
+
+| | |
+|---|---|
+| **Runtime** | [Pyodide](https://pyodide.org) — CPython 3.13 compiled to WebAssembly, with numpy · scipy · pandas · plotly |
+| **Model code** | The *actual* `src/*.py` files, synced byte-for-byte into `public/py/src/` by `scripts/sync_web_assets.py`; a CI guard (`tests/test_web_assets.py`) fails the build if they ever drift from the tested sources |
+| **UI** | Bloomberg-terminal-inspired: amber command line with mnemonics + `<GO>`, F1–F10 function keys, model rail, live-recalculating sliders, signed-color output grid, Plotly dark charts, KaTeX-rendered model derivations (design spec: `docs/design/terminal-spec.md`) |
+| **Data** | Fama-French factors from a bundled Ken French snapshot (1926 → present), refreshed by the sync script |
+| **Server** | None. Zero backend, zero build step — plain static hosting |
+
+Mnemonics: `DCF` · `GG` · `MPT` · `VAR` · `CAPM` · `FF3` · `BSM` · `CRR` · `MC` · `HES`
+(also `HELP`). Every slider change re-runs the real Python model in ~0–15 ms once booted.
+
+**End-to-end verification:** `python scripts/e2e_terminal.py` drives headless Chromium
+through the full boot and asserts all ten models produce numeric output and charts
+in-browser (run manually; needs network for the first CDN fetch).
+
+The static about page lives at [`/about`](https://financial-models-six.vercel.app/about).
+
 ## Deployment
 
-- **Static showcase site** (`public/index.html`) is configured for Vercel via `vercel.json`
-  (static output directory, clean URLs, security headers). Import the repo into Vercel and it
-  deploys with zero build steps.
+- Configured for Vercel via `vercel.json` (static `public/` output, clean URLs, security
+  headers). Import the repo into Vercel — zero build steps.
 - **The interactive notebook** is best run locally with Jupyter (a live Python kernel is
-  required for the `ipywidgets` panels, which Vercel's static/serverless runtime cannot host).
-  It also renders read-only on GitHub / nbviewer with all Plotly charts embedded.
+  required for the `ipywidgets` panels). It also renders read-only on GitHub / nbviewer
+  with all Plotly charts embedded.
 
 ## References
 

@@ -33,3 +33,5 @@ token.json
 
 # Vercel
 .vercel/
+# Pyodide-cache artifact from local bridge smoke tests
+public/py/data/
