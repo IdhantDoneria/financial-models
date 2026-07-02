@@ -1,0 +1,37 @@
+# Byte-compiled / optimized
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Environment / secrets
+.env
+.env.*
+
+# Cached market data (regenerated on demand from Ken French's library)
+data/cache/
+# Synthetic PDFs / user-generated export artifacts
+data/samples/
+exports/
+# Google OAuth token (never commit)
+token.json
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+
+# Vercel
+.vercel/
+# Pyodide-cache artifact from local bridge smoke tests
+public/py/data/

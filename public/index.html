@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FINMODELS TERMINAL — 10 quant models, live in your browser</title>
+  <meta name="description" content="Bloomberg-terminal-style interface running ten canonical quantitative finance models (Black-Scholes, Heston, DCF, MPT, VaR, Fama-French…) live in the browser via Python/WebAssembly.">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' fill='%23050608'/><text y='72' x='50' font-size='58' text-anchor='middle' fill='%23ffb000' font-family='monospace'>ƒ</text></svg>">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/katex.min.css">
+  <link rel="stylesheet" href="assets/terminal.css">
+</head>
+<body>
+
+  <!-- boot screen -->
+  <div id="boot">
+    <div class="brand">FINMODELS TERMINAL<small>10 QUANT MODELS · CPYTHON → WEBASSEMBLY · ZERO SERVER</small></div>
+    <div id="bootlog"></div>
+    <div id="bootbar"><div></div></div>
+    <div class="hint">FIRST BOOT DOWNLOADS THE SCIENTIFIC PYTHON STACK (~15 S) — CACHED AFTER</div>
+  </div>
+
+  <!-- terminal -->
+  <div id="app">
+    <div id="tape"><div class="inner"></div></div>
+
+    <div id="cmdbar">
+      <span class="logo">FINMODELS</span>
+      <input id="cmd" placeholder="TYPE MNEMONIC — BSM · DCF · HES · … THEN ⏎" autocomplete="off" spellcheck="false">
+      <span id="cmderr"></span>
+      <button id="go">&lt;GO&gt;</button>
+    </div>
+
+    <div id="fkeys"></div>
+
+    <div id="main">
+      <section class="panel" id="rail">
+        <header><span class="title">MODELS</span><span class="meta">10 / 10 · 30/30</span></header>
+        <div class="body"></div>
+      </section>
+
+      <section class="panel" id="inputs">
+        <header><span class="title">INPUTS</span><span class="meta">LIVE RECALC</span></header>
+        <div class="body">
+          <div id="formula"></div>
+          <div id="pform"></div>
+        </div>
+      </section>
+
+      <section class="panel" id="output">
+        <header><span class="title">OUTPUT</span><span class="meta" id="ostat">—</span></header>
+        <div class="body">
+          <table id="ogrid"></table>
+          <div id="oerr"></div>
+        </div>
+      </section>
+
+      <section class="panel" id="viz">
+        <header>
+          <span class="title">ANALYTICS</span>
+          <div class="tabs">
+            <button id="tab-chart" class="on">CHART</button>
+            <button id="tab-doc">DOC</button>
+          </div>
+          <span class="meta">PLOTLY · KATEX</span>
+        </header>
+        <div class="body">
+          <div id="chart"></div>
+          <div id="doc"></div>
+        </div>
+      </section>
+    </div>
+
+    <div id="status">
+      <span><span class="dot">●</span> PY RUNTIME <b>CPYTHON 3.13 / WASM</b></span>
+      <span>PKGS <b>NUMPY · SCIPY · PANDAS · PLOTLY</b></span>
+      <span id="calcms">CALC <b>—</b></span>
+      <span class="right">
+        <span>DATA <b>KEN FRENCH 1926→</b></span>
+        <a href="about" target="_blank">ABOUT</a>
+        <a href="https://github.com/idhantdoneria/financial-models" target="_blank" rel="noopener">GITHUB</a>
+        <span id="clock"></span>
+      </span>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/pyodide/v0.28.2/full/pyodide.js"></script>
+  <script src="https://cdn.plot.ly/plotly-3.3.0.min.js" charset="utf-8"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked@15.0.12/marked.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/katex.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/contrib/auto-render.min.js"></script>
+  <script src="assets/terminal.js"></script>
+</body>
+</html>
