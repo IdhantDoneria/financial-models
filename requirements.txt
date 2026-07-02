@@ -1,0 +1,17 @@
+# Financial Models — pinned dependencies (Python 3.10+)
+# Core numerics
+numpy==2.4.6
+scipy==1.17.1
+pandas==3.0.3
+# Interactive visualization
+plotly==6.8.0
+# Notebook UI
+ipywidgets==8.1.8
+ipykernel==7.3.0
+notebook==7.6.0
+nbformat==5.10.4
+nbconvert==7.17.1
+# Live data fetching (Fama-French)
+requests==2.34.2
+# Testing
+pytest==9.1.1
