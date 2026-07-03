@@ -212,7 +212,29 @@ The Vercel deployment is not a static showcase — it is the product. All ten mo
 | **Server** | None. Zero backend, zero build step — plain static hosting |
 
 Mnemonics: `DCF` · `GG` · `MPT` · `VAR` · `CAPM` · `FF3` · `BSM` · `CRR` · `MC` · `HES`
-(also `HELP`). Every slider change re-runs the real Python model in ~0–15 ms once booted.
+(also `HELP`, and `IB` for the PDF analyzer below). Every slider change re-runs the real
+Python model in ~0–15 ms once booted.
+
+### ⌁ IB Desk — company PDF analyzer, in the browser
+
+Type **`IB <GO>`** (or click IB DESK): upload any **10-K or 10-Q PDF** and the terminal runs
+the full analysis pipeline *client-side*:
+
+1. **Extract** — `src/pipeline/pdf_extractor.py` (pypdf + pdfminer.six in WASM) scrapes
+   revenue, FCFs, net income, debt, cash, shares, price, β, growth, margins, tax rate.
+   Quarterly filings are auto-detected from their own language and flow figures are
+   annualised ×4 (period basis can also be forced ANNUAL/QUARTERLY).
+2. **Assume** — every missing figure is filled:
+   **AUTO** (IB bot): CAPM WACC (80/20 equity-debt + 150 bp credit spread), terminal
+   g ≤ r_f, sector-neutral β, Damodaran 5% ERP — with the **risk-free rate scraped live
+   from the free US Treasury FiscalData API** (keyless, CORS-open) and a documented
+   offline fallback. **MANUAL**: 16 override sliders; untouched sliders keep bot values.
+3. **Run** — checkboxes select which of the ten models enter the report (ALL/NONE).
+4. **Export** — download the report as **PDF** (reportlab), **Google Docs** (a .docx built
+   with python-docx that Google Docs opens natively), or **Excel** (openpyxl) — all
+   rendered inside the browser, nothing uploaded anywhere.
+
+Every stage runs the same `src/pipeline/` package the pytest suite validates.
 
 **End-to-end verification:** `python scripts/e2e_terminal.py` drives headless Chromium
 through the full boot and asserts all ten models produce numeric output and charts
