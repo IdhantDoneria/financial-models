@@ -27,10 +27,12 @@
     <div id="tape"><div class="inner"></div></div>
 
     <div id="cmdbar">
+      <button id="burger" aria-label="Menu">&#9776;</button>
       <span class="logo">FINMODELS</span>
       <input id="cmd" placeholder="TYPE MNEMONIC — BSM · DCF · HES · … THEN ⏎" autocomplete="off" spellcheck="false">
       <span id="cmderr"></span>
       <button id="go">&lt;GO&gt;</button>
+      <button id="country-btn"><span class="ccode">US</span><span class="carrow">&#9662;</span></button>
     </div>
 
     <div id="fkeys"></div>
@@ -77,6 +79,7 @@
     <div id="status">
       <span><span class="dot">●</span> PY RUNTIME <b>CPYTHON 3.13 / WASM</b></span>
       <span>PKGS <b>NUMPY · SCIPY · PANDAS · PLOTLY</b></span>
+      <span id="cstatus">MARKET <b>NYSE / NASDAQ</b></span>
       <span id="calcms">CALC <b>—</b></span>
       <span class="right">
         <span>DATA <b>KEN FRENCH 1926→</b></span>
@@ -86,6 +89,20 @@
       </span>
     </div>
   </div>
+
+  <!-- hamburger menu -->
+  <div id="menu-backdrop"></div>
+  <div id="menu">
+    <div class="menu-head"><span>FINMODELS MENU</span><button id="menu-close">&#10005;</button></div>
+    <div class="menu-tabs">
+      <button class="mtab on" data-tab="guide">GUIDE</button>
+      <button class="mtab" data-tab="models">MODELS</button>
+      <button class="mtab" data-tab="history">HISTORY</button>
+    </div>
+    <div class="menu-body" id="menu-body"></div>
+  </div>
+  <!-- country dropdown -->
+  <div id="country-drop"></div>
 
   <script src="https://cdn.jsdelivr.net/pyodide/v0.28.2/full/pyodide.js"></script>
   <script src="https://cdn.plot.ly/plotly-3.3.0.min.js" charset="utf-8"></script>

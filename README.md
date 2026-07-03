@@ -236,9 +236,28 @@ the full analysis pipeline *client-side*:
 
 Every stage runs the same `src/pipeline/` package the pytest suite validates.
 
+### ☰ Menu & 🌐 market selector
+
+Two persistent controls frame every view:
+
+- **Hamburger menu** (top-left) — a **GUIDE** tab with a step-by-step walk-through of the
+  whole terminal, a **MODELS** tab briefing each of the ten techniques in plain English
+  with a *Best for* line so you can match the tool to your need (and jump straight in), and
+  a **HISTORY** tab that auto-saves every company you analyse on the IB desk (reopen or
+  delete any past analysis; persists in `localStorage`).
+- **Market selector** (top-right) — pick from the **15 largest equity markets by total
+  capitalisation** (US, China, Japan, India, Hong Kong, France, UK, Canada, Saudi Arabia,
+  Germany, Switzerland, Taiwan, Australia, South Korea, Netherlands). The **risk-free rate,
+  market return and cost of capital across every model** instantly re-anchor to that
+  country's 10-year sovereign yield + equity-risk-premium, removing the US-only default.
+  The US rate still refreshes live from the Treasury API; the rest use curated sovereign
+  baselines, and the IB desk's live rate follows your chosen market too.
+
 **End-to-end verification:** `python scripts/e2e_terminal.py` drives headless Chromium
 through the full boot and asserts all ten models produce numeric output and charts
-in-browser (run manually; needs network for the first CDN fetch).
+in-browser, then exercises the menu, the market selector (verifying the risk-free rate
+follows the chosen country), and the IB desk (run manually; needs network for the first
+CDN fetch).
 
 The static about page lives at [`/about`](https://financial-models-six.vercel.app/about).
 

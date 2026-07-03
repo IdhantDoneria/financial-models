@@ -149,3 +149,33 @@ Exports (PDF / Google-Docs .docx / Excel) are rendered by the same
 `src/pipeline` exporters inside WASM and downloaded as blobs. The analyzer's
 pure-Python backends (pypdf, pdfminer.six, reportlab, openpyxl, python-docx)
 micropip-install lazily on first open, keeping the main boot fast.
+
+## 9 · Global chrome — menu & market selector
+
+Two persistent controls sit in the command bar, framing every view.
+
+**Hamburger menu (left).** A slide-in drawer with three tabs:
+
+- **GUIDE** — a numbered, step-by-step walk-through of the whole terminal
+  (pick market → choose model → drive inputs → read output → IB desk → history),
+  written for a first-time visitor.
+- **MODELS** — a plain-English brief for each of the ten techniques: one line
+  on *what it does* and a green **Best for** line on *which need it fits*, so a
+  user can match tool to question (value a company, size risk, price an option,
+  allocate). Each brief has an **OPEN →** button that jumps straight into that
+  model.
+- **HISTORY** — saved company analyses. Every IB-desk run is auto-snapshotted
+  (deduped by company, most-recent first) to `localStorage`; each entry can be
+  reopened (rehydrating the extracted data + report) or deleted.
+
+**Market selector (right).** A dropdown of the **15 largest equity markets by
+total capitalisation** (US, China, Japan, India, Hong Kong, France, UK, Canada,
+Saudi Arabia, Germany, Switzerland, Taiwan, Australia, South Korea,
+Netherlands). Each carries a 10-year sovereign-yield risk-free proxy `rf` and a
+Damodaran equity-risk-premium `erp`. Selecting a market repoints the default of
+**every risk-free / short-rate input** (`risk_free_rate`, `rate`) and derives
+each model's market return as `rf + erp` — dissolving the built-in US-only
+assumption. The US rate can still refresh **live** from the Treasury FiscalData
+API; the other fourteen use curated sovereign baselines, and the IB desk's live
+risk-free follows the chosen market too. The choice persists in `localStorage`
+and is shown in the status bar.
