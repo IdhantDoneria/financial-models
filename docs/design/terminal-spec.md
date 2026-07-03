@@ -45,7 +45,7 @@ Desktop (≥1100px): fixed viewport app, no page scroll — panels scroll intern
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│ TICKER TAPE (benchmark stats, scrolling)                     │
+│ LIVE TICKER: oil·gold·silver·BTC/ETH·15 world indices, ±%   │
 ├──────────────────────────────────────────────────────────────┤
 │ CMD BAR:  FINMODELS ▮  BSM ......................... <GO>    │
 ├──────────────────────────────────────────────────────────────┤
@@ -150,7 +150,25 @@ Exports (PDF / Google-Docs .docx / Excel) are rendered by the same
 pure-Python backends (pypdf, pdfminer.six, reportlab, openpyxl, python-docx)
 micropip-install lazily on first open, keeping the main boot fast.
 
-## 9 · Global chrome — menu & market selector
+## 9 · Live ticker tape
+
+The top marquee streams **real market data**, not build stats: WTI crude, Brent,
+gold, silver, Bitcoin, Ethereum, and **15 of the world's most valued equity
+indices** (S&P 500, Nasdaq, Dow, FTSE 100, DAX, CAC 40, Euro Stoxx 50, Nikkei
+225, Hang Seng, Shanghai, Nifty 50, TSX, ASX 200, KOSPI, Taiwan) — each with its
+last price and signed intraday % change (green ▲ / red ▼). Hovering pauses the
+scroll.
+
+Data path: browsers can't reach Yahoo/Stooq directly (no CORS headers) and no
+keyless CORS-open source spans indices + energy + metals, so a **same-origin
+Vercel serverless function** (`api/quotes.js`) fetches Yahoo Finance server-side
+(no key) and returns a compact JSON array. It is CDN-cached
+(`s-maxage=60, stale-while-revalidate=300`) so Yahoo is hit ~once/minute
+regardless of traffic. The front-end polls `/api/quotes` every 60 s; if it is
+ever unreachable it falls back to CoinGecko (keyless, CORS-open) for live
+crypto + gold, padded with static engine stats, so the tape never goes blank.
+
+## 10 · Global chrome — menu & market selector
 
 Two persistent controls sit in the command bar, framing every view.
 

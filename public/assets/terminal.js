@@ -171,14 +171,13 @@ const COUNTRIES = [
 //: Parameter ids that represent a risk-free / short rate across the models.
 const RF_PARAM_IDS = new Set(["risk_free_rate", "rate"]);
 
-const TAPE_ITEMS = [
+//: Shown only if every live source is unreachable — the tape never goes blank.
+const TAPE_FALLBACK = [
   "<b>BSM</b> HULL EX 15.6 CALL <i>4.7594</i>",
   "<b>PARITY</b> C−P−S+Ke⁻ʳᵀ <i>4.5e−16</i>",
   "<b>CRR</b> →BS CONVERGENCE <i>OK</i>",
   "<b>HES</b> ξ→0 BS REDUCTION <i>4e−09</i>",
   "<b>FF3</b> KEN FRENCH 1926–2026 <i>1199 ROWS</i>",
-  "<b>SCORE</b> 10 MODELS × 3 METRICS <i>30/30</i>",
-  "<b>TESTS</b> PYTEST <i>83 PASS</i>",
   "<b>RUNTIME</b> CPYTHON·WASM <i>LIVE</i>",
 ];
 
@@ -280,7 +279,9 @@ async function boot() {
 
 /* ------------------------------ UI build ------------------------------- */
 function buildUI() {
-  $("#tape .inner").innerHTML = (TAPE_ITEMS.join(" <span>·</span> ") + " <span>·</span> ").repeat(3);
+  renderTape(TAPE_FALLBACK);   // instant seed; replaced by live data below
+  refreshTape();
+  setInterval(refreshTape, 60_000);
 
   const rail = $("#rail .body");
   const fk = $("#fkeys");
@@ -326,6 +327,60 @@ function buildUI() {
   setInterval(() => {
     $("#clock").textContent = new Date().toISOString().slice(0, 19).replace("T", " ") + " UTC";
   }, 1000);
+}
+
+/* ------------------------------ live ticker ---------------------------- */
+//: One tape entry: LABEL  PRICE  ▲/▼ ±pct%  (green up, red down).
+function tapeItemHTML(q) {
+  const digits = q.price >= 1000 ? 2 : q.price >= 1 ? 2 : 4;
+  const num = q.price.toLocaleString("en-US", { minimumFractionDigits: q.price >= 1000 ? 2 : 0, maximumFractionDigits: digits });
+  const val = (q.money ? "$" : "") + num;
+  const pct = typeof q.pct === "number" ? q.pct : 0;
+  const cls = pct > 0.0001 ? "up" : pct < -0.0001 ? "down" : "flat";
+  const arrow = pct > 0.0001 ? "▲" : pct < -0.0001 ? "▼" : "▬";
+  const sign = pct >= 0 ? "+" : "";
+  return `<b>${q.label}</b> ${val} <i class="${cls}">${arrow} ${sign}${pct.toFixed(2)}%</i>`;
+}
+
+//: Paint the marquee. Repeating the sequence keeps the loop seamless; the CSS
+//  animation lives on `.inner`, so swapping its children never restarts it.
+function renderTape(items) {
+  if (!items || !items.length) return;
+  const seq = items.join(' <span>·</span> ') + ' <span>·</span> ';
+  $("#tape .inner").innerHTML = seq.repeat(3);
+}
+
+async function refreshTape() {
+  if (await fetchTapePrimary()) return;    // same-origin /api/quotes (full set)
+  await fetchTapeFallback();               // CORS-open CoinGecko (crypto+gold)
+}
+
+async function fetchTapePrimary() {
+  try {
+    const r = await fetch("/api/quotes", { cache: "no-store", signal: AbortSignal.timeout(9000) });
+    if (!r.ok) return false;
+    const j = await r.json();
+    if (!j.quotes || !j.quotes.length) return false;
+    renderTape(j.quotes.map(tapeItemHTML));
+    return true;
+  } catch { return false; }
+}
+
+async function fetchTapeFallback() {
+  // If the serverless feed is unreachable, at least keep crypto + gold live
+  // from CoinGecko (keyless, CORS-open), padded with the static build stats.
+  try {
+    const url = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum,pax-gold" +
+      "&vs_currencies=usd&include_24hr_change=true";
+    const r = await fetch(url, { cache: "no-store", signal: AbortSignal.timeout(9000) });
+    const j = await r.json();
+    const items = [];
+    const add = (id, label) => { if (j[id]) items.push(tapeItemHTML({ label, money: true, price: j[id].usd, pct: j[id].usd_24h_change || 0 })); };
+    add("bitcoin", "BITCOIN"); add("ethereum", "ETHEREUM"); add("pax-gold", "GOLD (PAXG)");
+    if (!items.length) return false;
+    renderTape(items.concat(TAPE_FALLBACK));
+    return true;
+  } catch { return false; }
 }
 
 function setTab(which) {

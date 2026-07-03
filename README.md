@@ -209,7 +209,8 @@ The Vercel deployment is not a static showcase — it is the product. All ten mo
 | **Model code** | The *actual* `src/*.py` files, synced byte-for-byte into `public/py/src/` by `scripts/sync_web_assets.py`; a CI guard (`tests/test_web_assets.py`) fails the build if they ever drift from the tested sources |
 | **UI** | Bloomberg-terminal-inspired: amber command line with mnemonics + `<GO>`, F1–F10 function keys, model rail, live-recalculating sliders, signed-color output grid, Plotly dark charts, KaTeX-rendered model derivations (design spec: `docs/design/terminal-spec.md`) |
 | **Data** | Fama-French factors from a bundled Ken French snapshot (1926 → present), refreshed by the sync script |
-| **Server** | None. Zero backend, zero build step — plain static hosting |
+| **Live ticker** | A top marquee streaming real prices — WTI crude · Brent · gold · silver · Bitcoin · Ethereum + **15 of the world's most valued indices** (S&P 500, Nasdaq, Dow, FTSE 100, DAX, CAC 40, Euro Stoxx 50, Nikkei, Hang Seng, Shanghai, Nifty 50, TSX, ASX 200, KOSPI, Taiwan) with signed intraday % change. Fed by a same-origin serverless function (`api/quotes.js`, Yahoo server-side, keyless, CDN-cached ~1×/min), with a CoinGecko crypto/gold fallback so it never blanks |
+| **Server** | One tiny keyless serverless function for the ticker feed; everything else is plain static hosting with zero build step |
 
 Mnemonics: `DCF` · `GG` · `MPT` · `VAR` · `CAPM` · `FF3` · `BSM` · `CRR` · `MC` · `HES`
 (also `HELP`, and `IB` for the PDF analyzer below). Every slider change re-runs the real
