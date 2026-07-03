@@ -171,7 +171,24 @@ crypto + gold, padded with static engine stats, so the tape never goes blank.
 ## 10 · Authentication (`login.html`)
 
 The terminal is gated by a login page styled as a split panel: brand/feature
-rail on the left, auth card on the right. Three ways in:
+rail on the left, auth card on the right. Two modes, auto-selected from
+`/api/auth-config`:
+
+**Server mode — passwordless email OTP.** Active when the deployment has a
+store (Upstash Redis via `KV_REST_API_URL`/`KV_REST_API_TOKEN`) and a mailer
+(`RESEND_API_KEY`). Flow: email → `POST /api/auth-request-otp` emails a
+6-digit code (only its salted SHA-256 hash is stored, 10-min TTL, 60 s resend
+cooldown, 5 sends/hour) → `POST /api/auth-verify-otp` (timing-safe compare,
+max 5 attempts, single-use) upserts the user profile server-side (email,
+name, createdAt, lastLoginAt, loginCount) and issues a 30-day revocable
+bearer session. The terminal validates the token via `GET /api/auth-me` on
+boot and revokes it via `POST /api/auth-logout` on sign-out. Shared logic
+lives in `api/_lib/` (store/email/auth — underscore-prefixed, so not exposed
+as routes). Verified by `scripts/test_auth_api.js` (in-process, 16 checks)
+and `scripts/e2e_auth_otp.py` (browser flow against the full-stack local
+server `scripts/dev_auth_server.js`).
+
+**Device-local mode** (no backend configured) offers:
 
 - **Email + password** — device-local accounts. Passwords are hashed with
   PBKDF2-SHA256 (Web Crypto, per-account random salt, 150k iterations) and

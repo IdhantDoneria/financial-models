@@ -214,8 +214,40 @@ function currentUser() {
   } catch { return null; }
 }
 function signOut() {
+  // Revoke the server-side session first when one exists (email-OTP mode).
+  try {
+    const s = JSON.parse(localStorage.getItem(LS_SESSION) || "null");
+    if (s && s.token) {
+      fetch("api/auth-logout", {
+        method: "POST", keepalive: true,
+        headers: { Authorization: "Bearer " + s.token },
+      }).catch(() => {});
+    }
+  } catch { /* best-effort revocation */ }
   try { localStorage.removeItem(LS_SESSION); } catch { /* ignore */ }
   location.replace("login.html");
+}
+
+//: Server (OTP) sessions are validated against the backend after boot; a
+//  revoked/expired token signs the visitor out instead of trusting local
+//  state forever. Device-local and guest sessions have no server to ask.
+async function validateServerSession() {
+  const u = state.user;
+  if (!u || u.provider !== "otp" || !u.token) return;
+  try {
+    const r = await fetch("api/auth-me",
+      { headers: { Authorization: "Bearer " + u.token }, signal: AbortSignal.timeout(10000) });
+    if (r.status === 401) { signOut(); return; }
+    if (r.ok) {
+      const j = await r.json();
+      if (j.user && j.user.name && j.user.name !== u.name) {   // refresh display name
+        u.name = j.user.name;
+        localStorage.setItem(LS_SESSION, JSON.stringify(u));
+        const who = $("#who");
+        if (who) who.innerHTML = `◉ USER <b>${String(u.name).toUpperCase().slice(0, 24)}</b>`;
+      }
+    }
+  } catch { /* offline — keep the local session */ }
 }
 
 const histKey = () => "finmodels.history." + (state.user ? state.user.uid : "guest");
@@ -358,7 +390,7 @@ function buildUI() {
 
   // signed-in identity chip + sign out
   const u = state.user;
-  $("#who").innerHTML = `${u.provider === "google" ? "◉" : "●"} USER <b>${
+  $("#who").innerHTML = `${["google", "otp"].includes(u.provider) ? "◉" : "●"} USER <b>${
     String(u.name || u.uid).toUpperCase().slice(0, 24)}</b>`;
   $("#signout").onclick = (e) => { e.preventDefault(); signOut(); };
 
@@ -669,6 +701,7 @@ window.addEventListener("DOMContentLoaded", () => {
   // email+password, Google SSO, or the explicit guest path — all on-device.
   state.user = currentUser();
   if (!state.user) { location.replace("login.html"); return; }
+  validateServerSession();   // non-blocking: revoked OTP tokens sign out
   boot();
 });
 

@@ -237,19 +237,41 @@ the full analysis pipeline *client-side*:
 
 Every stage runs the same `src/pipeline/` package the pytest suite validates.
 
-### 🔐 Sign in — email, Google, or guest
+### 🔐 Sign in — email OTP (server), Google, or guest
 
-The terminal opens with a login page ([`/login`](https://financial-models-six.vercel.app/login)) offering three paths:
+The terminal opens with a login page ([`/login`](https://financial-models-six.vercel.app/login)). It has **two auth modes**, switched automatically by what the deployment has configured:
 
-- **Email + password** — device-local accounts: passwords are PBKDF2-SHA256-hashed with Web
-  Crypto (per-account salt, 150k iterations) and stored only in your browser. Nothing is
-  transmitted; there is no server database — privacy by architecture.
-- **Continue with Google** — real Google Identity Services. Enable it by setting a
-  `GOOGLE_CLIENT_ID` environment variable in the Vercel project (a standard OAuth *Web
-  application* client with the site's origin authorised); `api/auth-config.js` serves the
-  public client id to the login page. Without it the button honestly reports itself
-  unconfigured — email and guest access work fully.
-- **Explore as guest** — one click, no account, full functionality.
+**Server mode — passwordless email OTP** (when a database + mailer are attached):
+enter your email → receive a 6-digit code by email → verify → signed in. First successful
+verify *is* the signup. All user details (email, name, created/last-login timestamps,
+login count) are stored server-side, sessions are 30-day revocable bearer tokens, and the
+terminal re-validates the session against `/api/auth-me` on every boot.
+
+**Device-local mode** (out of the box, no credentials needed): email + password accounts
+hashed with PBKDF2-SHA256 (Web Crypto, per-account salt, 150k iterations), stored only in
+your browser.
+
+Both modes also offer **Continue with Google** (real Google Identity Services, enabled by
+`GOOGLE_CLIENT_ID`) and **Explore as guest**.
+
+#### Enabling the server backend (10 minutes, free tiers)
+
+The backend is fully coded and tested — it activates on env vars alone:
+
+| Step | What | Env vars |
+|---|---|---|
+| 1 · Database | Vercel dashboard → *Storage / Marketplace* → add **Upstash for Redis** (free). The integration injects the vars automatically. | `KV_REST_API_URL`, `KV_REST_API_TOKEN` (or `UPSTASH_REDIS_REST_URL`/`_TOKEN`) |
+| 2 · Email | Create a free [resend.com](https://resend.com) account → API key. The default `onboarding@resend.dev` sender only delivers to your own inbox; verify a domain and set `EMAIL_FROM` for real users. | `RESEND_API_KEY`, optional `EMAIL_FROM` |
+| 3 · Optional | Random string to pepper OTP hashes. | `AUTH_SECRET` |
+
+Redeploy after setting the vars — `/api/auth-config` flips `serverAuth: true` and the login
+page switches to OTP mode by itself. Endpoints: `auth-request-otp` (6-digit code, salted
+hash only, 10-min TTL, 60s resend cooldown, 5 sends/hour), `auth-verify-otp` (timing-safe
+compare, 5 attempts, single-use, upserts the profile, issues the session), `auth-me`,
+`auth-logout` (revocation). Test locally without any credentials:
+`node scripts/test_auth_api.js` (16 backend checks) and
+`python scripts/e2e_auth_otp.py` (full browser flow against
+`scripts/dev_auth_server.js`).
 
 The status bar shows who's signed in with a SIGN OUT action, and **saved company analyses
 are kept per account**. Reopening a saved analysis rehydrates the extraction inside the
