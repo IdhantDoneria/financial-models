@@ -236,6 +236,19 @@ def main() -> int:
         page.wait_for_function("window.TERMINAL_READY === true", timeout=300_000)
         print("· runtime online")
 
+        # Live ticker tape: /api/quotes only exists on the deployed instance;
+        # locally it 404s and the CoinGecko crypto fallback fills the tape. In
+        # both cases the tape must show a live price with a % change.
+        try:
+            page.wait_for_function(
+                "() => /%/.test(document.querySelector('#tape .inner').textContent) && "
+                "document.querySelectorAll('#tape .inner i.up, #tape .inner i.down, #tape .inner i.flat').length > 0",
+                timeout=30_000)
+            tape = page.inner_text("#tape .inner")[:140]
+            print(f"· ticker live — {tape.strip()[:110]}…")
+        except Exception:
+            failures.append("TAPE: no live quotes rendered")
+
         for mn in MNEMONICS:
             # Drive through the command bar — the primary interaction path.
             page.fill("#cmd", mn)

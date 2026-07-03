@@ -68,9 +68,13 @@ html, body {
   border-bottom: 1px solid var(--border);
   background: #000; line-height: 26px; font-size: 11px;
 }
-#tape .inner { display: inline-block; padding-left: 100%; animation: tape 75s linear infinite; }
+#tape .inner { display: inline-block; padding-left: 100%; animation: tape 110s linear infinite; }
+#tape:hover .inner { animation-play-state: paused; }
 #tape b { color: var(--amber); font-weight: 400; }
-#tape i { color: var(--green); font-style: normal; }
+#tape i { font-style: normal; color: var(--text-dim); }
+#tape i.up { color: var(--green); }
+#tape i.down { color: var(--red); }
+#tape i.flat { color: var(--text-dim); }
 #tape span { margin-right: 42px; color: var(--text-dim); }
 @keyframes tape { to { transform: translateX(-100%); } }
 
