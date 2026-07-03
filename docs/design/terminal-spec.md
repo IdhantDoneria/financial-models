@@ -168,7 +168,35 @@ regardless of traffic. The front-end polls `/api/quotes` every 60 s; if it is
 ever unreachable it falls back to CoinGecko (keyless, CORS-open) for live
 crypto + gold, padded with static engine stats, so the tape never goes blank.
 
-## 10 · Global chrome — menu & market selector
+## 10 · Authentication (`login.html`)
+
+The terminal is gated by a login page styled as a split panel: brand/feature
+rail on the left, auth card on the right. Three ways in:
+
+- **Email + password** — device-local accounts. Passwords are hashed with
+  PBKDF2-SHA256 (Web Crypto, per-account random salt, 150k iterations) and
+  stored in `localStorage`; nothing is ever transmitted, matching the
+  product's zero-server-data architecture. Signup validates name/email/
+  password (min 8 chars, live strength meter, confirm field); sign-in
+  supports show/hide password and "keep me signed in" (30 days vs 12 hours).
+- **Google** — real Google Identity Services. The login page reads the public
+  OAuth client id from `/api/auth-config` (a serverless function exposing the
+  `GOOGLE_CLIENT_ID` env var); when configured, the official GIS button
+  renders and the returned ID-token's email/name become the account. When not
+  configured, the button declares itself disabled with setup instructions
+  rather than failing silently.
+- **Guest** — one click, no account, full functionality.
+
+The terminal reads the session (`finmodels.session`) at boot and redirects to
+`login.html` without one. The status bar shows the signed-in identity with a
+SIGN OUT action. **Saved analyses are namespaced per account**
+(`finmodels.history.<uid>`), with one-time adoption of pre-auth history.
+Restored analyses rehydrate the Python-side extraction
+(`web_bridge.restore_extraction`) so a saved company can be re-run and
+exported without re-uploading the PDF; until re-run, the snapshot is
+display-only and exports stay gated.
+
+## 11 · Global chrome — menu & market selector
 
 Two persistent controls sit in the command bar, framing every view.
 

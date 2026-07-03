@@ -1,0 +1,87 @@
+/* FINMODELS TERMINAL — login / signup page (device-local auth). */
+
+body.authpage { display: flex; align-items: center; justify-content: center; min-height: 100vh; }
+
+#auth {
+  display: grid; grid-template-columns: 1.1fr 1fr; gap: 1px;
+  width: min(940px, 94vw); background: var(--border);
+  border: 1px solid var(--border); box-shadow: 0 0 60px rgba(0, 0, 0, 0.8);
+}
+.apanel { background: var(--panel); padding: 34px 34px 28px; min-width: 0; }
+
+/* pitch rail */
+.abrand { color: var(--amber); font-size: 21px; letter-spacing: 0.3em; text-shadow: 0 0 24px rgba(255, 176, 0, 0.35); }
+.abrand small { display: block; color: var(--text-dim); font-size: 10px; letter-spacing: 0.18em; margin-top: 8px; }
+.afeat { list-style: none; margin: 26px 0; }
+.afeat li { font-size: 11.5px; color: var(--text); line-height: 1.65; margin-bottom: 14px; padding-left: 14px; border-left: 2px solid var(--amber-dim); }
+.afeat b { color: var(--cyan); font-weight: 400; display: block; letter-spacing: 0.12em; font-size: 10px; }
+.apriv { font-size: 10.5px; color: var(--text-dim); line-height: 1.7; border-top: 1px solid var(--border); padding-top: 14px; }
+.apriv b { color: var(--green); font-weight: 400; }
+
+/* card */
+.atabs { display: flex; border: 1px solid var(--border); margin-bottom: 20px; }
+.atabs button {
+  flex: 1; background: transparent; border: none; color: var(--text-dim);
+  font: 11px var(--mono); letter-spacing: 0.14em; padding: 9px 0; cursor: pointer;
+}
+.atabs button.on { background: var(--amber); color: #000; }
+
+#acard form { display: flex; flex-direction: column; }
+#acard label { color: var(--text-dim); font-size: 10px; letter-spacing: 0.12em; margin: 10px 0 5px; }
+#acard label .dim { color: var(--amber-dim); }
+#acard input[type="email"], #acard input[type="password"], #acard input[type="text"] {
+  background: #000; border: 1px solid var(--border); color: var(--text);
+  font: 13px var(--mono); padding: 9px 10px; width: 100%;
+}
+#acard input:focus { outline: none; border-color: var(--amber-dim); }
+.pwrap { position: relative; }
+.pwrap .peek {
+  position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+  background: transparent; border: none; color: var(--text-dim);
+  font: 9px var(--mono); letter-spacing: 0.1em; cursor: pointer;
+}
+.pwrap .peek:hover { color: var(--amber); }
+#pmeter { height: 3px; background: var(--border); margin-top: 6px; }
+#pmeter div { height: 100%; width: 0%; background: var(--red); transition: width 0.25s, background 0.25s; }
+label.remember { display: flex; gap: 8px; align-items: center; cursor: pointer; font-size: 10px !important; }
+label.remember input { accent-color: var(--amber); }
+#acard .primary {
+  margin-top: 16px; background: var(--amber); border: none; color: #000;
+  font: 13px var(--mono); letter-spacing: 0.16em; padding: 11px 0; cursor: pointer;
+}
+#acard .primary:hover { box-shadow: 0 0 18px rgba(255, 176, 0, 0.45); }
+
+#auth-err { color: var(--red); font-size: 11px; line-height: 1.6; margin-top: 12px; display: none; white-space: pre-wrap; }
+#auth-err.on { display: block; }
+
+.adiv { display: flex; align-items: center; gap: 12px; margin: 18px 0 14px; color: var(--text-dim); font-size: 9px; letter-spacing: 0.16em; }
+.adiv::before, .adiv::after { content: ""; flex: 1; height: 1px; background: var(--border); }
+
+#gwrap { display: flex; flex-direction: column; align-items: stretch; gap: 6px; }
+#gbtn { display: flex; justify-content: center; }
+#gfake {
+  display: flex; align-items: center; justify-content: center; gap: 10px;
+  background: transparent; border: 1px solid var(--border); color: var(--text);
+  font: 12px var(--mono); letter-spacing: 0.14em; padding: 10px 0; cursor: pointer;
+}
+#gfake:hover:not(:disabled) { border-color: var(--amber-dim); }
+#gfake:disabled { opacity: 0.4; cursor: not-allowed; }
+#gwrap.live #gfake { display: none; }        /* real GIS button renders instead */
+#ghint { font-size: 9.5px; color: var(--text-dim); letter-spacing: 0.06em; text-align: center; line-height: 1.6; }
+
+#guest {
+  margin-top: 14px; width: 100%; background: transparent;
+  border: 1px dashed var(--amber-dim); color: var(--amber);
+  font: 11px var(--mono); letter-spacing: 0.1em; padding: 10px 0; cursor: pointer;
+}
+#guest:hover { background: rgba(255, 176, 0, 0.06); }
+
+.afoot { margin-top: 20px; color: var(--text-dim); font-size: 9.5px; letter-spacing: 0.1em; text-align: center; }
+.afoot a { color: var(--text-dim); }
+.afoot a:hover { color: var(--amber); }
+
+@media (max-width: 860px) {
+  #auth { grid-template-columns: 1fr; }
+  #apitch { display: none; }
+  body.authpage { align-items: flex-start; padding-top: 6vh; }
+}

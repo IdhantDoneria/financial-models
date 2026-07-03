@@ -337,6 +337,31 @@ def run_report(params_json: str) -> str:
     })
 
 
+def restore_extraction(fields_json: str, period: str = "annual") -> str:
+    """Rehydrate a saved extraction (browser history) into the analyzer state.
+
+    Saved analyses live in ``localStorage``; on reopen the UI shows the stored
+    snapshot, but ``run_report``/``export_report`` need the Python-side
+    ``ExtractedFinancials`` object back. ``fields_json`` is exactly what
+    ``analyze_pdf`` returned (post-annualisation, so no re-scaling here).
+    """
+    from src.pipeline.pdf_extractor import ExtractedFinancials
+
+    try:
+        fields = json.loads(fields_json)
+        allowed = set(ExtractedFinancials.__dataclass_fields__)
+        kwargs = {k: v for k, v in fields.items() if k in allowed}
+        if not kwargs.get("free_cash_flows"):
+            kwargs["free_cash_flows"] = []
+        data = ExtractedFinancials(**kwargs)
+    except Exception as exc:
+        return json.dumps({"ok": False, "error": f"{type(exc).__name__}: {exc}"})
+    _ANALYZER.update(
+        data=data, report=None,
+        period=period if period in ("annual", "quarterly") else "annual")
+    return json.dumps({"ok": True, "company": data.company_name})
+
+
 def _fmt_docx(value: Any) -> str:
     """Human formatting for report values (mirrors the terminal grid)."""
     if isinstance(value, float):

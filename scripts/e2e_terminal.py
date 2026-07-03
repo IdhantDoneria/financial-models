@@ -153,6 +153,130 @@ def run_ib_desk_scenario(page) -> list[str]:
     return failures
 
 
+def run_auth_scenario(browser, base: str) -> list[str]:
+    """Full account lifecycle on a fresh (sessionless) page.
+
+    Gate redirect -> signup -> identity chip -> sign out -> wrong password
+    rejected -> correct login -> guest access. Google SSO is asserted to show
+    its explicit 'not configured' state when no GOOGLE_CLIENT_ID is exposed.
+    """
+    failures: list[str] = []
+    page = browser.new_page(viewport={"width": 1600, "height": 950})
+    page.route(lambda url: "127.0.0.1" not in url and "localhost" not in url,
+               _fulfill_external)
+
+    print("· AUTH: unauthenticated visit must gate to the login page…")
+    page.goto(base, timeout=60_000)
+    try:
+        page.wait_for_url("**/login*", timeout=15_000)
+    except Exception:
+        page.close()
+        return ["AUTH: terminal did not redirect to login.html without a session"]
+
+    # Google button state (no client id configured locally -> honest fallback)
+    page.wait_for_function(
+        "() => document.querySelector('#ghint').textContent.length > 0 || "
+        "document.querySelector('#gwrap').classList.contains('live')", timeout=15_000)
+    gis_live = page.evaluate("document.querySelector('#gwrap').classList.contains('live')")
+    print(f"  google sso: {'LIVE (client id configured)' if gis_live else 'declared not-configured (expected without env var)'}")
+
+    print("· AUTH: creating an account…")
+    page.click("#tab-signup")
+    page.fill("#su-name", "Alexandra Whitmore")
+    page.fill("#su-email", "vp@example.com")
+    page.fill("#su-pass", "Vampire$quid1869")
+    page.fill("#su-pass2", "Vampire$quid1869")
+    page.click("#su-btn")
+    try:
+        page.wait_for_url(lambda u: "login" not in u, timeout=30_000)
+    except Exception:
+        err = page.inner_text("#auth-err")
+        page.close()
+        return [f"AUTH: signup did not enter the terminal — {err or 'no error shown'}"]
+    page.wait_for_function("window.TERMINAL_READY === true", timeout=300_000)
+    who = page.inner_text("#who")
+    print(f"  signed up + booted — chip: {who!r}")
+    if "ALEXANDRA" not in who:
+        failures.append(f"AUTH: identity chip wrong after signup ({who!r})")
+
+    print("· AUTH: sign out -> wrong password -> correct login…")
+    page.click("#signout")
+    page.wait_for_url("**/login*", timeout=15_000)
+    page.fill("#si-email", "vp@example.com")
+    page.fill("#si-pass", "wrong-password-123")
+    page.click("#si-btn")
+    page.wait_for_selector("#auth-err.on", timeout=15_000)
+    err = page.inner_text("#auth-err")
+    print(f"  wrong password rejected: {err!r}")
+    if "INVALID PASSWORD" not in err:
+        failures.append(f"AUTH: wrong password not rejected cleanly ({err!r})")
+    page.fill("#si-pass", "Vampire$quid1869")
+    page.click("#si-btn")
+    try:
+        page.wait_for_url(lambda u: "login" not in u, timeout=30_000)
+        print("  correct login accepted")
+    except Exception:
+        failures.append("AUTH: correct login did not enter the terminal")
+
+    print("· AUTH: guest path…")
+    page.evaluate("localStorage.removeItem('finmodels.session')")
+    page.goto(base.rstrip('/') + "/login.html", timeout=60_000)
+    page.click("#guest")
+    try:
+        page.wait_for_url(lambda u: "login" not in u, timeout=30_000)
+        print("  guest access ok")
+    except Exception:
+        failures.append("AUTH: guest access failed")
+    page.close()
+    return failures
+
+
+def run_history_restore_scenario(page) -> list[str]:
+    """Reopen the saved IB-desk analysis: snapshot shown, exports gated until
+    a re-run recomputes the report in-runtime, then export must work."""
+    failures: list[str] = []
+    print("· HISTORY: reopening the saved company analysis…")
+    page.click("#burger")
+    page.click('.mtab[data-tab="history"]')
+    if not page.locator(".hist-item").count():
+        return ["HIST: IB-desk run was not recorded to history"]
+    page.click(".hist-item .hload")
+    try:
+        page.wait_for_function(
+            "() => document.querySelector('#ostat').textContent.includes('RESTORED')",
+            timeout=120_000)
+    except Exception:
+        return [f"HIST: restore never completed — {page.inner_text('#ostat')}"]
+    snapshot_rows = page.locator("#report table >> nth=0 >> tr").count() - 1
+    exp_gated = page.locator("#exp-pdf").is_disabled()
+    print(f"  snapshot shown ({snapshot_rows} models) · exports gated={exp_gated}")
+    if snapshot_rows < 1:
+        failures.append("HIST: restored snapshot has no report rows")
+    if not exp_gated:
+        failures.append("HIST: exports must be disabled on a stale snapshot")
+
+    print("  re-running from restored extraction…")
+    page.click("#ibrun")
+    try:
+        page.wait_for_function(
+            "() => document.querySelector('#ostat').textContent.includes('REPORT READY')",
+            timeout=180_000)
+    except Exception:
+        return failures + [f"HIST: re-run failed — {page.inner_text('#ostat')}"]
+    try:
+        with page.expect_download(timeout=120_000) as dl:
+            page.click("#exp-pdf")
+        blob = Path("/tmp/e2e_restore.pdf")
+        dl.value.save_as(blob)
+        ok = blob.read_bytes()[:5] == b"%PDF-"
+        print(f"  re-run + export ok — {dl.value.suggested_filename} valid={ok}")
+        if not ok:
+            failures.append("HIST: export after restore produced an invalid PDF")
+    except Exception as exc:
+        failures.append(f"HIST: export after restore failed — {str(exc)[:120]}")
+    return failures
+
+
 def run_menu_country_scenario(page) -> list[str]:
     """Exercise the hamburger menu (guide/models/history) and country selector."""
     failures: list[str] = []
@@ -226,10 +350,18 @@ def main() -> int:
             executable_path=exe if Path(exe).exists() else None,
             proxy={"server": proxy, "bypass": "localhost,127.0.0.1"} if proxy else None,
         )
+        failures += run_auth_scenario(browser, base)
+
         page = browser.new_page(viewport={"width": 1600, "height": 950})
         page.route(lambda url: "127.0.0.1" not in url and "localhost" not in url,
                    _fulfill_external)
         page.on("console", lambda m: m.type == "error" and print(f"  [console] {m.text[:200]}"))
+        # Model/menu/IB scenarios run as a signed-in guest (the auth lifecycle
+        # itself is covered above) — seed the session before any page script.
+        page.add_init_script(
+            "localStorage.setItem('finmodels.session', JSON.stringify("
+            "{uid:'guest',name:'GUEST',provider:'guest',ts:Date.now(),"
+            "exp:Date.now()+3600000}))")
 
         print(f"· loading terminal at {base} + booting Pyodide…")
         page.goto(base, timeout=60_000)
@@ -287,6 +419,7 @@ def main() -> int:
 
         failures += run_menu_country_scenario(page)
         failures += run_ib_desk_scenario(page)
+        failures += run_history_restore_scenario(page)
 
         page.screenshot(path=str(ROOT / "docs" / "design" / "terminal-screenshot.png"))
         browser.close()

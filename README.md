@@ -237,6 +237,25 @@ the full analysis pipeline *client-side*:
 
 Every stage runs the same `src/pipeline/` package the pytest suite validates.
 
+### 🔐 Sign in — email, Google, or guest
+
+The terminal opens with a login page ([`/login`](https://financial-models-six.vercel.app/login)) offering three paths:
+
+- **Email + password** — device-local accounts: passwords are PBKDF2-SHA256-hashed with Web
+  Crypto (per-account salt, 150k iterations) and stored only in your browser. Nothing is
+  transmitted; there is no server database — privacy by architecture.
+- **Continue with Google** — real Google Identity Services. Enable it by setting a
+  `GOOGLE_CLIENT_ID` environment variable in the Vercel project (a standard OAuth *Web
+  application* client with the site's origin authorised); `api/auth-config.js` serves the
+  public client id to the login page. Without it the button honestly reports itself
+  unconfigured — email and guest access work fully.
+- **Explore as guest** — one click, no account, full functionality.
+
+The status bar shows who's signed in with a SIGN OUT action, and **saved company analyses
+are kept per account**. Reopening a saved analysis rehydrates the extraction inside the
+Python runtime, so any past company can be re-run and re-exported without re-uploading its
+PDF.
+
 ### ☰ Menu & 🌐 market selector
 
 Two persistent controls frame every view:
@@ -255,10 +274,12 @@ Two persistent controls frame every view:
   baselines, and the IB desk's live rate follows your chosen market too.
 
 **End-to-end verification:** `python scripts/e2e_terminal.py` drives headless Chromium
-through the full boot and asserts all ten models produce numeric output and charts
-in-browser, then exercises the menu, the market selector (verifying the risk-free rate
-follows the chosen country), and the IB desk (run manually; needs network for the first
-CDN fetch).
+through the complete user journey: the auth lifecycle (gate redirect, signup, identity
+chip, sign-out, wrong-password rejection, login, guest), full boot, all ten models
+producing numeric output and charts, the menu, the market selector (verifying the
+risk-free rate follows the chosen country), the IB desk, and reopening a saved analysis
+(snapshot shown, exports gated until re-run, then export verified). Run manually; needs
+network for the first CDN fetch.
 
 The static about page lives at [`/about`](https://financial-models-six.vercel.app/about).
 
