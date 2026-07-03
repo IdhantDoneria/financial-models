@@ -10,10 +10,19 @@
 // origin authorised); until then the page shows an explicit
 // "not configured" state instead of a broken button.
 
+const store = require("./_lib/store");
+const email = require("./_lib/email");
+
 module.exports = (req, res) => {
   res.setHeader("Content-Type", "application/json; charset=utf-8");
   res.setHeader("Cache-Control", "public, s-maxage=300, stale-while-revalidate=3600");
+  const serverAuth = store.configured() && email.configured();
   res.status(200).json({
     googleClientId: process.env.GOOGLE_CLIENT_ID || null,
+    // email-OTP backend: on when a database AND a mailer are configured;
+    // the login page switches from device-local to server mode automatically.
+    serverAuth,
+    storage: store.mode(),
+    email: email.mode(),
   });
 };

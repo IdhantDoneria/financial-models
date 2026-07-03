@@ -36,6 +36,23 @@
         <button id="tab-signup">CREATE ACCOUNT</button>
       </div>
 
+      <!-- server mode: passwordless email OTP (shown when the backend is live) -->
+      <form id="f-otp" style="display:none" autocomplete="on">
+        <div class="srvbadge">◉ SERVER AUTH — CODE BY EMAIL, PROFILE STORED SERVER-SIDE</div>
+        <label>EMAIL</label>
+        <input id="otp-email" type="email" autocomplete="username" placeholder="you@desk.com" required>
+        <button id="otp-send" type="submit" class="primary">EMAIL ME A CODE &lt;GO&gt;</button>
+        <div id="otp-step2" style="display:none">
+          <label>6-DIGIT CODE <span class="dim" id="otp-sentto"></span></label>
+          <input id="otp-code" type="text" inputmode="numeric" pattern="\d{6}" maxlength="6"
+                 placeholder="••••••" autocomplete="one-time-code">
+          <label>NAME <span class="dim">— FIRST SIGN-IN ONLY, OPTIONAL AFTER</span></label>
+          <input id="otp-name" type="text" autocomplete="name" placeholder="Alex Trader">
+          <button id="otp-verify" type="button" class="primary">VERIFY &amp; SIGN IN &lt;GO&gt;</button>
+          <button id="otp-resend" type="button" disabled>RESEND CODE (60)</button>
+        </div>
+      </form>
+
       <form id="f-signin" autocomplete="on">
         <label>EMAIL</label>
         <input id="si-email" type="email" autocomplete="username" placeholder="you@desk.com" required>

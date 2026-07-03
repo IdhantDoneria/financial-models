@@ -37,6 +37,7 @@ function session() {
 function finishLogin(user, remember) {
   localStorage.setItem(LS_SESSION, JSON.stringify({
     uid: user.uid, name: user.name, provider: user.provider,
+    token: user.token || null,   // server-issued bearer token (OTP mode)
     ts: Date.now(), exp: Date.now() + (remember ? SESSION_LONG : SESSION_SHORT),
   }));
   location.replace("./");
@@ -139,12 +140,103 @@ function decodeJwtPayload(token) {
   return JSON.parse(decodeURIComponent(escape(atob(part))));
 }
 
-async function initGoogle() {
-  let cfg = null;
+/* -------------------------- server OTP mode ---------------------------- */
+async function fetchConfig() {
   try {
     const r = await fetch("api/auth-config", { signal: AbortSignal.timeout(6000) });
-    if (r.ok) cfg = await r.json();
+    if (r.ok) return await r.json();
   } catch { /* static/local host — no serverless functions */ }
+  return null;
+}
+
+async function postJson(url, body) {
+  const r = await fetch(url, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body), signal: AbortSignal.timeout(15000),
+  });
+  let out = {};
+  try { out = await r.json(); } catch { /* non-JSON error body */ }
+  if (!r.ok) throw new Error(out.error || `HTTP ${r.status}`);
+  return out;
+}
+
+let resendTimer = null;
+function startResendCountdown(secs) {
+  const btn = $("#otp-resend");
+  let left = secs;
+  btn.disabled = true;
+  clearInterval(resendTimer);
+  const tick = () => {
+    btn.textContent = left > 0 ? `RESEND CODE (${left})` : "RESEND CODE";
+    if (left-- <= 0) { btn.disabled = false; clearInterval(resendTimer); }
+  };
+  tick();
+  resendTimer = setInterval(tick, 1000);
+}
+
+async function onOtpSend(e) {
+  if (e) e.preventDefault();
+  const email = $("#otp-email").value.trim().toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return showErr("ENTER A VALID EMAIL");
+  const btn = $("#otp-send");
+  btn.disabled = true; btn.textContent = "SENDING CODE…";
+  showErr("");
+  try {
+    await postJson("api/auth-request-otp", { email });
+    $("#otp-step2").style.display = "";
+    $("#otp-sentto").textContent = `— SENT TO ${email.toUpperCase()}`;
+    $("#otp-code").focus();
+    startResendCountdown(60);
+  } catch (err) {
+    showErr(String(err.message || err));
+  }
+  btn.disabled = false; btn.textContent = "EMAIL ME A CODE <GO>";
+}
+
+async function onOtpVerify() {
+  const email = $("#otp-email").value.trim().toLowerCase();
+  const code = $("#otp-code").value.replace(/\D/g, "");
+  if (code.length !== 6) return showErr("ENTER THE 6-DIGIT CODE FROM YOUR EMAIL");
+  const btn = $("#otp-verify");
+  btn.disabled = true; btn.textContent = "VERIFYING…";
+  showErr("");
+  try {
+    const out = await postJson("api/auth-verify-otp",
+      { email, code, name: $("#otp-name").value.trim() });
+    finishLogin({ uid: email, name: (out.user && out.user.name) || email,
+                  provider: "otp", token: out.token }, true);
+    return;
+  } catch (err) {
+    showErr(String(err.message || err));
+  }
+  btn.disabled = false; btn.textContent = "VERIFY & SIGN IN <GO>";
+}
+
+function initServerAuth(cfg) {
+  if (!cfg || !cfg.serverAuth) {
+    // device-local mode stays; say so under the card footer for transparency
+    $(".afoot").insertAdjacentHTML("afterbegin",
+      "SERVER AUTH OFFLINE — DEVICE-LOCAL MODE · ");
+    return;
+  }
+  // server mode: passwordless email OTP replaces local password accounts
+  document.querySelector(".atabs").style.display = "none";
+  $("#f-signin").style.display = "none";
+  $("#f-signup").style.display = "none";
+  $("#f-otp").style.display = "";
+  $("#f-otp").addEventListener("submit", onOtpSend);
+  $("#otp-verify").onclick = onOtpVerify;
+  $("#otp-resend").onclick = () => onOtpSend();
+  $("#otp-code").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); onOtpVerify(); }
+  });
+  document.querySelector(".apriv").innerHTML =
+    "🔒 SERVER AUTH ENABLED — sign-in codes are emailed to you (10-minute expiry, " +
+    "single use). Your profile (email, name, sign-in history) is stored server-side; " +
+    "analyses and model work still run entirely in <b>your</b> browser.";
+}
+
+async function initGoogle(cfg) {
   const cid = cfg && cfg.googleClientId;
   if (!cid) {
     $("#gfake").disabled = true;
@@ -205,5 +297,5 @@ window.addEventListener("DOMContentLoaded", () => {
     bar.style.background = s >= 4 ? "var(--green)" : s >= 2 ? "var(--amber)" : "var(--red)";
   });
 
-  initGoogle();
+  fetchConfig().then((cfg) => { initServerAuth(cfg); initGoogle(cfg); });
 });
