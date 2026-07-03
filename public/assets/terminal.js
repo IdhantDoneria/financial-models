@@ -142,6 +142,35 @@ const MODELS = [
   },
 ];
 
+/* ------------------------------------------------------------------------ *
+ * COUNTRIES — the 15 largest equity markets by total market capitalisation.
+ * `rf` is a 10-year sovereign-yield risk-free proxy; `erp` the equity risk
+ * premium (Damodaran country ratings). Selecting a country repoints every
+ * risk-free / discount input and the IB desk's live rate so the terminal
+ * works from the chosen market's cost of capital — dissolving the default
+ * US-only geographic assumption. The US rate can still refresh LIVE from the
+ * Treasury FiscalData API; others use these curated sovereign baselines.
+ * ------------------------------------------------------------------------ */
+const COUNTRIES = [
+  { code: "US", name: "United States", flag: "🇺🇸", market: "NYSE / NASDAQ", ccy: "USD", rf: 0.0425, erp: 0.050, live: true },
+  { code: "CN", name: "China",         flag: "🇨🇳", market: "SSE / SZSE",    ccy: "CNY", rf: 0.0230, erp: 0.061 },
+  { code: "JP", name: "Japan",         flag: "🇯🇵", market: "JPX (Tokyo)",   ccy: "JPY", rf: 0.0105, erp: 0.056 },
+  { code: "IN", name: "India",         flag: "🇮🇳", market: "NSE / BSE",     ccy: "INR", rf: 0.0690, erp: 0.078 },
+  { code: "HK", name: "Hong Kong",     flag: "🇭🇰", market: "HKEX",          ccy: "HKD", rf: 0.0350, erp: 0.059 },
+  { code: "FR", name: "France",        flag: "🇫🇷", market: "Euronext Paris", ccy: "EUR", rf: 0.0310, erp: 0.055 },
+  { code: "GB", name: "United Kingdom", flag: "🇬🇧", market: "LSE",          ccy: "GBP", rf: 0.0410, erp: 0.055 },
+  { code: "CA", name: "Canada",        flag: "🇨🇦", market: "TSX",           ccy: "CAD", rf: 0.0335, erp: 0.052 },
+  { code: "SA", name: "Saudi Arabia",  flag: "🇸🇦", market: "Tadawul",       ccy: "SAR", rf: 0.0500, erp: 0.066 },
+  { code: "DE", name: "Germany",       flag: "🇩🇪", market: "Deutsche Börse", ccy: "EUR", rf: 0.0245, erp: 0.050 },
+  { code: "CH", name: "Switzerland",   flag: "🇨🇭", market: "SIX Swiss",     ccy: "CHF", rf: 0.0060, erp: 0.050 },
+  { code: "TW", name: "Taiwan",        flag: "🇹🇼", market: "TWSE",          ccy: "TWD", rf: 0.0150, erp: 0.061 },
+  { code: "AU", name: "Australia",     flag: "🇦🇺", market: "ASX",           ccy: "AUD", rf: 0.0430, erp: 0.052 },
+  { code: "KR", name: "South Korea",   flag: "🇰🇷", market: "KRX",           ccy: "KRW", rf: 0.0290, erp: 0.058 },
+  { code: "NL", name: "Netherlands",   flag: "🇳🇱", market: "Euronext Amsterdam", ccy: "EUR", rf: 0.0270, erp: 0.050 },
+];
+//: Parameter ids that represent a risk-free / short rate across the models.
+const RF_PARAM_IDS = new Set(["risk_free_rate", "rate"]);
+
 const TAPE_ITEMS = [
   "<b>BSM</b> HULL EX 15.6 CALL <i>4.7594</i>",
   "<b>PARITY</b> C−P−S+Ke⁻ʳᵀ <i>4.5e−16</i>",
@@ -158,10 +187,26 @@ const $ = (sel) => document.querySelector(sel);
 const state = {
   pyodide: null, runPy: null, micropip: null, current: null, values: {},
   timer: null, seq: 0, view: "model",
+  country: null,           // set in boot() from storage or default US
   ib: { pkgsReady: false, fns: null, extracted: null, report: null,
         liveRf: null, rfSource: null, period: "auto", mode: "auto",
         dirty: {}, selected: null },
 };
+
+/* ------------------------------------------------------------------------ *
+ * Persistence — country choice + saved company analyses (chat history) live
+ * in localStorage so a returning visitor keeps their market and past work.
+ * ------------------------------------------------------------------------ */
+const LS_COUNTRY = "finmodels.country";
+const LS_HISTORY = "finmodels.history";
+function loadHistory() {
+  try { return JSON.parse(localStorage.getItem(LS_HISTORY) || "[]"); }
+  catch { return []; }
+}
+function saveHistory(list) {
+  try { localStorage.setItem(LS_HISTORY, JSON.stringify(list.slice(0, 40))); }
+  catch { /* private mode / quota — history is best-effort */ }
+}
 
 /* ------------------------------- boot ---------------------------------- */
 function bootLog(msg, cls) {
@@ -217,6 +262,10 @@ async function boot() {
     );
     bootLog("10 models online — src/ imported unmodified", "ok"); bootPct(100);
 
+    const savedCc = (() => { try { return localStorage.getItem(LS_COUNTRY); } catch { return null; } })();
+    state.country = COUNTRIES.find((c) => c.code === savedCc) || COUNTRIES[0];
+    applyCountryDefaults(state.country);   // repoint rate defaults before first build
+
     buildUI();
     document.getElementById("boot").style.display = "none";
     document.getElementById("app").classList.add("ready");
@@ -270,6 +319,9 @@ function buildUI() {
 
   $("#tab-chart").onclick = () => setTab("chart");
   $("#tab-doc").onclick = () => setTab("doc");
+
+  initMenu();
+  initCountry();
 
   setInterval(() => {
     $("#clock").textContent = new Date().toISOString().slice(0, 19).replace("T", " ") + " UTC";
@@ -835,6 +887,7 @@ async function runIBReport() {
     if (!out.ok) throw new Error(out.error);
     state.ib.report = out;
     renderIBReport();
+    recordHistory();          // persist this company's analysis to menu history
     setTab("chart");
     const nErr = Object.keys(out.errors).length;
     ibStatus(`REPORT READY · ${out.summary.length} MODELS${nErr ? ` · ${nErr} FAILED` : ""}`);
@@ -906,4 +959,236 @@ async function exportIB(fmt) {
   } catch (err) {
     ibStatus("EXPORT FAILED: " + String(err).slice(0, 160), true);
   }
+}
+
+/* ======================================================================== *
+ * COUNTRY SELECTOR — repoint the cost of capital to the chosen market.
+ * ======================================================================== */
+function applyCountryDefaults(c) {
+  // Rewrite the default of every risk-free/rate input, and derive a market
+  // return (rf + ERP) for CAPM, so a freshly opened model starts from the
+  // selected country's numbers. Clamp into each param's slider range.
+  const clamp = (p, v) => Math.min(p.max, Math.max(p.min, v));
+  MODELS.forEach((m) => m.params.forEach((p) => {
+    if (RF_PARAM_IDS.has(p.id)) p.def = clamp(p, c.rf);
+    if (p.id === "expected_market_return") p.def = clamp(p, c.rf + c.erp);
+  }));
+  // IB desk auto-mode: the market return baseline follows the country too.
+  const erpOv = IB_OVERRIDES.find((o) => o.id === "expected_market_return");
+  if (erpOv) erpOv.def = Math.min(erpOv.max, Math.max(erpOv.min, c.rf + c.erp));
+  const rfOv = IB_OVERRIDES.find((o) => o.id === "risk_free_rate");
+  if (rfOv) rfOv.def = Math.min(rfOv.max, Math.max(rfOv.min, c.rf));
+}
+
+function initCountry() {
+  const drop = $("#country-drop");
+  drop.innerHTML = `<div class="cdhead">SELECT MARKET — RISK-FREE &amp; COST OF CAPITAL FOLLOW</div>`;
+  COUNTRIES.forEach((c) => {
+    const row = document.createElement("div");
+    row.className = "crow"; row.dataset.code = c.code;
+    row.innerHTML = `<span class="cflag">${c.flag}</span>
+      <span><div class="cname">${c.name}</div><div class="cmkt">${c.market} · ${c.ccy}</div></span>
+      <span class="crf">${(c.rf * 100).toFixed(2)}%<small>${c.live ? "10Y · LIVE" : "10Y SOV"}</small></span>`;
+    row.onclick = () => { selectCountry(c.code); closeCountry(); };
+    drop.appendChild(row);
+  });
+  $("#country-btn").onclick = (e) => {
+    e.stopPropagation();
+    drop.classList.contains("on") ? closeCountry() : openCountry();
+  };
+  document.addEventListener("click", (e) => {
+    if (drop.classList.contains("on") && !drop.contains(e.target) && e.target.id !== "country-btn")
+      closeCountry();
+  });
+  syncCountryUI();
+}
+function openCountry() {
+  const b = $("#country-btn").getBoundingClientRect();
+  const drop = $("#country-drop");
+  drop.style.top = (b.bottom + 6) + "px";
+  drop.style.right = Math.max(12, window.innerWidth - b.right) + "px";
+  drop.classList.add("on");
+  syncCountryUI();
+}
+const closeCountry = () => $("#country-drop").classList.remove("on");
+
+function syncCountryUI() {
+  const c = state.country; if (!c) return;
+  $("#country-btn .ccode").textContent = c.code;
+  $("#cstatus").innerHTML = `MARKET <b>${c.flag} ${c.name.toUpperCase()} · ${c.market}</b>`;
+  document.querySelectorAll(".crow").forEach((r) => r.classList.toggle("on", r.dataset.code === c.code));
+}
+
+function selectCountry(code) {
+  const c = COUNTRIES.find((x) => x.code === code);
+  if (!c) return;
+  state.country = c;
+  try { localStorage.setItem(LS_COUNTRY, code); } catch { /* best-effort */ }
+  applyCountryDefaults(c);
+  syncCountryUI();
+  // Point the IB desk's risk-free at this market. For the US we still prefer
+  // the live Treasury number; others use the curated sovereign baseline.
+  if (c.live) {
+    fetchLiveRiskFree();
+  } else {
+    state.ib.liveRf = c.rf;
+    state.ib.rfSource = `${c.name.toUpperCase()} 10Y SOVEREIGN BASELINE`;
+    if (state.view === "ib") renderIBContext();
+  }
+  // Re-render whatever is on screen so the new defaults take effect.
+  if (state.view === "model" && state.current) selectModel(state.current.mn);
+  else if (state.view === "ib" && state.ib.mode === "manual") buildIBForm();
+}
+
+/* ======================================================================== *
+ * HAMBURGER MENU — usage guide, model briefs, saved company history.
+ * ======================================================================== */
+const MODEL_BRIEFS = [
+  { mn: "DCF", nm: "Discounted Cash Flow", cat: "Valuation",
+    desc: "Projects a company's future free cash flows and discounts them to today at the WACC, adding a terminal value, to estimate intrinsic enterprise and per-share value.",
+    use: "Best when you have a view on cash-flow growth and want a fundamentals-based fair value for a profitable, cash-generative company." },
+  { mn: "GG", nm: "Gordon Growth (DDM)", cat: "Valuation",
+    desc: "Values a stock as its next dividend divided by the gap between required return and a constant perpetual dividend growth rate.",
+    use: "Best for stable, mature dividend payers (utilities, consumer staples, REITs) where payouts grow at a steady rate." },
+  { mn: "MPT", nm: "Modern Portfolio Theory", cat: "Portfolio",
+    desc: "Finds the mix of assets that minimises risk for a given return, tracing the efficient frontier and the tangency (max-Sharpe) portfolio.",
+    use: "Best when you are allocating across several assets and want the risk-optimal weights rather than valuing a single security." },
+  { mn: "VAR", nm: "Value at Risk / CVaR", cat: "Risk",
+    desc: "Estimates the loss a portfolio could suffer over a horizon at a confidence level (VaR) and the average loss beyond it (CVaR / expected shortfall).",
+    use: "Best for sizing downside risk and setting risk limits — 'how much could I lose on a bad day?' — not for valuation." },
+  { mn: "CAPM", nm: "Capital Asset Pricing Model", cat: "Equity / Factor",
+    desc: "Prices an asset's expected return as the risk-free rate plus beta times the market risk premium.",
+    use: "Best for a quick cost-of-equity or required return when you know the stock's beta and a market premium." },
+  { mn: "FF3", nm: "Fama-French 3-Factor", cat: "Equity / Factor",
+    desc: "Extends CAPM with size (SMB) and value (HML) factors, regressing returns on real Ken French factor history to recover exposures and alpha.",
+    use: "Best when CAPM feels too simple and you want to know how much return comes from size / value tilts versus true skill (alpha)." },
+  { mn: "BSM", nm: "Black-Scholes-Merton", cat: "Derivatives",
+    desc: "Closed-form price for a European option under constant volatility, with the full Greeks.",
+    use: "Best for fast, exact pricing and hedging of vanilla European options; the industry baseline for option value and sensitivities." },
+  { mn: "CRR", nm: "Binomial Tree (CRR)", cat: "Derivatives",
+    desc: "Prices options on a recombining up/down price tree, converging to Black-Scholes as steps increase.",
+    use: "Best when you need American-style early exercise or discrete dividends that the closed-form Black-Scholes can't handle." },
+  { mn: "MC", nm: "Monte Carlo (GBM)", cat: "Derivatives",
+    desc: "Simulates thousands of price paths and averages the discounted payoff, using antithetic variates to cut variance.",
+    use: "Best for path-dependent or exotic payoffs, or when you want a flexible engine that handles almost any payoff structure." },
+  { mn: "HES", nm: "Heston Stochastic Vol", cat: "Derivatives",
+    desc: "Prices options with volatility that is itself random and mean-reverting, capturing the volatility smile/skew real markets show.",
+    use: "Best when constant-volatility models misprice — deep in/out-of-the-money options and markets with a pronounced skew." },
+];
+
+function initMenu() {
+  $("#burger").onclick = openMenu;
+  $("#menu-close").onclick = closeMenu;
+  $("#menu-backdrop").onclick = closeMenu;
+  document.querySelectorAll(".mtab").forEach((t) => {
+    t.onclick = () => {
+      document.querySelectorAll(".mtab").forEach((x) => x.classList.toggle("on", x === t));
+      renderMenuTab(t.dataset.tab);
+    };
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") { closeMenu(); closeCountry(); }
+  });
+  renderMenuTab("guide");
+}
+function openMenu() { $("#menu").classList.add("on"); $("#menu-backdrop").classList.add("on"); }
+function closeMenu() { $("#menu").classList.remove("on"); $("#menu-backdrop").classList.remove("on"); }
+
+function renderMenuTab(tab) {
+  const body = $("#menu-body");
+  if (tab === "guide") return renderGuide(body);
+  if (tab === "models") return renderBriefs(body);
+  if (tab === "history") return renderHistoryTab(body);
+}
+
+function renderGuide(body) {
+  const steps = [
+    ["1", "<b>Pick your market.</b> Use the country button (top-right) to choose from the 15 largest equity markets. The risk-free rate, market return and cost of capital across every model instantly re-anchor to that country — no more US-only assumptions."],
+    ["2", "<b>Choose a model.</b> Click a row in the MODELS rail, press its function key (F1–F10), or type its mnemonic in the amber command bar and hit &lt;GO&gt; (e.g. type <b>BSM</b> ⏎). See the MODELS tab here for what each one is best for."],
+    ["3", "<b>Drive the inputs.</b> Every parameter is a slider paired with an editable field. Move either and the model recalculates live — no run button. Percentages are entered as percentages (e.g. 5 = 5%)."],
+    ["4", "<b>Read the output.</b> OUTPUT shows the headline results (green = positive, red = negative). The ANALYTICS panel has a CHART tab (interactive Plotly) and a DOC tab explaining the math with formulas."],
+    ["5", "<b>Analyse a real company (IB DESK).</b> Type <b>IB</b> ⏎ or click IB DESK. Upload a 10-K/10-Q PDF — it scrapes the financials, fills any gaps automatically (auto IB-bot mode) or lets you set them by hand (manual mode), runs the models you tick, and exports a report as PDF / Google-Docs / Excel."],
+    ["6", "<b>Keep your work.</b> Every company you run through the IB desk is saved to HISTORY here — reopen or remove any past analysis. Your market choice and history persist on this device."],
+  ];
+  body.innerHTML = `<h3>HOW TO USE THIS TERMINAL</h3>` +
+    steps.map(([n, t]) => `<div class="guide-step"><div class="num">${n}</div><div class="txt">${t}</div></div>`).join("") +
+    `<h3>WHICH MODEL SHOULD I USE?</h3>
+     <div class="guide-step"><div class="txt" style="color:var(--text-dim)">
+       Open the <b style="color:var(--cyan)">MODELS</b> tab for a plain-English brief on each technique and the situation it fits best —
+       so you can match the tool to your question (value a company, size risk, price an option, allocate a portfolio).
+     </div></div>`;
+}
+
+function renderBriefs(body) {
+  body.innerHTML = `<h3>THE 10 MODELS — WHAT EACH IS BEST FOR</h3>` +
+    MODEL_BRIEFS.map((b) => `
+      <div class="brief">
+        <div class="bh"><span class="bmn">${b.mn}</span><span class="bnm">${b.nm}</span><span class="bcat">${b.cat}</span></div>
+        <div class="bdesc">${b.desc}</div>
+        <div class="buse"><b>Best for:</b> ${b.use}</div>
+        <button class="bopen" data-mn="${b.mn}">OPEN ${b.mn} →</button>
+      </div>`).join("");
+  body.querySelectorAll(".bopen").forEach((btn) => {
+    btn.onclick = () => { selectModel(btn.dataset.mn); closeMenu(); };
+  });
+}
+
+function renderHistoryTab(body) {
+  const list = loadHistory();
+  if (!list.length) {
+    body.innerHTML = `<h3>SAVED COMPANY ANALYSES</h3>
+      <p class="hist-empty">No saved analyses yet.<br><br>
+      Run a company through the <b style="color:var(--cyan)">IB DESK</b> (type <b style="color:var(--amber)">IB</b> ⏎,
+      upload a 10-K/10-Q and press RUN REPORT) and it will be saved here automatically —
+      so you can reopen the results for any company you've analysed.</p>`;
+    return;
+  }
+  body.innerHTML = `<h3>SAVED COMPANY ANALYSES · ${list.length}</h3>
+    <div class="hist-actions"><button id="histclear">CLEAR ALL</button></div>` +
+    list.map((h, i) => `
+      <div class="hist-item">
+        <div class="hmeta">
+          <div class="hco">${(h.company || "UNTITLED").toUpperCase()}</div>
+          <div class="hsub">${h.mode ? h.mode.toUpperCase() + " · " : ""}${h.nModels} MODELS · ${h.country || ""} · ${new Date(h.ts).toLocaleString()}</div>
+        </div>
+        <button class="hload" data-i="${i}">OPEN</button>
+        <button class="hdel" data-i="${i}">✕</button>
+      </div>`).join("");
+  body.querySelector("#histclear").onclick = () => { saveHistory([]); renderHistoryTab(body); };
+  body.querySelectorAll(".hload").forEach((b) => { b.onclick = () => loadHistoryItem(+b.dataset.i); });
+  body.querySelectorAll(".hdel").forEach((b) => {
+    b.onclick = () => { const l = loadHistory(); l.splice(+b.dataset.i, 1); saveHistory(l); renderHistoryTab(body); };
+  });
+}
+
+//: Snapshot the just-run IB analysis into history (most-recent first, deduped
+//  by company name so re-running a company updates its entry).
+function recordHistory() {
+  if (!state.ib.report || !state.ib.extracted) return;
+  const company = state.ib.extracted.fields.company_name || "Untitled company";
+  const entry = {
+    company, ts: Date.now(), mode: state.ib.report.mode,
+    country: state.country ? state.country.code : "",
+    nModels: state.ib.report.summary.length,
+    extracted: state.ib.extracted, report: state.ib.report,
+  };
+  const list = loadHistory().filter((h) => (h.company || "").toLowerCase() !== company.toLowerCase());
+  list.unshift(entry);
+  saveHistory(list);
+}
+
+function loadHistoryItem(i) {
+  const h = loadHistory()[i];
+  if (!h) return;
+  selectAnalyzer();                 // switch to the IB desk view
+  state.ib.extracted = h.extracted;
+  state.ib.report = h.report;
+  if (h.report && h.report.mode) state.ib.mode = h.report.mode;
+  renderIBExtracted();
+  renderIBReport();
+  setTab("chart");
+  ibStatus(`LOADED SAVED ANALYSIS · ${(h.company || "").toUpperCase()}`);
+  $("#ostat").className = "meta";
+  syncIBButtons();
+  closeMenu();
 }

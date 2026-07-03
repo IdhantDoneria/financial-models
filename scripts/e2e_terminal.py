@@ -153,6 +153,57 @@ def run_ib_desk_scenario(page) -> list[str]:
     return failures
 
 
+def run_menu_country_scenario(page) -> list[str]:
+    """Exercise the hamburger menu (guide/models/history) and country selector."""
+    failures: list[str] = []
+
+    print("· MENU: opening hamburger…")
+    page.click("#burger")
+    page.wait_for_selector("#menu.on", timeout=5_000)
+    guide_len = len(page.inner_text("#menu-body"))
+    page.click('.mtab[data-tab="models"]')
+    briefs = page.locator("#menu-body .brief").count()
+    best_for = page.inner_text("#menu-body").count("Best for:")
+    page.click('.mtab[data-tab="history"]')
+    hist_txt = page.inner_text("#menu-body")
+    print(f"  guide={guide_len} chars · {briefs} model briefs · {best_for} 'best for' · history tab ok")
+    if guide_len < 400:
+        failures.append("MENU: guide tab too short")
+    if briefs != 10 or best_for != 10:
+        failures.append(f"MENU: expected 10 briefs w/ guidance, got {briefs}/{best_for}")
+    if "SAVED COMPANY" not in hist_txt.upper():
+        failures.append("MENU: history tab missing")
+    page.click("#menu-close")
+
+    print("· COUNTRY: switching market to India…")
+    page.click("#country-btn")
+    page.wait_for_selector("#country-drop.on", timeout=5_000)
+    rows = page.locator("#country-drop .crow").count()
+    page.click('.crow[data-code="IN"]')
+    page.wait_for_function(
+        "() => !document.querySelector('#country-drop').classList.contains('on')",
+        timeout=5_000)
+    code = page.inner_text("#country-btn .ccode")
+    # CAPM's risk-free default should now track India's ~6.90% sovereign yield.
+    page.fill("#cmd", "CAPM")
+    page.click("#go")
+    page.wait_for_function(
+        "() => document.querySelector('#output .title').textContent.endsWith('CAPM')",
+        timeout=30_000)
+    rf_field = page.locator('#pform .prow').filter(has_text="RISK-FREE").locator(".val").input_value()
+    print(f"  {rows} countries · selected={code} · CAPM risk-free now {rf_field}")
+    if rows != 15:
+        failures.append(f"COUNTRY: expected 15 markets, got {rows}")
+    if code != "IN":
+        failures.append(f"COUNTRY: button did not update (got {code})")
+    if not rf_field.startswith("6.9"):
+        failures.append(f"COUNTRY: CAPM risk-free did not follow market (got {rf_field})")
+    # restore US so later scenarios use the default market
+    page.click("#country-btn")
+    page.click('.crow[data-code="US"]')
+    return failures
+
+
 def main() -> int:
     headed = "--headed" in sys.argv
     # --url https://… tests a deployed instance instead of the local tree.
@@ -221,6 +272,7 @@ def main() -> int:
         if doc_len < 400:
             failures.append("DOC panel suspiciously short")
 
+        failures += run_menu_country_scenario(page)
         failures += run_ib_desk_scenario(page)
 
         page.screenshot(path=str(ROOT / "docs" / "design" / "terminal-screenshot.png"))
