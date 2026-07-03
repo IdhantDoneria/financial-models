@@ -306,3 +306,10 @@ html, body {
 #report tr.err td { color: var(--red); }
 #report .stat-ok { color: var(--green); }
 #report .stat-err { color: var(--red); }
+
+/* DCF distressed-equity advisory */
+#ogrid tr.advisory td {
+  color: var(--amber); background: rgba(255, 176, 0, 0.06);
+  border-top: 1px solid var(--amber-dim); font-size: 11px; line-height: 1.6;
+  letter-spacing: 0.03em; padding: 10px 14px;
+}

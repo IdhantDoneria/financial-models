@@ -459,6 +459,21 @@ function renderResults(model, payload) {
   Object.entries(payload.extras || {}).forEach(([k, v]) => {
     if (k !== "figure_error") addRow(k, v, true);
   });
+  // DCF: a negative per-share value is correct arithmetic, not a fault — it
+  // means enterprise value has fallen below net debt (equity holders are
+  // underwater). Surface that so it reads as a signal, not a broken number.
+  const eq = payload.results.equity_value;
+  if (model.mn === "DCF" && typeof eq === "number" && eq < 0) {
+    const ev = payload.results.enterprise_value;
+    const nd = (typeof ev === "number") ? ev - eq : null;
+    const note = document.createElement("tr");
+    note.className = "advisory";
+    note.innerHTML = `<td colspan="2">⚠ EQUITY UNDERWATER — enterprise value${
+      nd !== null ? ` (${fmtValue("ev", ev)})` : ""
+    } is below net debt${nd !== null ? ` (${fmtValue("net_debt", nd)})` : ""}, so intrinsic
+      equity and per-share value are negative. Raise FCF / growth, or lower WACC / net debt.</td>`;
+    grid.appendChild(note);
+  }
   $("#output header .title").textContent = `OUTPUT — ${model.mn}`;
 }
 
