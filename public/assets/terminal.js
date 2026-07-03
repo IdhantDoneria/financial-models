@@ -189,6 +189,7 @@ const state = {
   user: null,              // session from login.html (set before boot)
   country: null,           // set in boot() from storage or default US
   scen: { built: null, busy: false },   // scenario & sensitivity engine
+  billing: { cfg: null, usage: null },  // Razorpay plans + upload metering
   ib: { pkgsReady: false, fns: null, extracted: null, report: null,
         liveRf: null, rfSource: null, period: "auto", mode: "auto",
         dirty: {}, selected: null },
@@ -389,6 +390,7 @@ function buildUI() {
 
   initMenu();
   initCountry();
+  initBilling();
 
   // signed-in identity chip + sign out
   const u = state.user;
@@ -960,6 +962,15 @@ function ibStatus(msg, isError) {
 async function onIBUpload() {
   const file = $("#ibfile").files[0];
   if (!file) return;
+  // Plan gate: uploads are the metered unit once billing is live. The gate
+  // fails open on network hiccups — availability over strict metering.
+  const gate = await uploadGate();
+  if (!gate.allowed) {
+    ibStatus(gate.reason, true);
+    $("#ibfile").value = "";
+    if (gate.upgrade) openMenuTab("plan");
+    return;
+  }
   state.ib.file = file;
   $("#ibfname").textContent = `${file.name} · ${(file.size / 1024).toFixed(0)} KB`;
   try { await ensureAnalyzerPackages(); } catch { return; }
@@ -974,6 +985,7 @@ async function onIBUpload() {
     renderIBExtracted();
     ibStatus(`EXTRACTED · ${out.period.toUpperCase()} BASIS · ${out.backends.join("+") || "no backend"}`);
     $("#ostat").className = "meta";
+    if (gate.metered) consumeUpload();   // count only successful analyses
   } catch (err) {
     state.ib.extracted = null;
     ibStatus("EXTRACTION FAILED: " + String(err).slice(0, 160), true);
@@ -1243,6 +1255,14 @@ function renderMenuTab(tab) {
   if (tab === "guide") return renderGuide(body);
   if (tab === "models") return renderBriefs(body);
   if (tab === "history") return renderHistoryTab(body);
+  if (tab === "plan") return renderPlanTab(body);
+}
+
+//: Open the drawer directly on a named tab (plan chip, upgrade prompts).
+function openMenuTab(tab) {
+  document.querySelectorAll(".mtab").forEach((x) => x.classList.toggle("on", x.dataset.tab === tab));
+  renderMenuTab(tab);
+  openMenu();
 }
 
 function renderGuide(body) {
@@ -1704,4 +1724,237 @@ async function runSensitivityGrid() {
   html += "</table>";
   $("#scen-grid").innerHTML = html;
   scenStat(`GRID DONE — ${H.label} RANGES ${fmtValue(H.key, min)} → ${fmtValue(H.key, max)}`);
+}
+
+/* ======================================================================== *
+ * BILLING — Razorpay plans, upload metering, PLAN tab.
+ * FREE: 5 uploads/mo · ANALYST PRO ₹299/mo: 50 uploads · DESK UNLIMITED
+ * ₹499/mo (MRP ₹599): unlimited. "Upload" = one IB-desk PDF analysis.
+ * Amounts are authoritative server-side (api/_lib/billing.js); checkout is
+ * Razorpay's hosted modal; payment proof is verified server-side. Until
+ * RAZORPAY_* env vars exist, billing reports offline and nothing is gated.
+ * ======================================================================== */
+
+async function getBillingCfg() {
+  if (state.billing.cfg) return state.billing.cfg;
+  try {
+    const r = await fetch("api/billing-config", { signal: AbortSignal.timeout(8000) });
+    if (r.ok) state.billing.cfg = await r.json();
+  } catch { /* offline -> treat as unconfigured */ }
+  return state.billing.cfg;
+}
+
+async function refreshUsage() {
+  const u = state.user;
+  if (!u || u.provider !== "otp" || !u.token) return null;
+  try {
+    const r = await fetch("api/usage",
+      { headers: { Authorization: "Bearer " + u.token }, signal: AbortSignal.timeout(8000) });
+    const j = await r.json();
+    if (r.ok && j.ok) { state.billing.usage = j; syncPlanChip(); return j; }
+  } catch { /* keep last known usage */ }
+  return null;
+}
+
+async function initBilling() {
+  $("#planchip").onclick = () => openMenuTab("plan");
+  await getBillingCfg();
+  syncPlanChip();
+  refreshUsage();
+}
+
+function syncPlanChip() {
+  const el = $("#planchip");
+  if (!el) return;
+  const cfg = state.billing.cfg;
+  if (!cfg || !cfg.billing) { el.innerHTML = `PLAN <b>FREE</b>`; return; }
+  const us = state.billing.usage;
+  if (!us || !us.metered) { el.innerHTML = `PLAN <b>FREE · SIGN IN</b>`; return; }
+  const lim = us.limit === null ? "∞" : us.limit;
+  el.innerHTML = `PLAN <b class="${us.plan !== "free" ? "paid" : ""}">${us.planName} · ${us.used}/${lim}</b>`;
+}
+
+/* ----------------------------- upload gate ------------------------------ */
+async function uploadGate() {
+  const cfg = await getBillingCfg();
+  if (!cfg || !cfg.billing) return { allowed: true, metered: false };
+  const u = state.user;
+  if (!u || u.provider !== "otp" || !u.token) {
+    return { allowed: false, upgrade: true,
+      reason: "UPLOADS NEED AN EMAIL ACCOUNT — SIGN OUT & SIGN IN WITH EMAIL (FREE PLAN: 5/MO)" };
+  }
+  const us = await refreshUsage();
+  if (!us) return { allowed: true, metered: false };   // fail-open on hiccup
+  if (us.limit !== null && us.used >= us.limit) {
+    return { allowed: false, upgrade: true,
+      reason: `MONTHLY UPLOAD LIMIT REACHED (${us.used}/${us.limit}) — UPGRADE IN MENU ▸ PLAN` };
+  }
+  return { allowed: true, metered: true };
+}
+
+async function consumeUpload() {
+  const u = state.user;
+  if (!u || !u.token) return;
+  try {
+    const r = await fetch("api/usage",
+      { method: "POST", headers: { Authorization: "Bearer " + u.token } });
+    const j = await r.json();
+    if (j && typeof j.used === "number") { state.billing.usage = j; syncPlanChip(); }
+  } catch { /* metering is best-effort */ }
+}
+
+/* ------------------------------ PLAN tab -------------------------------- */
+function planPriceHTML(p) {
+  if (!p.priceInr) return `<div class="pprice">₹0 <small>FOREVER</small></div>`;
+  const strike = p.mrpInr ? `<s>₹${p.mrpInr}</s> ` : "";
+  const save = p.mrpInr ? `<span class="psave">SAVE ₹${p.mrpInr - p.priceInr}</span>` : "";
+  return `<div class="pprice">${strike}₹${p.priceInr} <small>/ MO</small> ${save}</div>`;
+}
+
+async function renderPlanTab(body) {
+  body.innerHTML = `<h3>PLANS &amp; USAGE</h3><p class="hist-empty">LOADING…</p>`;
+  const cfg = await getBillingCfg();
+  const us = cfg && cfg.billing ? await refreshUsage() : null;
+  const u = state.user;
+  const isOtp = u && u.provider === "otp" && u.token;
+  const current = us ? us.plan : "free";
+
+  let head = "";
+  if (!cfg || !cfg.billing) {
+    head = `<div class="pnote">BILLING OFFLINE — every feature is currently free and unmetered.
+      Paid plans activate when the operator connects Razorpay (see README).</div>`;
+  } else if (!isOtp) {
+    head = `<div class="pnote warn">Plans attach to email accounts. You're browsing as
+      <b>${(u && u.provider ? u.provider : "guest").toUpperCase()}</b> — SIGN OUT and sign back in
+      with <b>EMAIL ME A CODE</b> to use the free tier (5 uploads/mo) or subscribe.</div>`;
+  } else if (us) {
+    const lim = us.limit === null ? "∞" : us.limit;
+    const pctUsed = us.limit === null ? 0 : Math.min(100, (us.used / us.limit) * 100);
+    head = `<div class="pusage">
+      <div class="purow"><span>SIGNED IN AS</span><b>${String(u.name || u.uid).toUpperCase().slice(0, 28)}</b></div>
+      <div class="purow"><span>CURRENT PLAN</span><b class="${current !== "free" ? "paid" : ""}">${us.planName}</b></div>
+      <div class="purow"><span>UPLOADS THIS MONTH (${us.month || ""})</span><b>${us.used} / ${lim}</b></div>
+      ${us.limit !== null ? `<div class="pmeterbar"><div style="width:${pctUsed}%"></div></div>` : ""}
+      ${us.expiresAt ? `<div class="purow"><span>PLAN RENEWS/EXPIRES</span><b>${new Date(us.expiresAt).toLocaleDateString()}</b></div>` : ""}
+    </div>`;
+  }
+
+  const plans = (cfg && cfg.plans) || [
+    { id: "free", name: "FREE", priceInr: 0, uploads: 5, blurb: "5 company uploads / month · all 10 models · SCEN engine" },
+    { id: "pro", name: "ANALYST PRO", priceInr: 299, uploads: 50, blurb: "50 company uploads / month · everything in FREE" },
+    { id: "unlimited", name: "DESK UNLIMITED", priceInr: 499, mrpInr: 599, uploads: null, blurb: "Unlimited uploads · everything in PRO" },
+  ];
+  const canBuy = cfg && cfg.billing && isOtp;
+  body.innerHTML = `<h3>PLANS &amp; USAGE</h3>${head}
+    <div class="pcards">${plans.map((p) => `
+      <div class="pcard ${p.id} ${current === p.id ? "cur" : ""}">
+        ${p.id === "unlimited" ? `<div class="pflag">BEST VALUE</div>` : ""}
+        <div class="pname">${p.name}</div>
+        ${planPriceHTML(p)}
+        <div class="pquota">${p.uploads === null ? "UNLIMITED" : p.uploads} UPLOADS${p.uploads === null ? "" : " / MO"}</div>
+        <div class="pblurb">${p.blurb}</div>
+        ${p.id === "free"
+          ? `<button class="pbuy" disabled>${current === "free" ? "CURRENT PLAN" : "INCLUDED"}</button>`
+          : `<button class="pbuy" data-plan="${p.id}" ${canBuy && current !== p.id ? "" : "disabled"}>
+               ${current === p.id ? "CURRENT PLAN" : cfg && cfg.billing ? `UPGRADE — ₹${p.priceInr}` : "OFFLINE"}</button>`}
+      </div>`).join("")}</div>
+    <div class="pnote" id="pmsg">Paid plans are 30-day passes — renewing or upgrading early credits your
+      unused days. Payments are processed by Razorpay (UPI · cards · netbanking · wallets); this site
+      never sees card details. An upload = one IB-desk PDF analysis; model runs and the SCEN engine
+      are never metered.</div>`;
+  body.querySelectorAll(".pbuy[data-plan]").forEach((b) => {
+    b.onclick = () => startCheckout(b.dataset.plan);
+  });
+}
+
+/* ------------------------------ checkout -------------------------------- */
+function loadCheckoutJs() {
+  return new Promise((resolve, reject) => {
+    if (window.Razorpay) return resolve();
+    const s = document.createElement("script");
+    s.src = "https://checkout.razorpay.com/v1/checkout.js";
+    s.onload = resolve;
+    s.onerror = () => reject(new Error("Razorpay checkout.js failed to load"));
+    document.head.appendChild(s);
+  });
+}
+
+function planMsg(text, isErr) {
+  const el = $("#pmsg");
+  if (el) { el.textContent = text; el.classList.toggle("warn", !!isErr); }
+}
+
+//: Dev-fake gateway only (local harness): sign the order like Razorpay would.
+async function devFakeSignature(msg) {
+  const enc = new TextEncoder();
+  const key = await crypto.subtle.importKey("raw", enc.encode("devsecret"),
+    { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const sig = await crypto.subtle.sign("HMAC", key, enc.encode(msg));
+  return [...new Uint8Array(sig)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function startCheckout(plan) {
+  const cfg = await getBillingCfg();
+  const u = state.user;
+  if (!cfg || !cfg.billing || !u || !u.token) return;
+  planMsg("CREATING ORDER…");
+  let order;
+  try {
+    const r = await fetch("api/billing-order", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: "Bearer " + u.token },
+      body: JSON.stringify({ plan }),
+    });
+    order = await r.json();
+    if (!r.ok || !order.ok) throw new Error(order.error || `HTTP ${r.status}`);
+  } catch (err) {
+    planMsg("ORDER FAILED: " + String(err.message || err).slice(0, 120), true);
+    return;
+  }
+
+  const finalize = async (resp) => {
+    planMsg("VERIFYING PAYMENT…");
+    try {
+      const r = await fetch("api/billing-verify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer " + u.token },
+        body: JSON.stringify(resp),
+      });
+      const j = await r.json();
+      if (!r.ok || !j.ok) throw new Error(j.error || `HTTP ${r.status}`);
+      await refreshUsage();
+      await renderPlanTab($("#menu-body"));   // rebuild first, then the receipt
+      planMsg(`✔ ${String(j.plan).toUpperCase()} ACTIVE — VALID UNTIL ${
+        new Date(j.subscription.expiresAt).toLocaleDateString()}`);
+    } catch (err) {
+      planMsg("VERIFY FAILED: " + String(err.message || err).slice(0, 120) +
+              " — if you were charged, the plan activates via webhook shortly", true);
+    }
+  };
+
+  if (cfg.devFake) {   // local harness: complete the purchase without the modal
+    const paymentId = "pay_dev" + Math.random().toString(36).slice(2, 12);
+    finalize({
+      razorpay_order_id: order.orderId,
+      razorpay_payment_id: paymentId,
+      razorpay_signature: await devFakeSignature(`${order.orderId}|${paymentId}`),
+    });
+    return;
+  }
+
+  try { await loadCheckoutJs(); }
+  catch (err) { planMsg(String(err.message || err), true); return; }
+  planMsg("OPENING RAZORPAY CHECKOUT…");
+  new Razorpay({
+    key: order.keyId,
+    order_id: order.orderId,
+    amount: order.amount,
+    currency: order.currency,
+    name: "FINMODELS TERMINAL",
+    description: `${order.planName} — 30-DAY PASS`,
+    prefill: { email: u.uid, name: u.name || "" },
+    theme: { color: "#ffb000" },
+    handler: finalize,
+    modal: { ondismiss: () => planMsg("PAYMENT CANCELLED — no charge made") },
+  }).open();
 }

@@ -304,6 +304,48 @@ are kept per account**. Reopening a saved analysis rehydrates the extraction ins
 Python runtime, so any past company can be re-run and re-exported without re-uploading its
 PDF.
 
+### 💳 Plans & payments — Razorpay
+
+The terminal has a built-in monetisation layer. The metered unit is an **upload**
+(one IB-desk PDF analysis); model runs and the SCEN engine are never metered.
+
+| Plan | Price | Uploads / month |
+|---|---|---|
+| **FREE** | ₹0 | 5 |
+| **ANALYST PRO** | **₹299 / mo** | 50 |
+| **DESK UNLIMITED** | ~~₹599~~ **₹499 / mo** (SAVE ₹100) | Unlimited |
+
+Paid plans are **30-day passes** bought through Razorpay Checkout (UPI · cards ·
+netbanking · wallets) — renewing or upgrading early credits the unused days. The
+**MENU ▸ PLAN** tab shows the live usage meter, current plan and upgrade cards; the
+status bar carries a plan chip (e.g. `PLAN ANALYST PRO · 12/50`). Plans attach to
+**email-OTP accounts** (the server identity), so uploads require signing in with email
+once billing is live.
+
+**Security model:** amounts are authoritative **server-side only** (`api/_lib/billing.js`)
+— the client never chooses what it pays; every payment is verified with Razorpay's
+documented `HMAC-SHA256(order_id|payment_id, key_secret)` timing-safe check; orders are
+pinned to the buying account and single-use; and a signed **webhook**
+(`api/billing-webhook.js`, `payment.captured`) activates the plan even if the buyer's tab
+dies before the client-side verify. Until Razorpay is configured, `billing: false` — the
+terminal stays free and unmetered with an explicit offline state in the PLAN tab.
+
+#### Enabling payments (needs the database from the auth setup above)
+
+| Step | What | Env vars |
+|---|---|---|
+| 1 · Keys | [dashboard.razorpay.com](https://dashboard.razorpay.com) → *Settings → API Keys* → generate (test keys first, live after KYC). | `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET` |
+| 2 · Webhook | *Settings → Webhooks* → add `https://<your-domain>/api/billing-webhook`, subscribe to `payment.captured`, set a secret. | `RAZORPAY_WEBHOOK_SECRET` |
+
+Redeploy — `/api/billing-config` flips `billing: true`, the PLAN tab goes live and the
+free-tier metering starts. Endpoints: `billing-config` (public catalogue),
+`billing-order` (server-side order creation), `billing-verify` (signature check +
+activation), `billing-webhook` (capture fallback), `usage` (GET entitlement / POST
+consume, `402` when the month's allowance is spent). Test locally with zero credentials:
+`node scripts/test_billing_api.js` (24 checks: catalogue, metering, 402, forged/hijacked/
+replayed payments, upgrade day-carry, webhook, expiry) and `python scripts/e2e_billing.py`
+(real-browser purchase through the dev-fake gateway).
+
 ### ☰ Menu & 🌐 market selector
 
 Two persistent controls frame every view:
