@@ -242,3 +242,44 @@ assumption. The US rate can still refresh **live** from the Treasury FiscalData
 API; the other fourteen use curated sovereign baselines, and the IB desk's live
 risk-free follows the chosen market too. The choice persists in `localStorage`
 and is shown in the status bar.
+
+## 12 · Scenario & sensitivity engine (`SCEN` tab)
+
+A third analytics tab (CHART · **SCEN** · DOC), shown for the ten model views and
+hidden on the IB desk. Everything it displays comes from re-running the actual
+Python model in Pyodide with perturbed inputs — no closed-form deltas.
+
+**Headline metric.** Each mnemonic maps to one output the engine stresses
+(`SCEN_HEADLINE`): `price_per_share` (DCF), `price` (GG/BSM/CRR/MC/HES),
+`tangency_sharpe` (MPT), `var` (VAR), `expected_return` (CAPM), `alpha` (FF3).
+A `worse` flag records the adverse direction (`up` for VaR, `down` otherwise) so
+bear/bull construction and the colour semantics stay direction-aware.
+
+**Eligible inputs.** Numeric slider params minus `SCEN_EXCLUDE`
+(`n_sims`, `n_steps`, `window`, `confidence`, `horizon_days`) — precision and
+measurement settings are not economic drivers. Shifts are relative with an
+absolute floor (`max(|v|·f, (max−min)·f/4)`), clamped to slider ranges,
+integer-rounded for `int` params.
+
+**Section 1 — scenarios.** Three slots (BEAR/BASE/BULL) stored per account and
+per model in `localStorage` (`finmodels.scenarios.<uid>`). `SET <slot> =
+CURRENT` freezes the live inputs; `⚡ AUTO-SEED` probes each input at ±10 % to
+learn its impact sign, then shifts every input ±12 % in the adverse (bear) or
+favourable (bull) direction, with base = current. `▶ COMPARE` renders a table:
+headline row (amber, with signed % deltas vs base coloured by favourability),
+differing assumptions, then remaining scalar outputs (dimmed).
+
+**Section 2 — tornado.** One-at-a-time ±5/10/20 % shocks; Plotly horizontal
+overlay bars based at the base headline, sorted by swing, green/red per effect
+direction, dotted amber base line, biggest driver echoed in the status chip.
+
+**Section 3 — two-way grid.** Two param selects (defaults ranked by a
+preference list — WACC × terminal g for DCF, σ × spot for options), ±10/20/30 %
+span, 7 × 7 linspace, cells shaded red→green across the observed range
+(inverted when `worse: "up"`), centre cell (current inputs) outlined amber.
+
+Long scans yield to the event loop between runs and stream progress into
+`#scen-stat`; all engine buttons disable while a scan is in flight. Switching
+model resets the panel (`resetScenPanel`, purging the tornado plot).
+E2E coverage: `run_scenario_engine_scenario` in `scripts/e2e_terminal.py`
+(auto-seed → bear<base<bull compare → tornado → grid → per-model rebuild).

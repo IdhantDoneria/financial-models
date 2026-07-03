@@ -188,6 +188,7 @@ const state = {
   timer: null, seq: 0, view: "model",
   user: null,              // session from login.html (set before boot)
   country: null,           // set in boot() from storage or default US
+  scen: { built: null, busy: false },   // scenario & sensitivity engine
   ib: { pkgsReady: false, fns: null, extracted: null, report: null,
         liveRf: null, rfSource: null, period: "auto", mode: "auto",
         dirty: {}, selected: null },
@@ -383,6 +384,7 @@ function buildUI() {
   });
 
   $("#tab-chart").onclick = () => setTab("chart");
+  $("#tab-scen").onclick = () => setTab("scen");
   $("#tab-doc").onclick = () => setTab("doc");
 
   initMenu();
@@ -454,13 +456,17 @@ async function fetchTapeFallback() {
 }
 
 function setTab(which) {
-  $("#tab-chart").classList.toggle("on", which === "chart");
-  $("#tab-doc").classList.toggle("on", which === "doc");
   const inIB = state.view === "ib";
+  if (which === "scen" && inIB) which = "chart";   // scenarios are per-model
+  $("#tab-chart").classList.toggle("on", which === "chart");
+  $("#tab-scen").classList.toggle("on", which === "scen");
+  $("#tab-doc").classList.toggle("on", which === "doc");
   $("#chart").style.display = which === "chart" && !inIB ? "" : "none";
   $("#report").style.display = which === "chart" && inIB ? "block" : "none";
+  $("#scen").style.display = which === "scen" ? "block" : "none";
   $("#doc").style.display = which === "doc" ? "block" : "none";
   if (which === "chart" && !inIB) window.dispatchEvent(new Event("resize"));
+  if (which === "scen") buildScenPanel();
 }
 
 function execCommand() {
@@ -484,6 +490,8 @@ function selectModel(mn) {
   state.current = model;
   state.values = {};
   model.params.forEach((p) => { state.values[p.id] = p.def; });
+  $("#tab-scen").style.display = "";       // scenarios apply to model views
+  resetScenPanel();
 
   document.querySelectorAll(".mrow").forEach((r) => r.classList.toggle("active", r.dataset.mn === mn));
   document.querySelectorAll("#fkeys button").forEach((b) => b.classList.toggle("active", b.dataset.mn === mn));
@@ -781,6 +789,7 @@ function selectAnalyzer() {
   document.querySelectorAll(".mrow").forEach((r) => r.classList.toggle("active", r.dataset.mn === "IB"));
   document.querySelectorAll("#fkeys button").forEach((b) => b.classList.toggle("active", b.dataset.mn === "IB"));
 
+  $("#tab-scen").style.display = "none";   // scenario engine is per-model
   $("#inputs header .title").textContent = "IB DESK — COMPANY PDF ANALYZER";
   $("#formula").innerHTML = "ƒ  <b>UPLOAD 10-K / 10-Q → SCRAPE → ASSUME (AUTO IB-BOT | MANUAL) → RUN MODELS → EXPORT</b>";
   $("#output header .title").textContent = "EXTRACTED DATA";
@@ -1242,9 +1251,10 @@ function renderGuide(body) {
     ["2", "<b>Choose a model.</b> Click a row in the MODELS rail, press its function key (F1–F10), or type its mnemonic in the amber command bar and hit &lt;GO&gt; (e.g. type <b>BSM</b> ⏎). See the MODELS tab here for what each one is best for."],
     ["3", "<b>Drive the inputs.</b> Every parameter is a slider paired with an editable field. Move either and the model recalculates live — no run button. Percentages are entered as percentages (e.g. 5 = 5%)."],
     ["4", "<b>Read the output.</b> OUTPUT shows the headline results (green = positive, red = negative). The ANALYTICS panel has a CHART tab (interactive Plotly) and a DOC tab explaining the math with formulas."],
-    ["5", "<b>Analyse a real company (IB DESK).</b> Type <b>IB</b> ⏎ or click IB DESK. Upload a 10-K/10-Q PDF — it scrapes the financials, fills any gaps automatically (auto IB-bot mode) or lets you set them by hand (manual mode), runs the models you tick, and exports a report as PDF / Google-Docs / Excel."],
-    ["6", "<b>Keep your work.</b> Every company you run through the IB desk is saved to HISTORY here — reopen or remove any past analysis. Your market choice and history persist on this device."],
-    ["7", "<b>Your account.</b> Sign in with email, Google, or explore as a guest (bottom-right shows who's signed in; SIGN OUT is next to it). History is kept per account, and credentials never leave this device — passwords are hashed locally, there's no server database."],
+    ["5", "<b>Stress-test it (SCEN tab).</b> Open SCEN in the ANALYTICS panel to run the scenario &amp; sensitivity engine: save (or ⚡ auto-seed) BEAR / BASE / BULL assumption sets and compare them side-by-side, run a tornado chart ranking which input moves your answer most, and sweep any two inputs in a colour-coded 7×7 sensitivity grid. Every cell is a real in-runtime model run — no approximations."],
+    ["6", "<b>Analyse a real company (IB DESK).</b> Type <b>IB</b> ⏎ or click IB DESK. Upload a 10-K/10-Q PDF — it scrapes the financials, fills any gaps automatically (auto IB-bot mode) or lets you set them by hand (manual mode), runs the models you tick, and exports a report as PDF / Google-Docs / Excel."],
+    ["7", "<b>Keep your work.</b> Every company you run through the IB desk is saved to HISTORY here — reopen or remove any past analysis. Your market choice and history persist on this device."],
+    ["8", "<b>Your account.</b> Sign in with email, Google, or explore as a guest (bottom-right shows who's signed in; SIGN OUT is next to it). History is kept per account, and credentials never leave this device — passwords are hashed locally, there's no server database."],
   ];
   body.innerHTML = `<h3>HOW TO USE THIS TERMINAL</h3>` +
     steps.map(([n, t]) => `<div class="guide-step"><div class="num">${n}</div><div class="txt">${t}</div></div>`).join("") +
@@ -1340,4 +1350,358 @@ async function loadHistoryItem(i) {
              String(err).slice(0, 80) + ")", true);
   }
   syncIBButtons();
+}
+
+/* ======================================================================== *
+ * SCENARIO & SENSITIVITY ENGINE — bear/base/bull assumption sets compared
+ * side-by-side, a tornado chart ranking which inputs move the headline
+ * output most, and a two-way sensitivity grid. Every number comes from
+ * re-running the *actual* Python model in-runtime with perturbed inputs —
+ * no linearisation, no approximation.
+ * ======================================================================== */
+
+//: The single output each model is judged by when stressing assumptions.
+//  `worse` says which direction of that metric is the adverse (bear) one.
+const SCEN_HEADLINE = {
+  DCF:  { key: "price_per_share", label: "VALUE / SHARE",   worse: "down" },
+  GG:   { key: "price",           label: "INTRINSIC PRICE", worse: "down" },
+  MPT:  { key: "tangency_sharpe", label: "TANGENCY SHARPE", worse: "down" },
+  VAR:  { key: "var",             label: "VALUE AT RISK",   worse: "up" },
+  CAPM: { key: "expected_return", label: "EXPECTED RETURN", worse: "down" },
+  FF3:  { key: "alpha",           label: "ALPHA (MO)",      worse: "down" },
+  BSM:  { key: "price",           label: "OPTION PRICE",    worse: "down" },
+  CRR:  { key: "price",           label: "OPTION PRICE",    worse: "down" },
+  MC:   { key: "price",           label: "OPTION PRICE",    worse: "down" },
+  HES:  { key: "price",           label: "OPTION PRICE",    worse: "down" },
+};
+
+//: Inputs excluded from stressing: numerical-precision knobs and measurement
+//  settings, not economic drivers (shocking MC path count is meaningless).
+const SCEN_EXCLUDE = new Set(["n_sims", "n_steps", "window", "confidence", "horizon_days"]);
+
+const LS_SCEN = () => "finmodels.scenarios." + (state.user ? state.user.uid : "guest");
+const SLOTS = ["bear", "base", "bull"];
+
+//: Economic inputs eligible for scenario shifts / tornado / grid scans.
+const scenParams = (model) =>
+  model.params.filter((p) => !p.select && !p.toggle && !SCEN_EXCLUDE.has(p.id));
+
+const scenClamp = (p, v) => {
+  v = Math.min(p.max, Math.max(p.min, v));
+  return p.int ? Math.round(v) : v;
+};
+
+//: Relative shift with an absolute floor so near-zero inputs still move.
+function scenShift(p, v, frac, dir) {
+  const dv = Math.max(Math.abs(v) * frac, (p.max - p.min) * frac * 0.25);
+  return scenClamp(p, v + dir * dv);
+}
+
+function loadScenStore() {
+  try { return JSON.parse(localStorage.getItem(LS_SCEN()) || "{}"); } catch { return {}; }
+}
+function saveScenSlot(mn, slot, values) {
+  const store = loadScenStore();
+  store[mn] = store[mn] || {};
+  store[mn][slot] = { ...values };
+  try { localStorage.setItem(LS_SCEN(), JSON.stringify(store)); } catch { /* quota */ }
+}
+const scenSlots = (mn) => loadScenStore()[mn] || {};
+
+//: One in-runtime model evaluation -> headline number (or null on failure).
+function scenEval(mn, values) {
+  try {
+    const out = JSON.parse(state.runPy(mn, JSON.stringify(values)));
+    const v = out.results[SCEN_HEADLINE[mn].key];
+    return typeof v === "number" ? v : null;
+  } catch { return null; }
+}
+
+//: Full evaluation for the comparison table (headline + scalar results).
+function scenEvalFull(mn, values) {
+  try { return JSON.parse(state.runPy(mn, JSON.stringify(values))).results; }
+  catch { return null; }
+}
+
+const scenYield = () => new Promise((r) => setTimeout(r, 0));
+
+function scenStat(msg, busy) {
+  const el = $("#scen-stat");
+  if (el) { el.textContent = msg; el.classList.toggle("busy", !!busy); }
+}
+
+function scenButtons(disabled) {
+  state.scen.busy = disabled;
+  document.querySelectorAll("#scen button").forEach((b) => (b.disabled = disabled));
+}
+
+/* ------------------------------ panel ---------------------------------- */
+function resetScenPanel() {
+  state.scen.built = null;
+  const scen = $("#scen");
+  if (!scen) return;
+  const tornado = document.getElementById("scen-tornado");
+  if (tornado) Plotly.purge(tornado);   // release the old chart before wiping
+  scen.innerHTML = "";
+}
+
+function buildScenPanel() {
+  const model = state.current;
+  if (!model || state.scen.built === model.mn) return;
+  state.scen.built = model.mn;
+  const H = SCEN_HEADLINE[model.mn];
+  const ps = scenParams(model);
+  const opts = (sel) => ps.map((p) =>
+    `<option value="${p.id}"${p.id === sel ? " selected" : ""}>${p.label}</option>`).join("");
+  // Sensible default axes: the two highest-impact inputs by convention —
+  // discounting/vol style knobs first when present.
+  const prefer = ["discount_rate", "terminal_growth", "sigma", "spot", "required_return",
+                  "growth", "sigma_annual", "mu_annual", "beta", "expected_market_return",
+                  "xi", "v0", "rho"];
+  const ranked = [...ps].sort((a, b) =>
+    (prefer.indexOf(a.id) + 1 || 99) - (prefer.indexOf(b.id) + 1 || 99));
+  const defX = (ranked[0] || ps[0]).id;
+  const defY = (ranked[1] || ps[1] || ps[0]).id;
+
+  $("#scen").innerHTML = `
+    <div class="scen-head">SCENARIO &amp; SENSITIVITY — ${model.name.toUpperCase()}
+      <span id="scen-stat">HEADLINE METRIC: ${H.label}</span></div>
+
+    <div class="scen-sec">1 · SCENARIOS — BEAR / BASE / BULL</div>
+    <div class="scen-row">
+      ${SLOTS.map((s) => `<button class="scen-set" data-slot="${s}">SET ${s.toUpperCase()} = CURRENT</button>`).join("")}
+      <button id="scen-auto">⚡ AUTO-SEED ±12%</button>
+      <button id="scen-compare" class="scen-go">▶ COMPARE</button>
+    </div>
+    <div class="scen-chips">${SLOTS.map((s) =>
+      `<span class="chip ${s}" data-slot="${s}">${s.toUpperCase()} <b>—</b></span>`).join("")}</div>
+    <div class="scen-hint">AUTO-SEED probes each input's direction of impact in-runtime, then
+      builds BEAR/BULL by shifting every economic input ±12% the adverse/favourable way
+      (BASE = your current inputs). Or freeze any hand-tuned set into a slot.</div>
+    <div id="scen-cmp"></div>
+
+    <div class="scen-sec">2 · TORNADO — WHAT MOVES ${H.label}</div>
+    <div class="scen-row">
+      <label>SHOCK</label>
+      <select id="scen-tshock"><option value="0.05">±5%</option>
+        <option value="0.10" selected>±10%</option><option value="0.20">±20%</option></select>
+      <button id="scen-trun" class="scen-go">▶ RUN TORNADO</button>
+    </div>
+    <div class="scen-hint">Each input is shocked one-at-a-time (others held at current values);
+      bars are ranked by how far they swing the headline. The longest bar is the assumption
+      your answer lives or dies on.</div>
+    <div id="scen-tornado"></div>
+
+    <div class="scen-sec">3 · TWO-WAY SENSITIVITY GRID (7 × 7)</div>
+    <div class="scen-row">
+      <label>X</label><select id="scen-gx">${opts(defX)}</select>
+      <label>Y</label><select id="scen-gy">${opts(defY)}</select>
+      <label>SPAN</label>
+      <select id="scen-gspan"><option value="0.10">±10%</option>
+        <option value="0.20" selected>±20%</option><option value="0.30">±30%</option></select>
+      <button id="scen-grun" class="scen-go">▶ RUN GRID</button>
+    </div>
+    <div id="scen-grid"></div>`;
+
+  document.querySelectorAll(".scen-set").forEach((b) => {
+    b.onclick = () => {
+      saveScenSlot(model.mn, b.dataset.slot, state.values);
+      syncScenChips();
+      scenStat(`${b.dataset.slot.toUpperCase()} SAVED FROM CURRENT INPUTS`);
+    };
+  });
+  $("#scen-auto").onclick = autoSeedScenarios;
+  $("#scen-compare").onclick = runScenCompare;
+  $("#scen-trun").onclick = runTornado;
+  $("#scen-grun").onclick = runSensitivityGrid;
+  syncScenChips();
+}
+
+function syncScenChips() {
+  const slots = scenSlots(state.current.mn);
+  document.querySelectorAll(".scen-chips .chip").forEach((c) => {
+    const set = !!slots[c.dataset.slot];
+    c.classList.toggle("set", set);
+    c.querySelector("b").textContent = set ? "SET" : "—";
+  });
+}
+
+/* --------------------------- auto-seed --------------------------------- */
+async function autoSeedScenarios() {
+  const model = state.current, mn = model.mn, H = SCEN_HEADLINE[mn];
+  const ps = scenParams(model);
+  scenButtons(true);
+  const bear = { ...state.values }, bull = { ...state.values };
+  for (let i = 0; i < ps.length; i++) {
+    const p = ps[i], v = state.values[p.id];
+    scenStat(`PROBING IMPACT DIRECTION ${i + 1}/${ps.length} — ${p.label}…`, true);
+    await scenYield();
+    const hLo = scenEval(mn, { ...state.values, [p.id]: scenShift(p, v, 0.10, -1) });
+    const hHi = scenEval(mn, { ...state.values, [p.id]: scenShift(p, v, 0.10, +1) });
+    if (hLo === null || hHi === null || hLo === hHi) continue;   // flat/failed: leave at base
+    // Direction that makes the headline WORSE goes into BEAR, opposite into BULL.
+    const upIsWorse = H.worse === "up" ? hHi > hLo : hHi < hLo;
+    bear[p.id] = scenShift(p, v, 0.12, upIsWorse ? +1 : -1);
+    bull[p.id] = scenShift(p, v, 0.12, upIsWorse ? -1 : +1);
+  }
+  saveScenSlot(mn, "bear", bear);
+  saveScenSlot(mn, "base", { ...state.values });
+  saveScenSlot(mn, "bull", bull);
+  syncScenChips();
+  scenButtons(false);
+  scenStat("BEAR / BASE / BULL SEEDED — PRESS ▶ COMPARE");
+}
+
+/* --------------------------- comparison -------------------------------- */
+async function runScenCompare() {
+  const model = state.current, mn = model.mn, H = SCEN_HEADLINE[mn];
+  const slots = scenSlots(mn);
+  // Any unset slot falls back to the current inputs so COMPARE always works.
+  const sets = SLOTS.map((s) => ({ slot: s, values: slots[s] || { ...state.values } }));
+  scenButtons(true);
+  const runs = [];
+  for (let i = 0; i < sets.length; i++) {
+    scenStat(`RUNNING ${sets[i].slot.toUpperCase()} SCENARIO…`, true);
+    await scenYield();
+    runs.push(scenEvalFull(mn, sets[i].values));
+  }
+  scenButtons(false);
+  if (runs.some((r) => !r)) { scenStat("SCENARIO RUN FAILED — CHECK INPUTS", false); return; }
+
+  const ps = scenParams(model);
+  const baseH = runs[1][H.key];
+  const fmtD = (h) => {
+    if (typeof h !== "number" || typeof baseH !== "number" || !baseH) return "";
+    const d = (h / baseH - 1) * 100;
+    const cls = (H.worse === "up" ? -d : d) >= 0 ? "pos" : "neg";
+    return `<span class="delta ${cls}">${d >= 0 ? "+" : ""}${d.toFixed(1)}%</span>`;
+  };
+  let html = `<table class="scen-table"><tr><th></th>
+    ${sets.map((s) => `<th class="${s.slot}">${s.slot.toUpperCase()}</th>`).join("")}</tr>`;
+  // headline first — the number the scenarios exist to move
+  html += `<tr class="headline"><td class="k">${H.label}</td>${runs.map((r) =>
+    `<td class="v">${fmtValue(H.key, r[H.key])} ${fmtD(r[H.key])}</td>`).join("")}</tr>`;
+  // assumptions that differ across the three sets
+  ps.forEach((p) => {
+    const vals = sets.map((s) => s.values[p.id]);
+    if (new Set(vals.map((v) => fmtParam(p, v))).size === 1) return;
+    html += `<tr><td class="k">${p.label}</td>${vals.map((v) =>
+      `<td class="v">${fmtParam(p, v)}</td>`).join("")}</tr>`;
+  });
+  // remaining scalar outputs for context
+  Object.keys(runs[1]).forEach((k) => {
+    if (k === H.key) return;
+    if (!runs.every((r) => typeof r[k] === "number")) return;
+    html += `<tr class="xtra"><td class="k">${k.replace(/_/g, " ").toUpperCase()}</td>${
+      runs.map((r) => `<td class="v">${fmtValue(k, r[k])}</td>`).join("")}</tr>`;
+  });
+  html += "</table>";
+  $("#scen-cmp").innerHTML = html;
+  scenStat(`COMPARED — BEAR ${fmtValue(H.key, runs[0][H.key])} · BASE ${
+    fmtValue(H.key, baseH)} · BULL ${fmtValue(H.key, runs[2][H.key])}`);
+}
+
+/* ----------------------------- tornado --------------------------------- */
+async function runTornado() {
+  const model = state.current, mn = model.mn, H = SCEN_HEADLINE[mn];
+  const ps = scenParams(model);
+  const shock = parseFloat($("#scen-tshock").value);
+  scenButtons(true);
+  scenStat("BASE RUN…", true);
+  await scenYield();
+  const baseH = scenEval(mn, state.values);
+  if (baseH === null) { scenButtons(false); scenStat("BASE RUN FAILED", false); return; }
+
+  const bars = [];
+  for (let i = 0; i < ps.length; i++) {
+    const p = ps[i], v = state.values[p.id];
+    scenStat(`SHOCKING ${i + 1}/${ps.length} — ${p.label}…`, true);
+    await scenYield();
+    const lo = scenShift(p, v, shock, -1), hi = scenShift(p, v, shock, +1);
+    const hLo = scenEval(mn, { ...state.values, [p.id]: lo });
+    const hHi = scenEval(mn, { ...state.values, [p.id]: hi });
+    if (hLo === null || hHi === null) continue;
+    bars.push({ label: p.label, lo: hLo - baseH, hi: hHi - baseH,
+                span: Math.max(Math.abs(hLo - baseH), Math.abs(hHi - baseH)) });
+  }
+  scenButtons(false);
+  bars.sort((a, b) => b.span - a.span);
+  const y = bars.map((b) => b.label);
+  const mk = (xs, name) => ({
+    type: "bar", orientation: "h", y, x: xs, base: baseH, name,
+    marker: { color: xs.map((d) => (H.worse === "up" ? -d : d) >= 0 ? "#2fbf71" : "#e05252") },
+    hovertemplate: "%{y}: " + H.label + " %{x:+.4f}<extra>" + name + "</extra>",
+  });
+  Plotly.react("scen-tornado", [
+    mk(bars.map((b) => b.lo), `−${shock * 100}% SHOCK`),
+    mk(bars.map((b) => b.hi), `+${shock * 100}% SHOCK`),
+  ], {
+    barmode: "overlay", showlegend: false,
+    paper_bgcolor: "rgba(0,0,0,0)", plot_bgcolor: "rgba(0,0,0,0)",
+    font: { family: "IBM Plex Mono, monospace", color: "#c9d4e0", size: 10 },
+    title: { text: `TORNADO — Δ ${H.label} PER ±${shock * 100}% INPUT SHOCK`,
+             font: { color: "#53c9e0", size: 12 } },
+    xaxis: { gridcolor: "#1d2530", zerolinecolor: "#2a3547",
+             tickfont: { color: "#5c6b7d", size: 10 } },
+    yaxis: { autorange: "reversed", tickfont: { color: "#c9d4e0", size: 10 } },
+    shapes: [{ type: "line", x0: baseH, x1: baseH, yref: "paper", y0: 0, y1: 1,
+               line: { color: "#ffb000", width: 1, dash: "dot" } }],
+    margin: { l: 130, r: 20, t: 40, b: 30 }, height: Math.max(220, 40 + bars.length * 34),
+  }, { responsive: true, displaylogo: false });
+  const top = bars[0];
+  scenStat(top ? `BIGGEST DRIVER: ${top.label} (SWING ${fmtValue(H.key, top.span)})`
+              : "NO MOVABLE INPUTS");
+}
+
+/* ------------------------ two-way sensitivity --------------------------- */
+async function runSensitivityGrid() {
+  const model = state.current, mn = model.mn, H = SCEN_HEADLINE[mn];
+  const ps = scenParams(model);
+  const px = ps.find((p) => p.id === $("#scen-gx").value);
+  const py = ps.find((p) => p.id === $("#scen-gy").value);
+  if (!px || !py) return;
+  if (px.id === py.id) { scenStat("PICK TWO DIFFERENT INPUTS", false); return; }
+  const span = parseFloat($("#scen-gspan").value);
+  const N = 7, mid = (N - 1) / 2;
+  const axis = (p) => {
+    const v = state.values[p.id];
+    return Array.from({ length: N }, (_, i) =>
+      scenShift(p, v, (span * Math.abs(i - mid)) / mid || 0, Math.sign(i - mid) || 1));
+  };
+  const xs = axis(px), ys = axis(py);
+
+  scenButtons(true);
+  const rows = [];
+  let done = 0, min = Infinity, max = -Infinity;
+  for (const yv of ys) {
+    const row = [];
+    for (const xv of xs) {
+      row.push(scenEval(mn, { ...state.values, [px.id]: xv, [py.id]: yv }));
+      if (++done % N === 0) { scenStat(`GRID ${done}/${N * N}…`, true); await scenYield(); }
+    }
+    rows.push(row);
+    row.forEach((h) => { if (h !== null) { min = Math.min(min, h); max = Math.max(max, h); } });
+  }
+  scenButtons(false);
+  const base = rows[mid][mid];
+  //: green = favourable end of the metric, red = adverse (flipped for VaR).
+  const shade = (h) => {
+    if (h === null || max === min) return "";
+    let t = (h - min) / (max - min);
+    if (H.worse === "up") t = 1 - t;
+    const g = Math.round(40 + t * 120), r = Math.round(160 - t * 120);
+    return `background:rgba(${r},${g},60,0.28)`;
+  };
+  let html = `<div class="scen-gtitle">${H.label} — ${py.label} (ROWS) × ${px.label} (COLS)
+      · CENTRE = CURRENT (${fmtValue(H.key, base)})</div>
+    <table class="scen-table grid"><tr><th>${py.label} \\ ${px.label}</th>${
+      xs.map((x, i) => `<th class="${i === mid ? "cur" : ""}">${fmtParam(px, x)}</th>`).join("")}</tr>`;
+  rows.forEach((row, j) => {
+    html += `<tr><th class="${j === mid ? "cur" : ""}">${fmtParam(py, ys[j])}</th>${
+      row.map((h, i) => `<td class="v ${i === mid && j === mid ? "centre" : ""}" style="${shade(h)}">${
+        h === null ? "—" : fmtValue(H.key, h)}</td>`).join("")}</tr>`;
+  });
+  html += "</table>";
+  $("#scen-grid").innerHTML = html;
+  scenStat(`GRID DONE — ${H.label} RANGES ${fmtValue(H.key, min)} → ${fmtValue(H.key, max)}`);
 }

@@ -216,6 +216,32 @@ Mnemonics: `DCF` · `GG` · `MPT` · `VAR` · `CAPM` · `FF3` · `BSM` · `CRR` 
 (also `HELP`, and `IB` for the PDF analyzer below). Every slider change re-runs the real
 Python model in ~0–15 ms once booted.
 
+### 📊 Scenario & sensitivity engine (SCEN tab)
+
+Every model carries a **SCEN** tab in the analytics panel — a stress-testing desk where
+every number is a real in-runtime model run, not a linearisation:
+
+- **Bear / base / bull scenarios** — freeze any hand-tuned assumption set into a named
+  slot, or **⚡ auto-seed**: the engine probes each economic input's direction of impact
+  (two runs per input) and builds bear/bull by shifting every input ±12 % the
+  adverse/favourable way. **▶ COMPARE** runs all three and shows a side-by-side table —
+  the model's headline metric with % deltas vs base, the assumptions that differ, and
+  the remaining outputs for context. Slots persist per account + per model.
+- **Tornado chart** — each input is shocked ±5/10/20 % one-at-a-time (others held at
+  current values); horizontal bars rank how far each swings the headline metric, so the
+  assumption the answer lives or dies on is the top bar. Rendered in Plotly with the
+  base value as a dotted anchor line.
+- **Two-way sensitivity grid** — pick any two inputs (defaults to the classic pair, e.g.
+  WACC × terminal growth for DCF) and a ±10/20/30 % span: a 7 × 7 colour-coded grid of
+  headline values, current inputs outlined at the centre, green = favourable / red =
+  adverse (direction-aware: for VaR *lower* is green).
+
+Each model is judged by its natural headline: value/share (DCF), intrinsic price (GG),
+tangency Sharpe (MPT), VaR (VAR — where *up* is adverse), expected return (CAPM),
+alpha (FF3), and option price (BSM/CRR/MC/HES). Numerical-precision knobs (MC paths,
+tree steps, regression window, confidence) are excluded from stressing — they are
+settings, not economic drivers.
+
 ### ⌁ IB Desk — company PDF analyzer, in the browser
 
 Type **`IB <GO>`** (or click IB DESK): upload any **10-K or 10-Q PDF** and the terminal runs
