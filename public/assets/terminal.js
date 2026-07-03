@@ -186,6 +186,7 @@ const $ = (sel) => document.querySelector(sel);
 const state = {
   pyodide: null, runPy: null, micropip: null, current: null, values: {},
   timer: null, seq: 0, view: "model",
+  user: null,              // session from login.html (set before boot)
   country: null,           // set in boot() from storage or default US
   ib: { pkgsReady: false, fns: null, extracted: null, report: null,
         liveRf: null, rfSource: null, period: "auto", mode: "auto",
@@ -197,13 +198,44 @@ const state = {
  * in localStorage so a returning visitor keeps their market and past work.
  * ------------------------------------------------------------------------ */
 const LS_COUNTRY = "finmodels.country";
-const LS_HISTORY = "finmodels.history";
+const LS_HISTORY = "finmodels.history";           // legacy pre-auth key
+const LS_SESSION = "finmodels.session";
+
+/* ------------------------------- auth ---------------------------------- *
+ * Sessions are created by login.html (device-local accounts / Google SSO /
+ * guest — see assets/auth.js). The terminal only reads the session; without
+ * one it gates to the login page. History is namespaced per account.        */
+function currentUser() {
+  try {
+    const s = JSON.parse(localStorage.getItem(LS_SESSION) || "null");
+    if (!s || !s.uid) return null;
+    if (s.exp && Date.now() > s.exp) { localStorage.removeItem(LS_SESSION); return null; }
+    return s;
+  } catch { return null; }
+}
+function signOut() {
+  try { localStorage.removeItem(LS_SESSION); } catch { /* ignore */ }
+  location.replace("login.html");
+}
+
+const histKey = () => "finmodels.history." + (state.user ? state.user.uid : "guest");
 function loadHistory() {
-  try { return JSON.parse(localStorage.getItem(LS_HISTORY) || "[]"); }
-  catch { return []; }
+  try {
+    let list = JSON.parse(localStorage.getItem(histKey()) || "null");
+    if (!list) {
+      // one-time adoption of pre-auth history into this account
+      const legacy = JSON.parse(localStorage.getItem(LS_HISTORY) || "null");
+      if (legacy && legacy.length) {
+        list = legacy;
+        localStorage.setItem(histKey(), JSON.stringify(list));
+        localStorage.removeItem(LS_HISTORY);
+      }
+    }
+    return list || [];
+  } catch { return []; }
 }
 function saveHistory(list) {
-  try { localStorage.setItem(LS_HISTORY, JSON.stringify(list.slice(0, 40))); }
+  try { localStorage.setItem(histKey(), JSON.stringify(list.slice(0, 40))); }
   catch { /* private mode / quota — history is best-effort */ }
 }
 
@@ -323,6 +355,12 @@ function buildUI() {
 
   initMenu();
   initCountry();
+
+  // signed-in identity chip + sign out
+  const u = state.user;
+  $("#who").innerHTML = `${u.provider === "google" ? "◉" : "●"} USER <b>${
+    String(u.name || u.uid).toUpperCase().slice(0, 24)}</b>`;
+  $("#signout").onclick = (e) => { e.preventDefault(); signOut(); };
 
   setInterval(() => {
     $("#clock").textContent = new Date().toISOString().slice(0, 19).replace("T", " ") + " UTC";
@@ -626,7 +664,13 @@ function renderDoc(payload) {
   }
 }
 
-window.addEventListener("DOMContentLoaded", boot);
+window.addEventListener("DOMContentLoaded", () => {
+  // Auth gate: no valid session -> the login page. Sessions are created by
+  // email+password, Google SSO, or the explicit guest path — all on-device.
+  state.user = currentUser();
+  if (!state.user) { location.replace("login.html"); return; }
+  boot();
+});
 
 /* ======================================================================== *
  * IB DESK — company PDF analyzer
@@ -825,8 +869,10 @@ function ibToggleRow(label, options, current, onPick) {
 function syncIBButtons() {
   if (state.view !== "ib") return;
   $("#ibrun").disabled = !(state.ib.pkgsReady && state.ib.extracted);
-  const haveReport = !!state.ib.report;
-  ["pdf", "docx", "xlsx"].forEach((f) => { $(`#exp-${f}`).disabled = !haveReport; });
+  // Exports render from the Python-side report object; a report restored
+  // from saved history is display-only until RUN recomputes it in-runtime.
+  const exportable = !!state.ib.report && !state.ib.report.restored;
+  ["pdf", "docx", "xlsx"].forEach((f) => { $(`#exp-${f}`).disabled = !exportable; });
 }
 
 /* -------------------- analyzer runtime dependencies -------------------- */
@@ -845,6 +891,7 @@ function ensureAnalyzerPackages() {
         analyze: state.pyodide.runPython("web_bridge.analyze_pdf"),
         run: state.pyodide.runPython("web_bridge.run_report"),
         exportR: state.pyodide.runPython("web_bridge.export_report"),
+        restore: state.pyodide.runPython("web_bridge.restore_extraction"),
       };
       state.ib.pkgsReady = true;
       ibStatus("READY — UPLOAD A FILING");
@@ -1164,6 +1211,7 @@ function renderGuide(body) {
     ["4", "<b>Read the output.</b> OUTPUT shows the headline results (green = positive, red = negative). The ANALYTICS panel has a CHART tab (interactive Plotly) and a DOC tab explaining the math with formulas."],
     ["5", "<b>Analyse a real company (IB DESK).</b> Type <b>IB</b> ⏎ or click IB DESK. Upload a 10-K/10-Q PDF — it scrapes the financials, fills any gaps automatically (auto IB-bot mode) or lets you set them by hand (manual mode), runs the models you tick, and exports a report as PDF / Google-Docs / Excel."],
     ["6", "<b>Keep your work.</b> Every company you run through the IB desk is saved to HISTORY here — reopen or remove any past analysis. Your market choice and history persist on this device."],
+    ["7", "<b>Your account.</b> Sign in with email, Google, or explore as a guest (bottom-right shows who's signed in; SIGN OUT is next to it). History is kept per account, and credentials never leave this device — passwords are hashed locally, there's no server database."],
   ];
   body.innerHTML = `<h3>HOW TO USE THIS TERMINAL</h3>` +
     steps.map(([n, t]) => `<div class="guide-step"><div class="num">${n}</div><div class="txt">${t}</div></div>`).join("") +
@@ -1198,7 +1246,8 @@ function renderHistoryTab(body) {
       so you can reopen the results for any company you've analysed.</p>`;
     return;
   }
-  body.innerHTML = `<h3>SAVED COMPANY ANALYSES · ${list.length}</h3>
+  const who = state.user ? String(state.user.name || state.user.uid).toUpperCase() : "GUEST";
+  body.innerHTML = `<h3>SAVED COMPANY ANALYSES · ${list.length} — ${who}</h3>
     <div class="hist-actions"><button id="histclear">CLEAR ALL</button></div>` +
     list.map((h, i) => `
       <div class="hist-item">
@@ -1232,18 +1281,30 @@ function recordHistory() {
   saveHistory(list);
 }
 
-function loadHistoryItem(i) {
+async function loadHistoryItem(i) {
   const h = loadHistory()[i];
   if (!h) return;
+  closeMenu();
+  if (h.report && h.report.mode) state.ib.mode = h.report.mode;   // before form build
   selectAnalyzer();                 // switch to the IB desk view
   state.ib.extracted = h.extracted;
-  state.ib.report = h.report;
-  if (h.report && h.report.mode) state.ib.mode = h.report.mode;
+  state.ib.report = { ...h.report, restored: true };  // display-only until re-run
   renderIBExtracted();
   renderIBReport();
   setTab("chart");
-  ibStatus(`LOADED SAVED ANALYSIS · ${(h.company || "").toUpperCase()}`);
-  $("#ostat").className = "meta";
   syncIBButtons();
-  closeMenu();
+  // Rehydrate the Python-side extraction so ▶ RUN (and then exports) work
+  // without re-uploading the PDF — the report shown meanwhile is the snapshot.
+  try {
+    await ensureAnalyzerPackages();
+    const out = JSON.parse(state.ib.fns.restore(
+      JSON.stringify(h.extracted.fields), h.extracted.period || "annual"));
+    if (!out.ok) throw new Error(out.error);
+    ibStatus(`RESTORED · ${(h.company || "").toUpperCase()} — SNAPSHOT SHOWN · PRESS ▶ RUN TO RECOMPUTE & EXPORT`);
+    $("#ostat").className = "meta";
+  } catch (err) {
+    ibStatus("RESTORE INCOMPLETE — RE-UPLOAD THE FILING TO RE-RUN (" +
+             String(err).slice(0, 80) + ")", true);
+  }
+  syncIBButtons();
 }
