@@ -328,6 +328,68 @@ def run_menu_country_scenario(page) -> list[str]:
     return failures
 
 
+def run_scenario_engine_scenario(page) -> list[str]:
+    """SCEN tab: bear/base/bull compare, tornado chart, 2-way sensitivity grid."""
+    failures: list[str] = []
+
+    print("· SCEN: opening scenario engine on DCF…")
+    page.fill("#cmd", "DCF")
+    page.click("#go")
+    page.wait_for_function(
+        "() => document.querySelector('#output .title').textContent.endsWith('DCF')",
+        timeout=60_000)
+    page.click("#tab-scen")
+    page.wait_for_selector("#scen-auto", timeout=5_000)
+
+    # auto-seed bear/base/bull (probes each input's impact direction in-runtime)
+    page.click("#scen-auto")
+    page.wait_for_selector(".scen-chips .chip.bull.set", timeout=120_000)
+    chips = page.locator(".scen-chips .chip.set").count()
+    print(f"  auto-seeded — {chips}/3 slots set")
+    if chips != 3:
+        failures.append(f"SCEN: auto-seed set {chips}/3 slots")
+
+    # side-by-side comparison: bear per-share value must be below bull
+    page.click("#scen-compare")
+    page.wait_for_selector("#scen-cmp table tr.headline", timeout=60_000)
+    import re as _re
+    cells = page.locator("#scen-cmp tr.headline td.v").all_inner_texts()
+    nums = [float(_re.sub(r"[^\d.eE+-]", "", c.split()[0]).replace(",", "")) for c in cells]
+    print(f"  compare — VALUE/SHARE bear={nums[0]:.2f} base={nums[1]:.2f} bull={nums[2]:.2f}")
+    if not (len(nums) == 3 and nums[0] < nums[1] < nums[2]):
+        failures.append(f"SCEN: bear<base<bull violated ({nums})")
+
+    # tornado chart renders and WACC ranks among the top drivers for a DCF
+    page.click("#scen-trun")
+    page.wait_for_selector("#scen-tornado .main-svg", timeout=120_000)
+    stat = page.inner_text("#scen-stat")
+    print(f"  tornado — {stat}")
+    if "BIGGEST DRIVER" not in stat:
+        failures.append(f"SCEN: tornado gave no driver ranking ({stat})")
+
+    # 7x7 two-way grid (default WACC x terminal growth), centre = current
+    page.click("#scen-grun")
+    page.wait_for_selector("#scen-grid table", timeout=120_000)
+    grid_rows = page.locator("#scen-grid table tr").count()
+    centre = page.locator("#scen-grid td.centre").count()
+    print(f"  grid — {grid_rows - 1}x7 cells · centre marked={centre}")
+    if grid_rows != 8 or centre != 1:
+        failures.append(f"SCEN: grid malformed (rows={grid_rows}, centre={centre})")
+
+    # scenarios must be per-model: switching models resets the panel
+    page.fill("#cmd", "BSM")
+    page.click("#go")
+    page.wait_for_function(
+        "() => document.querySelector('#output .title').textContent.endsWith('BSM')",
+        timeout=60_000)
+    page.click("#tab-scen")
+    head = page.inner_text("#scen .scen-head")
+    if "BLACK-SCHOLES" not in head.upper():
+        failures.append(f"SCEN: panel did not rebuild for BSM ({head[:60]})")
+    page.click("#tab-chart")
+    return failures
+
+
 def main() -> int:
     headed = "--headed" in sys.argv
     # --url https://… tests a deployed instance instead of the local tree.
@@ -418,6 +480,7 @@ def main() -> int:
             failures.append("DOC panel suspiciously short")
 
         failures += run_menu_country_scenario(page)
+        failures += run_scenario_engine_scenario(page)
         failures += run_ib_desk_scenario(page)
         failures += run_history_restore_scenario(page)
 
