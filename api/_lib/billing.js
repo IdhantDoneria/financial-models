@@ -37,6 +37,17 @@ const PLANS = {
          blurb: "50 company uploads / month · everything in FREE" },
   unlimited: { id: "unlimited", name: "DESK UNLIMITED", amount: 49_900, mrp: 59_900,
                uploads: null, blurb: "Unlimited uploads · everything in PRO" },
+  //: Sales-led tier — bespoke pricing, so `amount` is 0 and `contact:true`.
+  //  The order handler rejects any plan without an amount, so ENTERPRISE can
+  //  never be self-served through Razorpay; it is provisioned by the operator
+  //  (admin grant) after a commercial agreement.
+  enterprise: { id: "enterprise", name: "ENTERPRISE", amount: 0, uploads: null,
+                contact: true, seats: 20,
+                blurb: "Unrestricted access to the entire platform with unlimited analyses. " +
+                       "Guaranteed priority compute during periods of peak market traffic, " +
+                       "provisioning for up to 20 named team members, and early access to newly " +
+                       "released capabilities ahead of general availability — accompanied by " +
+                       "dedicated onboarding and priority support." },
 };
 
 const configured = () => DEV || !!(KEY_ID && KEY_SECRET);

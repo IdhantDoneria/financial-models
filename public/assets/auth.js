@@ -251,8 +251,7 @@ function setServerTab(which) {
 function initServerAuth(cfg) {
   if (!cfg || !cfg.serverAuth) {
     // device-local mode stays; say so under the card footer for transparency
-    $(".afoot").insertAdjacentHTML("afterbegin",
-      "SERVER AUTH OFFLINE — DEVICE-LOCAL MODE · ");
+    $(".afoot").textContent = "SERVER AUTH OFFLINE — DEVICE-LOCAL MODE";
     return;
   }
   // server mode: email OTP (+ optional saved password) replaces local accounts

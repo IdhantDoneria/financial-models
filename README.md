@@ -287,7 +287,8 @@ The backend is fully coded and tested — it activates on env vars alone:
 | Step | What | Env vars |
 |---|---|---|
 | 1 · Database | Vercel dashboard → *Storage / Marketplace* → add **Upstash for Redis** (free). The integration injects the vars automatically. | `KV_REST_API_URL`, `KV_REST_API_TOKEN` (or `UPSTASH_REDIS_REST_URL`/`_TOKEN`) |
-| 2 · Email | Create a free [resend.com](https://resend.com) account → API key. The default `onboarding@resend.dev` sender only delivers to your own inbox; verify a domain and set `EMAIL_FROM` for real users. | `RESEND_API_KEY`, optional `EMAIL_FROM` |
+| 2 · Email | Create a dedicated Gmail "work" account for sending codes → enable **2-Step Verification** → *Google Account ▸ Security ▸ App passwords* → generate a 16-char **App password** (a normal login password will not work over SMTP). Delivery uses **Nodemailer** over Gmail SMTP. Free Gmail sends ~500 msgs/day (Workspace ~2000). | `GMAIL_USER` (the address), `GMAIL_APP_PASSWORD` (the 16-char app password), optional `EMAIL_FROM` |
+| 2 · Email (fallback) | Optional — if you'd rather use [resend.com](https://resend.com), leave the Gmail vars unset and provide a Resend key instead. Gmail takes priority when both are present. | `RESEND_API_KEY`, optional `EMAIL_FROM` |
 | 3 · Optional | Random string to pepper OTP hashes. | `AUTH_SECRET` |
 
 Redeploy after setting the vars — `/api/auth-config` flips `serverAuth: true` and the login
@@ -295,7 +296,9 @@ page switches to OTP mode by itself. Endpoints: `auth-request-otp` (6-digit code
 hash only, 10-min TTL, 60s resend cooldown, 5 sends/hour), `auth-verify-otp` (timing-safe
 compare, 5 attempts, single-use, upserts the profile, issues the session), `auth-me`,
 `auth-logout` (revocation). Test locally without any credentials:
-`node scripts/test_auth_api.js` (16 backend checks) and
+`node scripts/test_auth_api.js` (16 backend checks),
+`node scripts/stress_otp.js` (mailer transport selection + Gmail send path with
+Nodemailer mocked + high-volume request→verify load) and
 `python scripts/e2e_auth_otp.py` (full browser flow against
 `scripts/dev_auth_server.js`).
 

@@ -392,11 +392,12 @@ function buildUI() {
   initCountry();
   initBilling();
 
-  // signed-in identity chip + sign out
+  // signed-in identity chip (SIGN OUT now lives inside the hamburger menu)
   const u = state.user;
   $("#who").innerHTML = `${["google", "otp"].includes(u.provider) ? "◉" : "●"} USER <b>${
     String(u.name || u.uid).toUpperCase().slice(0, 24)}</b>`;
-  $("#signout").onclick = (e) => { e.preventDefault(); signOut(); };
+  const mw = $("#menu-who");
+  if (mw) mw.innerHTML = `SIGNED IN · <b>${String(u.name || u.uid).toUpperCase().slice(0, 22)}</b>`;
 
   setInterval(() => {
     $("#clock").textContent = new Date().toISOString().slice(0, 19).replace("T", " ") + " UTC";
@@ -1236,6 +1237,7 @@ function initMenu() {
   $("#burger").onclick = openMenu;
   $("#menu-close").onclick = closeMenu;
   $("#menu-backdrop").onclick = closeMenu;
+  $("#menu-signout").onclick = (e) => { e.preventDefault(); signOut(); };
   document.querySelectorAll(".mtab").forEach((t) => {
     t.onclick = () => {
       document.querySelectorAll(".mtab").forEach((x) => x.classList.toggle("on", x === t));
@@ -1274,7 +1276,7 @@ function renderGuide(body) {
     ["5", "<b>Stress-test it (SCEN tab).</b> Open SCEN in the ANALYTICS panel to run the scenario &amp; sensitivity engine: save (or ⚡ auto-seed) BEAR / BASE / BULL assumption sets and compare them side-by-side, run a tornado chart ranking which input moves your answer most, and sweep any two inputs in a colour-coded 7×7 sensitivity grid. Every cell is a real in-runtime model run — no approximations."],
     ["6", "<b>Analyse a real company (IB DESK).</b> Type <b>IB</b> ⏎ or click IB DESK. Upload a 10-K/10-Q PDF — it scrapes the financials, fills any gaps automatically (auto IB-bot mode) or lets you set them by hand (manual mode), runs the models you tick, and exports a report as PDF / Google-Docs / Excel."],
     ["7", "<b>Keep your work.</b> Every company you run through the IB desk is saved to HISTORY here — reopen or remove any past analysis. Your market choice and history persist on this device."],
-    ["8", "<b>Your account.</b> Sign in with email, Google, or explore as a guest (bottom-right shows who's signed in; SIGN OUT is next to it). History is kept per account, and credentials never leave this device — passwords are hashed locally, there's no server database."],
+    ["8", "<b>Your account.</b> Sign in with email, Google, or explore as a guest (bottom-right shows who's signed in; SIGN OUT is at the bottom of this menu). History is kept per account, and credentials never leave this device — passwords are hashed locally, there's no server database."],
   ];
   body.innerHTML = `<h3>HOW TO USE THIS TERMINAL</h3>` +
     steps.map(([n, t]) => `<div class="guide-step"><div class="num">${n}</div><div class="txt">${t}</div></div>`).join("") +
@@ -1813,6 +1815,7 @@ async function consumeUpload() {
 
 /* ------------------------------ PLAN tab -------------------------------- */
 function planPriceHTML(p) {
+  if (p.contact) return `<div class="pprice">CUSTOM <small>TAILORED TO YOUR DESK</small></div>`;
   if (!p.priceInr) return `<div class="pprice">₹0 <small>FOREVER</small></div>`;
   const strike = p.mrpInr ? `<s>₹${p.mrpInr}</s> ` : "";
   const save = p.mrpInr ? `<span class="psave">SAVE ₹${p.mrpInr - p.priceInr}</span>` : "";
@@ -1866,19 +1869,26 @@ async function renderPlanTab(body) {
     { id: "free", name: "FREE", priceInr: 0, uploads: 5, blurb: "5 company uploads / month · all 10 models · SCEN engine" },
     { id: "pro", name: "ANALYST PRO", priceInr: 299, uploads: 50, blurb: "50 company uploads / month · everything in FREE" },
     { id: "unlimited", name: "DESK UNLIMITED", priceInr: 499, mrpInr: 599, uploads: null, blurb: "Unlimited uploads · everything in PRO" },
+    { id: "enterprise", name: "ENTERPRISE", priceInr: 0, uploads: null, contact: true, seats: 20,
+      blurb: "Unrestricted access to the entire platform with unlimited analyses, guaranteed priority compute during peak traffic, provisioning for up to 20 team members, and early access to new capabilities ahead of general release — with dedicated onboarding and priority support." },
   ];
+  const salesEmail = (cfg && cfg.contactEmail) || "sales@finmodels.app";
   const canBuy = cfg && cfg.billing && isOtp;
   body.innerHTML = `<h3>PLANS &amp; USAGE</h3>${head}
     <div class="pcards">${plans.map((p) => `
       <div class="pcard ${p.id} ${current === p.id ? "cur" : ""}">
         ${p.id === "unlimited" ? `<div class="pflag">BEST VALUE</div>` : ""}
+        ${p.contact ? `<div class="pflag teams">FOR TEAMS</div>` : ""}
         <div class="pname">${p.name}</div>
         ${planPriceHTML(p)}
         <div class="pquota">${p.uploads === null ? "UNLIMITED" : p.uploads} UPLOADS${p.uploads === null ? "" : " / MO"}</div>
+        ${p.seats ? `<div class="pquota seats">UP TO ${p.seats} SEATS</div>` : ""}
         <div class="pblurb">${p.blurb}</div>
-        ${p.id === "free"
-          ? `<button class="pbuy" disabled>${current === "free" ? "CURRENT PLAN" : "INCLUDED"}</button>`
-          : `<button class="pbuy" data-plan="${p.id}" ${canBuy && current !== p.id ? "" : "disabled"}>
+        ${p.contact
+          ? `<a class="pbuy contact" href="mailto:${salesEmail}?subject=${encodeURIComponent("Enterprise enquiry — FINMODELS TERMINAL")}">CONTACT SALES</a>`
+          : p.id === "free"
+            ? `<button class="pbuy" disabled>${current === "free" ? "CURRENT PLAN" : "INCLUDED"}</button>`
+            : `<button class="pbuy" data-plan="${p.id}" ${canBuy && current !== p.id ? "" : "disabled"}>
                ${current === p.id ? "CURRENT PLAN" : cfg && cfg.billing ? `UPGRADE — ₹${p.priceInr}` : "OFFLINE"}</button>`}
       </div>`).join("")}</div>
     <div class="pnote" id="pmsg">Paid plans are 30-day passes — renewing or upgrading early credits your

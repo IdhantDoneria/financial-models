@@ -1,0 +1,17 @@
+{
+  "name": "financial-models",
+  "version": "1.0.0",
+  "private": true,
+  "description": "FINMODELS terminal — serverless auth/billing API (Vercel Node functions) for the static showcase site in public/.",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test:auth": "node scripts/test_auth_api.js",
+    "test:otp-stress": "node scripts/stress_otp.js",
+    "dev:auth": "node scripts/dev_auth_server.js"
+  },
+  "dependencies": {
+    "nodemailer": "^6.9.14"
+  }
+}

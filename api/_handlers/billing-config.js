@@ -26,7 +26,11 @@ module.exports = async (req, res) => {
       id: p.id, name: p.name, blurb: p.blurb,
       priceInr: p.amount / 100, mrpInr: p.mrp ? p.mrp / 100 : null,
       uploads: p.uploads,                       // null = unlimited
+      contact: !!p.contact,                     // sales-led tier (no self-serve checkout)
+      seats: p.seats || null,
     })),
+    // where the ENTERPRISE "contact sales" button points; override with SALES_EMAIL.
+    contactEmail: process.env.SALES_EMAIL || "sales@finmodels.app",
     validityDays: B.PLAN_TTL / 86_400,
   });
 };

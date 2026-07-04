@@ -362,6 +362,17 @@ html, body {
 .mtab:hover { color: var(--text); background: var(--panel-alt); }
 .mtab.on { color: var(--amber); border-bottom: 2px solid var(--amber); }
 .menu-body { flex: 1; overflow: auto; padding: 16px 18px; }
+.menu-foot {
+  flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; padding: 10px 18px; border-top: 1px solid var(--border); background: var(--panel-alt);
+}
+.menu-foot #menu-who { color: var(--text-dim); font-size: 10px; letter-spacing: 0.08em; }
+.menu-foot #menu-who b { color: var(--text); }
+#menu-signout {
+  background: none; border: 1px solid var(--red); color: var(--red);
+  font: 10px var(--mono); letter-spacing: 0.12em; padding: 7px 16px; cursor: pointer;
+}
+#menu-signout:hover { background: rgba(255, 77, 77, 0.1); }
 
 /* guide */
 .guide-step { display: flex; gap: 12px; margin-bottom: 14px; }
@@ -518,3 +529,11 @@ html, body {
 .pcard.cur .pbuy:disabled { border-color: var(--green); color: var(--green); }
 .pnote.gift { color: var(--amber); border: 1px dashed var(--amber-dim); padding: 8px 10px; }
 .pnote.gift b { letter-spacing: 0.08em; }
+.pcard.enterprise { border-color: var(--cyan); }
+.pflag.teams { background: var(--cyan); }
+.pquota.seats { color: var(--cyan); }
+.pcard .pbuy.contact {
+  border-color: var(--cyan); color: var(--cyan); text-align: center; text-decoration: none;
+  line-height: 1; display: block;
+}
+.pcard .pbuy.contact:hover { border-color: var(--cyan); background: rgba(90, 200, 250, 0.1); }

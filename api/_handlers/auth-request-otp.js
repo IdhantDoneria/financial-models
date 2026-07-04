@@ -3,7 +3,8 @@
 // Generates a 6-digit one-time code, stores only its salted hash (10-min
 // TTL, 5 attempts), and emails the code. Guard rails: 60 s resend cooldown
 // and 5 sends/hour per address. Returns 503 with an explicit reason until
-// the deployment has a store (Upstash Redis) and a mailer (Resend key).
+// the deployment has a store (Upstash Redis) and a mailer (Gmail via
+// Nodemailer, or Resend as a fallback).
 
 const store = require("../_lib/store");
 const email = require("../_lib/email");
@@ -14,7 +15,7 @@ module.exports = async (req, res) => {
   if (!store.configured())
     return A.json(res, 503, { error: "SERVER AUTH NOT CONFIGURED — no database attached (see README: Upstash Redis)" });
   if (!email.configured())
-    return A.json(res, 503, { error: "EMAIL NOT CONFIGURED — set RESEND_API_KEY (see README)" });
+    return A.json(res, 503, { error: "EMAIL NOT CONFIGURED — set GMAIL_USER + GMAIL_APP_PASSWORD (see README)" });
 
   let body;
   try { body = await A.readBody(req); } catch { return A.json(res, 400, { error: "invalid JSON" }); }
