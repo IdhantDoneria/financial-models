@@ -55,16 +55,43 @@ module.exports = {
     if (DEV) { mem.delete(key); return; }
     await redis("DEL", key);
   },
-  /** INCR with a TTL started on first increment — rate-limit counters. */
+  /** INCR, with an optional TTL started on first increment (rate-limit
+   *  counters). Without a TTL it's a permanent counter (founder slots). */
   async incr(key, ttlSec) {
     if (DEV) {
       const cur = parseInt(memGet(key) || "0", 10) + 1;
       const e = mem.get(key);
-      mem.set(key, { v: String(cur), exp: e && e.exp ? e.exp : Date.now() + ttlSec * 1000 });
+      mem.set(key, { v: String(cur),
+        exp: e && e.exp ? e.exp : ttlSec ? Date.now() + ttlSec * 1000 : 0 });
       return cur;
     }
     const n = await redis("INCR", key);
-    if (n === 1) await redis("EXPIRE", key, String(ttlSec));
+    if (n === 1 && ttlSec) await redis("EXPIRE", key, String(ttlSec));
     return n;
+  },
+
+  /** Set membership — the user registry (users:index) for the admin desk. */
+  async sadd(key, member) {
+    if (DEV) {
+      const cur = mem.get(key);
+      const set = cur && cur.v instanceof Set ? cur.v : new Set();
+      set.add(member);
+      mem.set(key, { v: set, exp: 0 });
+      return;
+    }
+    await redis("SADD", key, member);
+  },
+  async smembers(key) {
+    if (DEV) {
+      const cur = mem.get(key);
+      return cur && cur.v instanceof Set ? [...cur.v] : [];
+    }
+    return (await redis("SMEMBERS", key)) || [];
+  },
+  /** Batched GET — one round-trip for the admin user table. */
+  async mget(keys) {
+    if (!keys.length) return [];
+    if (DEV) return keys.map((k) => memGet(k));
+    return (await redis("MGET", ...keys)) || keys.map(() => null);
   },
 };

@@ -346,6 +346,36 @@ consume, `402` when the month's allowance is spent). Test locally with zero cred
 replayed payments, upgrade day-carry, webhook, expiry) and `python scripts/e2e_billing.py`
 (real-browser purchase through the dev-fake gateway).
 
+#### 🎁 Founders promo — first 20 users free
+
+The **first 20 email accounts automatically receive one month of DESK UNLIMITED free**,
+claimed atomically at sign-up (a Redis counter is the arbiter, so two simultaneous
+sign-ups can never share a slot). The login page advertises the remaining slots
+(`🎁 FOUNDERS OFFER — N SLOTS LEFT`), the winner's PLAN tab opens itself once with the
+**FOUNDER PASS #N** banner, and the admin desk shows who claimed which slot.
+
+#### 🔑 Password sign-in (cloud accounts)
+
+On the email-code screen, users can optionally **set a password** (min 8 chars). It is
+stored server-side as an scrypt hash — the password itself never persists — and from
+then on the login page's **PASSWORD** tab signs them in directly, no code round-trip.
+Wrong-password attempts are rate-limited (10 per 15 min per address); "forgot password"
+is just the EMAIL CODE tab again (verifying a fresh code lets a new password be set).
+Everything about an account — profile, sign-in history, password hash, plan, usage —
+lives in the cloud store.
+
+#### ⚙ Admin desk — `/admin`
+
+The operator's console at **`https://<your-domain>/admin`** (set an `ADMIN_KEY` env var
+in Vercel, then enter it on the page — it is checked server-side, timing-safe, on every
+request). It shows **every account**: email, name, founder slot, whether a password is
+set, plan + how they got it (FOUNDER / GRANT / CHECKOUT), expiry, uploads this month,
+sign-in count, last seen, joined. And it is the **manual grant mechanism**: type any
+email, choose a plan and a duration (7–365 days) → that person gets free premium — it
+works even before they sign up (the pass is waiting at first sign-in), re-granting
+stacks days, and REVOKE ends a plan instantly. Backed by `/api/admin`; tested by
+`node scripts/test_admin_founders.js` (26 checks) and `python scripts/e2e_founders_admin.py`.
+
 ### ☰ Menu & 🌐 market selector
 
 Two persistent controls frame every view:

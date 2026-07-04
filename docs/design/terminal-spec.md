@@ -329,3 +329,45 @@ the modal so the whole purchase is locally testable: 24 backend checks in
 (store must also be configured); `RAZORPAY_WEBHOOK_SECRET` arms the webhook.
 Unconfigured production stays free/unmetered with an explicit PLAN-tab
 offline state.
+
+## 14 · Founders promo · password layer · admin desk
+
+**Founders promo.** The first `FOUNDER_CAP = 20` verified email accounts each
+receive `FOUNDER_DAYS = 30` days of DESK UNLIMITED free. Claim happens in
+`auth-verify-otp` guarded by a per-user `founderChecked` flag; the atomic
+arbiter is `INCR founders:claimed` (permanent counter), so concurrent
+sign-ups can't share a slot and an account can never draw twice. Slot number
+is stored on the profile (`user.founder`) and the pass (`sub.founderNo`).
+Visibility: the login page banner (`#founders`, fed by `foundersLeft` on
+`auth-config`), a one-shot PLAN-tab auto-open after the winning sign-in
+(sessionStorage toast), the 🎁 FOUNDER PASS banner + plan chip in the
+terminal, and per-row FOUNDER #N tags on the admin desk.
+
+**Password layer.** Optional password (min 8) set on the OTP code screen —
+the code proves the email first. Stored server-side as
+`scrypt(salt, 64)` (`user.pw`); `POST /api/auth-login {email, password}`
+issues the same 30-day bearer session as the OTP path, with a 10-tries /
+15-min lockout per address (`pwtry:*`). The login page's server mode shows
+EMAIL CODE · PASSWORD subtabs (`.stabs`); forgot-password = the code tab
+(re-verifying rotates the password). Sending a password again on the code
+screen rotates it.
+
+**Admin desk.** `public/admin.html` (served at `/admin`, noindex) +
+`/api/admin`, authenticated with the `ADMIN_KEY` env var via `X-Admin-Key`
+(timing-safe; dev harness key `devadmin`; 503 until configured). GET returns
+the full directory from the `users:index` set (SADD on every sign-in) with
+one MGET batch each for `user:*`, `sub:*`, `use:*:<month>`: email, name,
+founder slot, passwordSet, plan + `via` (founder/grant/checkout), expiry,
+uploads this month, sign-ins, last seen, joined — plus totals. POST
+`{action:"grant", email, plan, days(1-365)}` writes a `via:"grant"` pass —
+valid even for emails that never signed up (SADD makes them visible as "not
+signed up yet"; the plan is waiting at first sign-in); re-granting stacks
+from the current expiry. `{action:"revoke", email}` deletes the pass.
+
+Tests: `scripts/test_admin_founders.js` (26 in-process checks: slot
+arithmetic under 22 signups, no double-draw, password set/login/lockout,
+directory contents, pre-signup grants, stacking, revoke, bounds) and
+`scripts/e2e_founders_admin.py` (real-browser banner → founder signup with
+password → FOUNDER PASS reveal → password re-login → admin unlock →
+grant/revoke). The billing suite pre-exhausts the promo to keep testing the
+paid path.

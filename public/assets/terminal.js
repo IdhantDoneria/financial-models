@@ -1760,7 +1760,15 @@ async function initBilling() {
   $("#planchip").onclick = () => openMenuTab("plan");
   await getBillingCfg();
   syncPlanChip();
-  refreshUsage();
+  await refreshUsage();
+  // Founders reveal: a just-signed-up winner gets shown their free month
+  // once — the PLAN tab opens itself with the FOUNDER PASS banner.
+  try {
+    if (sessionStorage.getItem("finmodels.founderToast")) {
+      sessionStorage.removeItem("finmodels.founderToast");
+      openMenuTab("plan");
+    }
+  } catch { /* storage unavailable */ }
 }
 
 function syncPlanChip() {
@@ -1830,13 +1838,28 @@ async function renderPlanTab(body) {
   } else if (us) {
     const lim = us.limit === null ? "∞" : us.limit;
     const pctUsed = us.limit === null ? 0 : Math.min(100, (us.used / us.limit) * 100);
-    head = `<div class="pusage">
+    // free access won through the founders promo or gifted by the operator
+    // announces itself right on the plan screen.
+    let gift = "";
+    if (us.via === "founder") {
+      gift = `<div class="pnote gift">🎁 <b>FOUNDER PASS${us.founderNo ? " #" + us.founderNo : ""}</b>
+        — you're one of the first 20 users: <b>1 MONTH OF ${us.planName} FREE</b>, active until
+        ${us.expiresAt ? new Date(us.expiresAt).toLocaleDateString() : "—"}.</div>`;
+    } else if (us.via === "grant") {
+      gift = `<div class="pnote gift">🎁 <b>COMPLIMENTARY ACCESS</b> — ${us.planName} granted
+        free of charge, active until ${us.expiresAt ? new Date(us.expiresAt).toLocaleDateString() : "—"}.</div>`;
+    }
+    head = gift + `<div class="pusage">
       <div class="purow"><span>SIGNED IN AS</span><b>${String(u.name || u.uid).toUpperCase().slice(0, 28)}</b></div>
       <div class="purow"><span>CURRENT PLAN</span><b class="${current !== "free" ? "paid" : ""}">${us.planName}</b></div>
       <div class="purow"><span>UPLOADS THIS MONTH (${us.month || ""})</span><b>${us.used} / ${lim}</b></div>
       ${us.limit !== null ? `<div class="pmeterbar"><div style="width:${pctUsed}%"></div></div>` : ""}
       ${us.expiresAt ? `<div class="purow"><span>PLAN RENEWS/EXPIRES</span><b>${new Date(us.expiresAt).toLocaleDateString()}</b></div>` : ""}
     </div>`;
+    if (current === "free" && cfg && typeof cfg.foundersLeft === "number" && cfg.foundersLeft > 0) {
+      head += `<div class="pnote gift">🎁 ${cfg.foundersLeft} OF 20 FOUNDER SLOTS LEFT —
+        the first 20 email accounts get 1 month of DESK UNLIMITED free, automatically.</div>`;
+    }
   }
 
   const plans = (cfg && cfg.plans) || [

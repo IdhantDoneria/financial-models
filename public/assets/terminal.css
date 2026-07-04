@@ -516,3 +516,5 @@ html, body {
 .pcard .pbuy:hover:not(:disabled) { border-color: var(--amber); background: rgba(255, 176, 0, 0.08); }
 .pcard .pbuy:disabled { border-color: var(--border); color: var(--text-dim); cursor: default; }
 .pcard.cur .pbuy:disabled { border-color: var(--green); color: var(--green); }
+.pnote.gift { color: var(--amber); border: 1px dashed var(--amber-dim); padding: 8px 10px; }
+.pnote.gift b { letter-spacing: 0.08em; }

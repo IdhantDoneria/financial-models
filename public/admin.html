@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FINMODELS — Admin desk</title>
+  <meta name="robots" content="noindex, nofollow">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' fill='%23050608'/><text y='72' x='50' font-size='58' text-anchor='middle' fill='%23ffb000' font-family='monospace'>⚙</text></svg>">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root { --bg:#050608; --panel:#0b0e12; --panel-alt:#10141a; --border:#1d2530;
+      --amber:#ffb000; --amber-dim:#8a6200; --cyan:#53c9e0; --green:#3dd68c;
+      --red:#ff5d5d; --text:#c9d4e0; --dim:#5c6b7d;
+      --mono:"IBM Plex Mono",ui-monospace,Menlo,Consolas,monospace; }
+    * { box-sizing:border-box; margin:0; padding:0; }
+    body { background:var(--bg); color:var(--text); font:12px var(--mono); padding:20px; }
+    h1 { color:var(--amber); font-size:15px; font-weight:500; letter-spacing:.12em; }
+    h1 small { color:var(--dim); font-size:10px; display:block; margin-top:4px; letter-spacing:.08em; }
+    .bar { display:flex; gap:8px; align-items:center; margin:16px 0; flex-wrap:wrap; }
+    input, select { background:var(--panel-alt); border:1px solid var(--border); color:var(--text);
+      font:12px var(--mono); padding:7px 9px; }
+    input:focus, select:focus { outline:none; border-color:var(--amber-dim); }
+    button { background:var(--panel-alt); border:1px solid var(--amber-dim); color:var(--amber);
+      font:11px var(--mono); letter-spacing:.08em; padding:7px 12px; cursor:pointer; }
+    button:hover:not(:disabled) { border-color:var(--amber); background:rgba(255,176,0,.08); }
+    button:disabled { opacity:.4; cursor:default; }
+    button.ghost { border-color:var(--border); color:var(--dim); }
+    button.danger { border-color:var(--red); color:var(--red); }
+    #msg { font-size:11px; color:var(--dim); min-height:16px; margin:6px 0; }
+    #msg.err { color:var(--red); } #msg.ok { color:var(--green); }
+    .stats { display:flex; gap:12px; flex-wrap:wrap; margin:14px 0; }
+    .stat { border:1px solid var(--border); background:var(--panel); padding:10px 16px; min-width:130px; }
+    .stat b { display:block; color:var(--cyan); font-size:17px; margin-top:2px; }
+    .stat.founder b { color:var(--amber); }
+    table { border-collapse:collapse; width:100%; margin-top:14px; }
+    th, td { border:1px solid var(--border); padding:6px 9px; text-align:left; font-size:11px; }
+    th { color:var(--dim); font-weight:400; letter-spacing:.1em; font-size:10px;
+      background:var(--panel); position:sticky; top:0; }
+    td.num { text-align:right; }
+    .tag { display:inline-block; padding:1px 6px; font-size:9px; letter-spacing:.08em;
+      border:1px solid var(--border); color:var(--dim); }
+    .tag.founder { border-color:var(--amber); color:var(--amber); }
+    .tag.grant { border-color:var(--cyan); color:var(--cyan); }
+    .tag.checkout { border-color:var(--green); color:var(--green); }
+    .tag.pw { border-color:var(--green); color:var(--green); }
+    .plan-free { color:var(--dim); } .plan-pro, .plan-unlimited { color:var(--green); }
+    .ghosted { color:var(--dim); font-style:italic; }
+    #grantbox { border:1px solid var(--border); background:var(--panel); padding:14px; margin:18px 0; }
+    #grantbox .t { color:var(--cyan); font-size:11px; letter-spacing:.12em; margin-bottom:10px; }
+    #gate { max-width:520px; margin:80px auto; border:1px solid var(--border);
+      background:var(--panel); padding:26px; }
+    #gate p { color:var(--dim); font-size:11px; line-height:1.7; margin:10px 0 14px; }
+    #gate input { width:100%; margin-bottom:10px; }
+    #app { display:none; }
+    .foot { color:var(--dim); font-size:10px; margin-top:22px; line-height:1.7; }
+    a { color:var(--cyan); }
+  </style>
+</head>
+<body>
+
+  <!-- key gate -->
+  <div id="gate">
+    <h1>⚙ FINMODELS ADMIN DESK<small>USERS · FOUNDERS PROMO · PREMIUM GRANTS</small></h1>
+    <p>Enter the operator key (the <b>ADMIN_KEY</b> environment variable set in Vercel).
+       It is checked server-side on every request and never stored on the server pages.</p>
+    <input id="key" type="password" placeholder="ADMIN KEY" autocomplete="off">
+    <button id="enter">UNLOCK &lt;GO&gt;</button>
+    <div id="gate-err" style="color:var(--red);font-size:11px;margin-top:10px"></div>
+  </div>
+
+  <!-- desk -->
+  <div id="app">
+    <h1>⚙ FINMODELS ADMIN DESK<small id="sub">EVERY ACCOUNT · SIGN-IN HISTORY · PLANS · UPLOAD USAGE</small></h1>
+
+    <div class="stats" id="stats"></div>
+
+    <div id="grantbox">
+      <div class="t">GIVE FREE PREMIUM — TYPE AN EMAIL, CHOOSE A DURATION</div>
+      <div class="bar">
+        <input id="g-email" type="email" placeholder="person@example.com" style="min-width:240px">
+        <select id="g-plan">
+          <option value="unlimited" selected>DESK UNLIMITED</option>
+          <option value="pro">ANALYST PRO (50/mo)</option>
+        </select>
+        <select id="g-days">
+          <option value="7">7 DAYS</option>
+          <option value="14">14 DAYS</option>
+          <option value="30" selected>30 DAYS (1 MONTH)</option>
+          <option value="90">90 DAYS</option>
+          <option value="180">180 DAYS</option>
+          <option value="365">365 DAYS</option>
+        </select>
+        <button id="g-go">GRANT FREE ACCESS &lt;GO&gt;</button>
+      </div>
+      <div id="msg"></div>
+      <div style="color:var(--dim);font-size:10px;line-height:1.6">Works even if the person
+        hasn't signed up yet — the pass is waiting when they first verify their email.
+        Granting again extends the current expiry; REVOKE ends a plan immediately.</div>
+    </div>
+
+    <div class="bar">
+      <button id="refresh" class="ghost">↻ REFRESH</button>
+      <button id="lock" class="ghost">LOCK DESK</button>
+      <span id="asof" style="color:var(--dim);font-size:10px"></span>
+    </div>
+    <table id="users"><thead><tr>
+      <th>EMAIL</th><th>NAME</th><th>PLAN</th><th>ACCESS VIA</th><th>EXPIRES</th>
+      <th>UPLOADS (MO)</th><th>SIGN-INS</th><th>LAST SEEN</th><th>JOINED</th><th></th>
+    </tr></thead><tbody></tbody></table>
+
+    <div class="foot">Every value comes live from the Redis store (<b>user:*</b>,
+      <b>sub:*</b>, <b>use:*</b> keys) via <b>/api/admin</b>. Founder slots: the first 20
+      verified email accounts automatically receive one month of DESK UNLIMITED.</div>
+  </div>
+
+<script>
+"use strict";
+const $ = (s) => document.querySelector(s);
+const LSK = "finmodels.adminkey";
+let KEY = null;
+
+async function api(method, body) {
+  const r = await fetch("api/admin", {
+    method,
+    headers: { "X-Admin-Key": KEY, ...(body ? { "Content-Type": "application/json" } : {}) },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+  return j;
+}
+
+const fdate = (iso) => iso ? new Date(iso).toLocaleString(undefined,
+  { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : "—";
+
+function render(data) {
+  const t = data.totals;
+  $("#stats").innerHTML = `
+    <div class="stat">SIGNED-UP USERS<b>${t.users}</b></div>
+    <div class="stat">ACTIVE PAID<b>${t.activePaid}</b></div>
+    <div class="stat">FREE-ACCESS GRANTS<b>${t.granted}</b></div>
+    <div class="stat founder">FOUNDER SLOTS CLAIMED<b>${t.foundersClaimed} / 20</b></div>
+    <div class="stat founder">FOUNDER SLOTS LEFT<b>${t.foundersLeft}</b></div>`;
+  const tb = $("#users tbody");
+  tb.innerHTML = data.rows.map((r) => `
+    <tr>
+      <td><b>${r.email}</b>${r.founder ? ` <span class="tag founder">FOUNDER #${r.founder}</span>` : ""}${
+        r.passwordSet ? ` <span class="tag pw">PW</span>` : ""}</td>
+      <td>${r.signedUp ? (r.name || "—") : `<span class="ghosted">not signed up yet</span>`}</td>
+      <td class="plan-${r.plan}">${r.planName}</td>
+      <td>${r.via ? `<span class="tag ${r.via}">${r.via.toUpperCase()}</span>` : "—"}</td>
+      <td>${r.expiresAt ? new Date(r.expiresAt).toLocaleDateString() : "—"}</td>
+      <td class="num">${r.usedThisMonth}</td>
+      <td class="num">${r.loginCount}</td>
+      <td>${fdate(r.lastLoginAt)}</td>
+      <td>${fdate(r.createdAt)}</td>
+      <td>${r.plan !== "free"
+        ? `<button class="danger" data-revoke="${r.email}">REVOKE</button>`
+        : `<button data-grant="${r.email}">GIFT 30D</button>`}</td>
+    </tr>`).join("") || `<tr><td colspan="10" class="ghosted">No users yet — accounts appear
+      here the moment someone verifies their email on the login page.</td></tr>`;
+  tb.querySelectorAll("[data-revoke]").forEach((b) => b.onclick = async () => {
+    await act({ action: "revoke", email: b.dataset.revoke }, `REVOKED ${b.dataset.revoke}`);
+  });
+  tb.querySelectorAll("[data-grant]").forEach((b) => b.onclick = async () => {
+    await act({ action: "grant", email: b.dataset.grant, plan: "unlimited", days: 30 },
+              `GRANTED 30 DAYS UNLIMITED TO ${b.dataset.grant}`);
+  });
+  $("#asof").textContent = `AS OF ${new Date().toLocaleTimeString()} · MONTH ${data.month}`;
+}
+
+function msg(text, cls) { const el = $("#msg"); el.textContent = text; el.className = cls || ""; }
+
+async function act(body, okText) {
+  try { await api("POST", body); msg("✔ " + okText, "ok"); await refresh(); }
+  catch (e) { msg("✗ " + e.message, "err"); }
+}
+
+async function refresh() { render(await api("GET")); }
+
+async function unlock(key) {
+  KEY = key;
+  try {
+    await refresh();
+    localStorage.setItem(LSK, key);
+    $("#gate").style.display = "none";
+    $("#app").style.display = "block";   // CSS default is none — inline must override
+  } catch (e) {
+    KEY = null;
+    $("#gate-err").textContent = "✗ " + e.message;
+  }
+}
+
+window.addEventListener("DOMContentLoaded", () => {
+  $("#enter").onclick = () => unlock($("#key").value.trim());
+  $("#key").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#enter").click(); });
+  $("#refresh").onclick = () => refresh().catch((e) => msg("✗ " + e.message, "err"));
+  $("#lock").onclick = () => { localStorage.removeItem(LSK); location.reload(); };
+  $("#g-go").onclick = () => {
+    const email = $("#g-email").value.trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return msg("✗ ENTER A VALID EMAIL", "err");
+    act({ action: "grant", email, plan: $("#g-plan").value, days: +$("#g-days").value },
+        `GRANTED ${$("#g-days").value} DAYS OF ${$("#g-plan").value.toUpperCase()} TO ${email}`);
+  };
+  const saved = localStorage.getItem(LSK);
+  if (saved) unlock(saved);
+});
+</script>
+</body>
+</html>
