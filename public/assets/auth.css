@@ -82,6 +82,10 @@ label.remember input { accent-color: var(--amber); }
 #otp-resend:not(:disabled):hover { color: var(--amber); border-color: var(--amber-dim); }
 #otp-resend:disabled { cursor: not-allowed; opacity: 0.5; }
 #otp-code { letter-spacing: 0.45em; font-size: 17px !important; text-align: center; }
+#otp-spamhint {
+  color: var(--amber-dim); font-size: 9.5px; letter-spacing: 0.04em;
+  line-height: 1.6; margin: 2px 0 8px;
+}
 
 #guest {
   margin-top: 14px; width: 100%; background: transparent;
