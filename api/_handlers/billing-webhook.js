@@ -7,12 +7,11 @@
 // at order creation) say whose pass to activate. Activation is idempotent
 // with the checkout-verify path.
 
-const store = require("./_lib/store");
-const B = require("./_lib/billing");
+const store = require("../_lib/store");
+const B = require("../_lib/billing");
 
-//: Signature is over raw bytes — keep Vercel's JSON body helper off.
-module.exports.config = { api: { bodyParser: false } };
-
+// Signature is over raw bytes — the parent /api/billing function keeps
+// Vercel's JSON body helper off for the whole dispatcher.
 module.exports = async (req, res) => {
   const json = (code, obj) => {
     res.setHeader("Content-Type", "application/json; charset=utf-8");

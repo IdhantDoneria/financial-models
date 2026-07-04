@@ -6,9 +6,9 @@
 // calling account. On success the 30-day plan pass is written (idempotent
 // with the webhook path) and the order record is consumed.
 
-const store = require("./_lib/store");
-const A = require("./_lib/auth");
-const B = require("./_lib/billing");
+const store = require("../_lib/store");
+const A = require("../_lib/auth");
+const B = require("../_lib/billing");
 
 module.exports = async (req, res) => {
   if (req.method !== "POST") return A.json(res, 405, { error: "POST only" });

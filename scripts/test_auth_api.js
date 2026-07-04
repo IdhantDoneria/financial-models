@@ -11,11 +11,11 @@ process.env.AUTH_DEV_MEMORY = "1";
 delete process.env.RESEND_API_KEY;
 
 const assert = require("node:assert");
-const requestOtp = require("../api/auth-request-otp.js");
-const verifyOtp = require("../api/auth-verify-otp.js");
-const me = require("../api/auth-me.js");
-const logout = require("../api/auth-logout.js");
-const config = require("../api/auth-config.js");
+const requestOtp = require("../api/_handlers/auth-request-otp.js");
+const verifyOtp = require("../api/_handlers/auth-verify-otp.js");
+const me = require("../api/_handlers/auth-me.js");
+const logout = require("../api/_handlers/auth-logout.js");
+const config = require("../api/_handlers/auth-config.js");
 
 function call(handler, { method = "POST", body, token } = {}) {
   const req = { method, body, headers: token ? { authorization: `Bearer ${token}` } : {} };

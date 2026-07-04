@@ -11,12 +11,12 @@ const crypto = require("node:crypto");
 const store = require("../api/_lib/store");
 
 const handlers = {
-  requestOtp: require("../api/auth-request-otp.js"),
-  verifyOtp: require("../api/auth-verify-otp.js"),
-  billingConfig: require("../api/billing-config.js"),
-  billingOrder: require("../api/billing-order.js"),
-  billingVerify: require("../api/billing-verify.js"),
-  billingWebhook: require("../api/billing-webhook.js"),
+  requestOtp: require("../api/_handlers/auth-request-otp.js"),
+  verifyOtp: require("../api/_handlers/auth-verify-otp.js"),
+  billingConfig: require("../api/_handlers/billing-config.js"),
+  billingOrder: require("../api/_handlers/billing-order.js"),
+  billingVerify: require("../api/_handlers/billing-verify.js"),
+  billingWebhook: require("../api/_handlers/billing-webhook.js"),
   usage: require("../api/usage.js"),
 };
 

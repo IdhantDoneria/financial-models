@@ -4,9 +4,9 @@
 // catalogue, never from the client — and pins the order to the buyer's
 // account so only that account's verify can redeem it.
 
-const store = require("./_lib/store");
-const A = require("./_lib/auth");
-const B = require("./_lib/billing");
+const store = require("../_lib/store");
+const A = require("../_lib/auth");
+const B = require("../_lib/billing");
 
 module.exports = async (req, res) => {
   if (req.method !== "POST") return A.json(res, 405, { error: "POST only" });

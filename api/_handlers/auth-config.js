@@ -10,9 +10,9 @@
 // origin authorised); until then the page shows an explicit
 // "not configured" state instead of a broken button.
 
-const store = require("./_lib/store");
-const email = require("./_lib/email");
-const B = require("./_lib/billing");
+const store = require("../_lib/store");
+const email = require("../_lib/email");
+const B = require("../_lib/billing");
 
 module.exports = async (req, res) => {
   res.setHeader("Content-Type", "application/json; charset=utf-8");

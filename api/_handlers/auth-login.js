@@ -6,8 +6,8 @@
 // visits. scrypt hash compare (timing-safe), 10 wrong tries per 15 min per
 // address, then the same 30-day bearer session the OTP path issues.
 
-const store = require("./_lib/store");
-const A = require("./_lib/auth");
+const store = require("../_lib/store");
+const A = require("../_lib/auth");
 
 module.exports = async (req, res) => {
   if (req.method !== "POST") return A.json(res, 405, { error: "POST only" });

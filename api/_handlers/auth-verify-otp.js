@@ -5,9 +5,9 @@
 // 30-day bearer session token. First successful verify for an address IS
 // the signup — passwordless accounts.
 
-const store = require("./_lib/store");
-const A = require("./_lib/auth");
-const B = require("./_lib/billing");
+const store = require("../_lib/store");
+const A = require("../_lib/auth");
+const B = require("../_lib/billing");
 
 module.exports = async (req, res) => {
   if (req.method !== "POST") return A.json(res, 405, { error: "POST only" });

@@ -9,10 +9,10 @@ process.env.AUTH_DEV_MEMORY = "1";
 const store = require("../api/_lib/store");
 
 const handlers = {
-  requestOtp: require("../api/auth-request-otp.js"),
-  verifyOtp: require("../api/auth-verify-otp.js"),
-  login: require("../api/auth-login.js"),
-  authConfig: require("../api/auth-config.js"),
+  requestOtp: require("../api/_handlers/auth-request-otp.js"),
+  verifyOtp: require("../api/_handlers/auth-verify-otp.js"),
+  login: require("../api/_handlers/auth-login.js"),
+  authConfig: require("../api/_handlers/auth-config.js"),
   usage: require("../api/usage.js"),
   admin: require("../api/admin.js"),
 };
