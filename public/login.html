@@ -31,14 +31,22 @@
 
     <!-- auth card -->
     <section class="apanel" id="acard">
+      <!-- founders promo: first 20 accounts get one month of premium free -->
+      <div id="founders" style="display:none"></div>
+
       <div class="atabs">
         <button id="tab-signin" class="on">SIGN IN</button>
         <button id="tab-signup">CREATE ACCOUNT</button>
       </div>
 
-      <!-- server mode: passwordless email OTP (shown when the backend is live) -->
+      <!-- server mode: email OTP + optional password (shown when backend live) -->
+      <div class="stabs" id="stabs" style="display:none">
+        <button id="stab-code" class="on">EMAIL CODE</button>
+        <button id="stab-pass">PASSWORD</button>
+      </div>
+
       <form id="f-otp" style="display:none" autocomplete="on">
-        <div class="srvbadge">◉ SERVER AUTH — CODE BY EMAIL, PROFILE STORED SERVER-SIDE</div>
+        <div class="srvbadge">◉ SERVER AUTH — CODE BY EMAIL, PROFILE STORED IN THE CLOUD</div>
         <label>EMAIL</label>
         <input id="otp-email" type="email" autocomplete="username" placeholder="you@desk.com" required>
         <button id="otp-send" type="submit" class="primary">EMAIL ME A CODE &lt;GO&gt;</button>
@@ -48,9 +56,29 @@
                  placeholder="••••••" autocomplete="one-time-code">
           <label>NAME <span class="dim">— FIRST SIGN-IN ONLY, OPTIONAL AFTER</span></label>
           <input id="otp-name" type="text" autocomplete="name" placeholder="Alex Trader">
+          <label>SET PASSWORD <span class="dim">— OPTIONAL · MIN 8 · SIGN IN WITHOUT A CODE NEXT TIME</span></label>
+          <div class="pwrap">
+            <input id="otp-pass" type="password" autocomplete="new-password" placeholder="•••••••• (optional)" minlength="8">
+            <button type="button" class="peek" data-for="otp-pass">SHOW</button>
+          </div>
           <button id="otp-verify" type="button" class="primary">VERIFY &amp; SIGN IN &lt;GO&gt;</button>
           <button id="otp-resend" type="button" disabled>RESEND CODE (60)</button>
         </div>
+      </form>
+
+      <!-- server mode: returning users with a saved (cloud, scrypt-hashed) password -->
+      <form id="f-pw" style="display:none" autocomplete="on">
+        <div class="srvbadge">◉ SERVER AUTH — PASSWORD SIGN-IN (SET ONE ON THE EMAIL-CODE SCREEN)</div>
+        <label>EMAIL</label>
+        <input id="pw-email" type="email" autocomplete="username" placeholder="you@desk.com" required>
+        <label>PASSWORD</label>
+        <div class="pwrap">
+          <input id="pw-pass" type="password" autocomplete="current-password" placeholder="••••••••" required>
+          <button type="button" class="peek" data-for="pw-pass">SHOW</button>
+        </div>
+        <button id="pw-btn" type="submit" class="primary">SIGN IN &lt;GO&gt;</button>
+        <div class="dim" style="margin-top:8px">Forgot it? Switch to EMAIL CODE — verifying a
+          fresh code lets you set a new password.</div>
       </form>
 
       <form id="f-signin" autocomplete="on">

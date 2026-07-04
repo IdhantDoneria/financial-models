@@ -62,6 +62,14 @@ def main() -> int:
             page.wait_for_url(lambda u: "login" not in u, timeout=30_000)
             print("  in terminal (pyodide boot stubbed out)")
 
+            # The founders promo gifts this fresh signup a free month — revoke
+            # it through the admin desk so the PAID path is what's under test.
+            page.evaluate(
+                """async () => { await fetch('api/admin', {method:'POST',
+                     headers:{'X-Admin-Key':'devadmin','Content-Type':'application/json'},
+                     body: JSON.stringify({action:'revoke', email:'buyer@example.com'})}); }""")
+            print("  founder gift revoked — buyer starts on FREE")
+
             # The boot screen never finishes without pyodide — drive the menu
             # machinery directly; it's independent of the Python runtime.
             page.wait_for_function("typeof openMenuTab === 'function'", timeout=15_000)

@@ -118,6 +118,49 @@ async function activate(email, plan, paymentId, orderId, via) {
   return sub;
 }
 
+/* ------------------------- grants & founders ---------------------------- *
+ * Non-payment activations: the first-20 founders promo (every one of the
+ * first 20 accounts gets a free month of DESK UNLIMITED, claimed atomically
+ * at signup) and operator grants (the admin desk types an email + duration
+ * -> free premium). Both write the same sub:<email> record the paywall
+ * reads, tagged with `via` so the UI can say where the access came from.   */
+const FOUNDER_CAP = 20;
+const FOUNDER_PLAN = "unlimited";
+const FOUNDER_DAYS = 30;
+
+//: Days stack on an active pass (extend from its expiry), otherwise from now.
+async function grant(email, plan, days, via, extra = {}) {
+  const now = Date.now();
+  const existing = await getSub(email);
+  const base = existing && existing.expiresAt && Date.parse(existing.expiresAt) > now
+    ? Date.parse(existing.expiresAt) : now;
+  const sub = {
+    plan, via, ...extra,
+    paymentId: `${via}-${crypto.randomBytes(6).toString("hex")}`,
+    orderId: null,
+    activatedAt: new Date(now).toISOString(),
+    expiresAt: new Date(base + days * 86_400_000).toISOString(),
+  };
+  await store.set(`sub:${email}`, JSON.stringify(sub));
+  return sub;
+}
+
+//: Atomically claim the next founder slot; INCR is the arbiter, so two
+//  simultaneous signups can never share a number. Returns the slot (1..20)
+//  or null when the promo is exhausted. Callers guard with a per-user flag
+//  so each account draws at most once.
+async function claimFounderSlot(email) {
+  const n = await store.incr("founders:claimed");   // permanent counter
+  if (n > FOUNDER_CAP) return null;
+  await grant(email, FOUNDER_PLAN, FOUNDER_DAYS, "founder", { founderNo: n });
+  return n;
+}
+
+async function foundersLeft() {
+  const n = parseInt((await store.get("founders:claimed")) || "0", 10);
+  return Math.max(0, FOUNDER_CAP - (Number.isFinite(n) ? n : 0));
+}
+
 /* ------------------------------- usage --------------------------------- */
 const monthKey = () => new Date().toISOString().slice(0, 7);   // UTC YYYY-MM
 
@@ -130,9 +173,10 @@ async function getUsed(email) {
 const consumeUpload = (email) => store.incr(`use:${email}:${monthKey()}`, 35 * 86_400);
 
 module.exports = {
-  PLANS, PLAN_TTL, ORDER_TTL,
+  PLANS, PLAN_TTL, ORDER_TTL, FOUNDER_CAP, FOUNDER_PLAN, FOUNDER_DAYS,
   configured, mode, keyId,
   createOrder, verifyCheckoutSig, verifyWebhookSig,
   getSub, effectivePlan, activate, getUsed, consumeUpload, monthKey,
+  grant, claimFounderSlot, foundersLeft,
   webhookConfigured: () => DEV || !!WEBHOOK_SECRET,
 };

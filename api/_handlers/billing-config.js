@@ -4,14 +4,19 @@
 // exist, in which case the terminal stays free and unmetered — the PLAN tab
 // shows an explicit offline state instead of broken buy buttons.
 
-const store = require("./_lib/store");
-const B = require("./_lib/billing");
+const store = require("../_lib/store");
+const B = require("../_lib/billing");
 
-module.exports = (req, res) => {
+module.exports = async (req, res) => {
   res.setHeader("Content-Type", "application/json; charset=utf-8");
-  res.setHeader("Cache-Control", "public, s-maxage=300, stale-while-revalidate=3600");
+  res.setHeader("Cache-Control", "public, s-maxage=60, stale-while-revalidate=300");
   const billing = B.configured() && store.configured();
+  let foundersLeft = null;
+  if (store.configured()) {
+    try { foundersLeft = await B.foundersLeft(); } catch { /* store hiccup */ }
+  }
   res.status(200).json({
+    foundersLeft,
     billing,
     mode: B.mode(),
     keyId: billing ? B.keyId() : null,

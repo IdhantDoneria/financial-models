@@ -3,8 +3,8 @@
 // Revokes the server-side session (idempotent — always succeeds so the
 // client can clear its local state regardless).
 
-const store = require("./_lib/store");
-const A = require("./_lib/auth");
+const store = require("../_lib/store");
+const A = require("../_lib/auth");
 
 module.exports = async (req, res) => {
   if (req.method !== "POST") return A.json(res, 405, { error: "POST only" });

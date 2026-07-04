@@ -5,9 +5,9 @@
 // and 5 sends/hour per address. Returns 503 with an explicit reason until
 // the deployment has a store (Upstash Redis) and a mailer (Resend key).
 
-const store = require("./_lib/store");
-const email = require("./_lib/email");
-const A = require("./_lib/auth");
+const store = require("../_lib/store");
+const email = require("../_lib/email");
+const A = require("../_lib/auth");
 
 module.exports = async (req, res) => {
   if (req.method !== "POST") return A.json(res, 405, { error: "POST only" });

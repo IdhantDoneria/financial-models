@@ -14,17 +14,21 @@ const path = require("node:path");
 const ROOT = path.join(__dirname, "..", "public");
 const PORT = parseInt(process.argv[2] || "8124", 10);
 
+// The auth/billing endpoints are consolidated dispatchers (Vercel Hobby
+// caps functions per deployment); they derive the action from the legacy
+// /api/auth-<x> and /api/billing-<x> paths, so routing every legacy name
+// at the dispatcher exercises the exact production dispatch logic.
+const auth = require("../api/auth.js");
+const billing = require("../api/billing.js");
 const API = {
-  "auth-config": require("../api/auth-config.js"),
-  "auth-request-otp": require("../api/auth-request-otp.js"),
-  "auth-verify-otp": require("../api/auth-verify-otp.js"),
-  "auth-me": require("../api/auth-me.js"),
-  "auth-logout": require("../api/auth-logout.js"),
+  "auth": auth,
+  "auth-config": auth, "auth-request-otp": auth, "auth-verify-otp": auth,
+  "auth-me": auth, "auth-login": auth, "auth-logout": auth,
+  "billing": billing,
+  "billing-config": billing, "billing-order": billing,
+  "billing-verify": billing, "billing-webhook": billing,
+  "admin": require("../api/admin.js"),
   "quotes": require("../api/quotes.js"),
-  "billing-config": require("../api/billing-config.js"),
-  "billing-order": require("../api/billing-order.js"),
-  "billing-verify": require("../api/billing-verify.js"),
-  "billing-webhook": require("../api/billing-webhook.js"),
   "usage": require("../api/usage.js"),
 };
 

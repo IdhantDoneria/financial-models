@@ -10,18 +10,29 @@
 // origin authorised); until then the page shows an explicit
 // "not configured" state instead of a broken button.
 
-const store = require("./_lib/store");
-const email = require("./_lib/email");
+const store = require("../_lib/store");
+const email = require("../_lib/email");
+const B = require("../_lib/billing");
 
-module.exports = (req, res) => {
+module.exports = async (req, res) => {
   res.setHeader("Content-Type", "application/json; charset=utf-8");
-  res.setHeader("Cache-Control", "public, s-maxage=300, stale-while-revalidate=3600");
+  res.setHeader("Cache-Control", "public, s-maxage=60, stale-while-revalidate=300");
   const serverAuth = store.configured() && email.configured();
+  // founders promo: how many of the first-20 free-month slots remain — the
+  // login page shows this to prospective sign-ups.
+  let foundersLeft = null;
+  if (serverAuth) {
+    try { foundersLeft = await B.foundersLeft(); } catch { /* store hiccup */ }
+  }
   res.status(200).json({
     googleClientId: process.env.GOOGLE_CLIENT_ID || null,
     // email-OTP backend: on when a database AND a mailer are configured;
     // the login page switches from device-local to server mode automatically.
     serverAuth,
+    passwordLogin: serverAuth,   // email+password works once set via OTP
+    foundersLeft,
+    founderPlanName: B.PLANS[B.FOUNDER_PLAN].name,
+    founderDays: B.FOUNDER_DAYS,
     storage: store.mode(),
     email: email.mode(),
   });

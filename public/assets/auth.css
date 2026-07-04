@@ -99,3 +99,19 @@ label.remember input { accent-color: var(--amber); }
   #apitch { display: none; }
   body.authpage { align-items: flex-start; padding-top: 6vh; }
 }
+
+/* server-mode subtabs (EMAIL CODE / PASSWORD) — same skin as .atabs */
+.stabs { display: flex; border: 1px solid var(--border); margin-bottom: 20px; }
+.stabs button {
+  flex: 1; background: none; border: none; color: var(--text-dim);
+  font: 11px var(--mono); letter-spacing: 0.12em; padding: 10px 0; cursor: pointer;
+}
+.stabs button.on { background: var(--amber); color: #000; }
+
+/* founders promo banner */
+#founders {
+  border: 1px dashed var(--amber); color: var(--amber);
+  font-size: 10px; letter-spacing: 0.06em; line-height: 1.7;
+  padding: 9px 12px; margin-bottom: 16px;
+}
+#founders b { letter-spacing: 0.1em; }

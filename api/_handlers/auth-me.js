@@ -4,8 +4,8 @@
 // this after boot to confirm a server session is still live and to refresh
 // the display name.
 
-const store = require("./_lib/store");
-const A = require("./_lib/auth");
+const store = require("../_lib/store");
+const A = require("../_lib/auth");
 
 module.exports = async (req, res) => {
   if (req.method !== "GET") return A.json(res, 405, { error: "GET only" });

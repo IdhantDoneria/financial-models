@@ -22,6 +22,23 @@ function timingSafeEq(a, b) {
   return ba.length === bb.length && crypto.timingSafeEqual(ba, bb);
 }
 
+/* Password layer on top of OTP: set after a code has proven the email, and
+ * stored server-side as scrypt(salt, 64) — the password itself never
+ * persists anywhere. Later sign-ins can then skip the email round-trip. */
+const PW_MIN = 8;
+const PW_MAX_TRIES = 10;           // wrong passwords per window per email
+const PW_TRY_WINDOW = 900;         // seconds
+
+function hashPasswordRecord(password) {
+  const salt = crypto.randomBytes(16).toString("hex");
+  return { algo: "scrypt-64", salt,
+           hash: crypto.scryptSync(password, salt, 64).toString("hex") };
+}
+function verifyPasswordRecord(password, rec) {
+  if (!rec || !rec.salt || !rec.hash) return false;
+  return timingSafeEq(crypto.scryptSync(password, rec.salt, 64).toString("hex"), rec.hash);
+}
+
 /** Parse the JSON body (Vercel pre-parses; fall back to the raw stream). */
 async function readBody(req) {
   if (req.body !== undefined && req.body !== null) {
@@ -55,5 +72,7 @@ async function getSession(req) {
 
 module.exports = {
   EMAIL_RE, SESSION_TTL, OTP_TTL, OTP_MAX_TRIES, RESEND_COOLDOWN, HOURLY_SEND_CAP,
+  PW_MIN, PW_MAX_TRIES, PW_TRY_WINDOW,
   hashOtp, newToken, newOtp, timingSafeEq, readBody, json, bearer, getSession,
+  hashPasswordRecord, verifyPasswordRecord,
 };

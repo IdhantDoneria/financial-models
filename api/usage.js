@@ -27,6 +27,8 @@ module.exports = async (req, res) => {
     const used = await B.getUsed(sess.email);
     const base = { billing: true, metered: true, plan, planName: p.name,
                    limit: p.uploads, expiresAt: sub ? sub.expiresAt : null,
+                   via: sub ? sub.via || "checkout" : null,       // founder/grant/checkout
+                   founderNo: sub && sub.founderNo ? sub.founderNo : null,
                    month: B.monthKey() };
 
     if (req.method === "GET") return A.json(res, 200, { ok: true, used, ...base });

@@ -197,12 +197,18 @@ async function onOtpVerify() {
   const email = $("#otp-email").value.trim().toLowerCase();
   const code = $("#otp-code").value.replace(/\D/g, "");
   if (code.length !== 6) return showErr("ENTER THE 6-DIGIT CODE FROM YOUR EMAIL");
+  const pass = $("#otp-pass").value;
+  if (pass && pass.length < 8) return showErr("PASSWORD MUST BE AT LEAST 8 CHARACTERS (OR LEAVE IT EMPTY)");
   const btn = $("#otp-verify");
   btn.disabled = true; btn.textContent = "VERIFYING…";
   showErr("");
   try {
-    const out = await postJson("api/auth-verify-otp",
-      { email, code, name: $("#otp-name").value.trim() });
+    const body = { email, code, name: $("#otp-name").value.trim() };
+    if (pass) body.password = pass;   // the code proves the email; save for next time
+    const out = await postJson("api/auth-verify-otp", body);
+    if (out.founder) {   // founders promo: let the winner see it before the redirect
+      try { sessionStorage.setItem("finmodels.founderToast", String(out.founder)); } catch { /* ignore */ }
+    }
     finishLogin({ uid: email, name: (out.user && out.user.name) || email,
                   provider: "otp", token: out.token }, true);
     return;
@@ -212,6 +218,36 @@ async function onOtpVerify() {
   btn.disabled = false; btn.textContent = "VERIFY & SIGN IN <GO>";
 }
 
+//: Password sign-in for returning users (server mode). The password was set
+//  on the email-code screen and lives server-side as an scrypt hash.
+async function onPwLogin(e) {
+  if (e) e.preventDefault();
+  const email = $("#pw-email").value.trim().toLowerCase();
+  const pass = $("#pw-pass").value;
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return showErr("ENTER A VALID EMAIL");
+  if (!pass) return showErr("ENTER YOUR PASSWORD");
+  const btn = $("#pw-btn");
+  btn.disabled = true; btn.textContent = "VERIFYING…";
+  showErr("");
+  try {
+    const out = await postJson("api/auth-login", { email, password: pass });
+    finishLogin({ uid: email, name: (out.user && out.user.name) || email,
+                  provider: "otp", token: out.token }, true);
+    return;
+  } catch (err) {
+    showErr(String(err.message || err));
+  }
+  btn.disabled = false; btn.textContent = "SIGN IN <GO>";
+}
+
+function setServerTab(which) {
+  $("#stab-code").classList.toggle("on", which === "code");
+  $("#stab-pass").classList.toggle("on", which === "pass");
+  $("#f-otp").style.display = which === "code" ? "" : "none";
+  $("#f-pw").style.display = which === "pass" ? "" : "none";
+  showErr("");
+}
+
 function initServerAuth(cfg) {
   if (!cfg || !cfg.serverAuth) {
     // device-local mode stays; say so under the card footer for transparency
@@ -219,12 +255,16 @@ function initServerAuth(cfg) {
       "SERVER AUTH OFFLINE — DEVICE-LOCAL MODE · ");
     return;
   }
-  // server mode: passwordless email OTP replaces local password accounts
+  // server mode: email OTP (+ optional saved password) replaces local accounts
   document.querySelector(".atabs").style.display = "none";
   $("#f-signin").style.display = "none";
   $("#f-signup").style.display = "none";
-  $("#f-otp").style.display = "";
+  $("#stabs").style.display = "";
+  setServerTab("code");
+  $("#stab-code").onclick = () => setServerTab("code");
+  $("#stab-pass").onclick = () => setServerTab("pass");
   $("#f-otp").addEventListener("submit", onOtpSend);
+  $("#f-pw").addEventListener("submit", onPwLogin);
   $("#otp-verify").onclick = onOtpVerify;
   $("#otp-resend").onclick = () => onOtpSend();
   $("#otp-code").addEventListener("keydown", (e) => {
@@ -232,8 +272,18 @@ function initServerAuth(cfg) {
   });
   document.querySelector(".apriv").innerHTML =
     "🔒 SERVER AUTH ENABLED — sign-in codes are emailed to you (10-minute expiry, " +
-    "single use). Your profile (email, name, sign-in history) is stored server-side; " +
-    "analyses and model work still run entirely in <b>your</b> browser.";
+    "single use). Your profile (email, name, sign-in history, optional scrypt-hashed " +
+    "password) is stored in the cloud; analyses and model work still run entirely in " +
+    "<b>your</b> browser.";
+
+  // founders promo banner — first 20 accounts get a free month of premium
+  if (typeof cfg.foundersLeft === "number" && cfg.foundersLeft > 0) {
+    const f = $("#founders");
+    f.style.display = "";
+    f.innerHTML = `🎁 <b>FOUNDERS OFFER</b> — the first 20 accounts get
+      <b>1 MONTH OF ${cfg.founderPlanName || "DESK UNLIMITED"} FREE</b>, applied
+      automatically at sign-up · <b>${cfg.foundersLeft} SLOT${cfg.foundersLeft === 1 ? "" : "S"} LEFT</b>`;
+  }
 }
 
 async function initGoogle(cfg) {
