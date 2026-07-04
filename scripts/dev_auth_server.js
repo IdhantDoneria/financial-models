@@ -21,6 +21,11 @@ const API = {
   "auth-me": require("../api/auth-me.js"),
   "auth-logout": require("../api/auth-logout.js"),
   "quotes": require("../api/quotes.js"),
+  "billing-config": require("../api/billing-config.js"),
+  "billing-order": require("../api/billing-order.js"),
+  "billing-verify": require("../api/billing-verify.js"),
+  "billing-webhook": require("../api/billing-webhook.js"),
+  "usage": require("../api/usage.js"),
 };
 
 const MIME = {

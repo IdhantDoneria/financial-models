@@ -484,3 +484,35 @@ html, body {
 .scen-table.grid td.centre { outline: 1px solid var(--amber); }
 .scen-gtitle { color: var(--text-dim); font-size: 10px; letter-spacing: 0.06em; margin-top: 8px; }
 #scen-tornado { max-width: 860px; }
+
+/* ------------------------- billing / PLAN tab --------------------------- */
+#planchip { cursor: pointer; }
+#planchip b.paid { color: var(--green); }
+.pnote { color: var(--text-dim); font-size: 10px; line-height: 1.7; margin: 8px 0; max-width: 640px; }
+.pnote.warn { color: var(--amber); border: 1px dashed var(--amber-dim); padding: 8px 10px; }
+.pusage { border: 1px solid var(--border); padding: 10px 12px; margin: 10px 0; max-width: 640px; }
+.purow { display: flex; justify-content: space-between; font-size: 11px; margin: 4px 0; }
+.purow span { color: var(--text-dim); letter-spacing: 0.06em; }
+.purow b.paid { color: var(--green); }
+.pmeterbar { height: 6px; background: var(--panel-alt); border: 1px solid var(--border); margin: 6px 0; }
+.pmeterbar div { height: 100%; background: linear-gradient(90deg, var(--green), var(--amber)); }
+.pcards { display: flex; gap: 12px; flex-wrap: wrap; margin: 14px 0; }
+.pcard { border: 1px solid var(--border); padding: 14px; width: 200px; position: relative;
+  display: flex; flex-direction: column; gap: 8px; background: var(--panel-alt); }
+.pcard.cur { border-color: var(--green); }
+.pcard.unlimited { border-color: var(--amber-dim); }
+.pflag { position: absolute; top: -9px; right: 10px; background: var(--amber); color: #000;
+  font-size: 9px; letter-spacing: 0.1em; padding: 2px 8px; }
+.pname { color: var(--cyan); font-size: 12px; letter-spacing: 0.1em; }
+.pprice { color: var(--text); font-size: 18px; }
+.pprice s { color: var(--text-dim); font-size: 13px; margin-right: 4px; }
+.pprice small { color: var(--text-dim); font-size: 10px; }
+.psave { display: inline-block; color: var(--green); font-size: 9px; letter-spacing: 0.08em;
+  border: 1px solid var(--green); padding: 1px 6px; margin-left: 4px; vertical-align: middle; }
+.pquota { color: var(--amber); font-size: 10px; letter-spacing: 0.12em; }
+.pblurb { color: var(--text-dim); font-size: 10px; line-height: 1.6; flex: 1; }
+.pcard .pbuy { background: none; border: 1px solid var(--amber-dim); color: var(--amber);
+  font: 10px var(--mono); letter-spacing: 0.1em; padding: 7px 0; cursor: pointer; }
+.pcard .pbuy:hover:not(:disabled) { border-color: var(--amber); background: rgba(255, 176, 0, 0.08); }
+.pcard .pbuy:disabled { border-color: var(--border); color: var(--text-dim); cursor: default; }
+.pcard.cur .pbuy:disabled { border-color: var(--green); color: var(--green); }

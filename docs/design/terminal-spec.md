@@ -283,3 +283,49 @@ Long scans yield to the event loop between runs and stream progress into
 model resets the panel (`resetScenPanel`, purging the tornado plot).
 E2E coverage: `run_scenario_engine_scenario` in `scripts/e2e_terminal.py`
 (auto-seed → bear<base<bull compare → tornado → grid → per-model rebuild).
+
+## 13 · Billing (Razorpay) — plans, metering, PLAN tab
+
+**Catalogue** (authoritative in `api/_lib/billing.js`; the client never sends
+amounts): FREE — 5 uploads/mo · ANALYST PRO — ₹299/mo, 50 uploads ·
+DESK UNLIMITED — ₹499/mo with a struck ₹599 MRP anchor (`SAVE ₹100` badge,
+`BEST VALUE` flag). An upload = one IB-desk PDF analysis; model runs and the
+SCEN engine are never metered. Paid plans are 30-day passes; early
+renewal/upgrade carries unused days forward.
+
+**Purchase flow.** `POST /api/billing-order` (Bearer session) creates the
+Razorpay order server-side and pins `order:<id> → {email, plan, amount}`
+(1 h TTL) so only the buying account can redeem it. The front end opens
+Razorpay Checkout (`checkout.js`, amber-themed, email prefilled); its handler
+posts the gateway's `{order_id, payment_id, signature}` to
+`POST /api/billing-verify`, which runs the documented timing-safe
+`HMAC-SHA256(order_id|payment_id, key_secret)` check, verifies order
+ownership, activates `sub:<email>` and consumes the order (single-use;
+replays 404). `POST /api/billing-webhook` (raw-body signature via
+`RAZORPAY_WEBHOOK_SECRET`, `payment.captured`) is the idempotent fallback
+when the buyer's tab dies pre-verify.
+
+**Metering.** `GET/POST /api/usage` — monthly counter `use:<email>:<YYYY-MM>`
+(35-day TTL). GET returns `{plan, used, limit(null=∞), expiresAt}`; POST
+consumes one upload, `402` past the allowance. Expired passes fall back to
+FREE. When billing is unconfigured both report unmetered-free so nothing
+gates.
+
+**Front end.** MENU gains a **PLAN** tab (usage meter bar, plan cards, buy
+buttons); the status bar a clickable plan chip (`PLAN ANALYST PRO · 12/50`).
+`uploadGate()` runs before each IB-desk analysis: billing off → allow;
+non-OTP session → block with a sign-in-with-email pointer; allowance spent →
+block + open the PLAN tab; **network hiccup → fail-open** (availability over
+strict metering). Consumption is posted only after a successful extraction.
+
+**Dev-fake gateway.** With `AUTH_DEV_MEMORY=1` and no real keys, orders get
+`order_dev*` ids and signatures verify against the fixed secret `devsecret`;
+the front end (gated by `billing-config.devFake`) completes checkout without
+the modal so the whole purchase is locally testable: 24 backend checks in
+`scripts/test_billing_api.js`, real-browser purchase in
+`scripts/e2e_billing.py`.
+
+**Env vars.** `RAZORPAY_KEY_ID` + `RAZORPAY_KEY_SECRET` switch billing on
+(store must also be configured); `RAZORPAY_WEBHOOK_SECRET` arms the webhook.
+Unconfigured production stays free/unmetered with an explicit PLAN-tab
+offline state.
