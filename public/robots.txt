@@ -1,0 +1,49 @@
+# FINMODELS TERMINAL — crawl policy
+#
+# The API is never a crawl target, and AI/data-scraping bots are disallowed
+# in full. Note: robots.txt is advisory — only well-behaved crawlers honour
+# it. Server-side data and the app's protections do not rely on it.
+
+# Block the serverless API from all crawlers
+User-agent: *
+Disallow: /api/
+
+# Disallow known AI / dataset-scraping crawlers entirely
+User-agent: GPTBot
+Disallow: /
+
+User-agent: OAI-SearchBot
+Disallow: /
+
+User-agent: ChatGPT-User
+Disallow: /
+
+User-agent: CCBot
+Disallow: /
+
+User-agent: ClaudeBot
+Disallow: /
+
+User-agent: Claude-Web
+Disallow: /
+
+User-agent: anthropic-ai
+Disallow: /
+
+User-agent: Google-Extended
+Disallow: /
+
+User-agent: PerplexityBot
+Disallow: /
+
+User-agent: Bytespider
+Disallow: /
+
+User-agent: Amazonbot
+Disallow: /
+
+User-agent: Meta-ExternalAgent
+Disallow: /
+
+User-agent: cohere-ai
+Disallow: /
