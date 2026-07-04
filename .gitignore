@@ -6,6 +6,9 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 
+# Node dependencies (nodemailer for the OTP mailer; Vercel installs from package.json)
+node_modules/
+
 # Notebooks
 .ipynb_checkpoints/
 
