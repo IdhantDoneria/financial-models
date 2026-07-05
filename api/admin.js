@@ -9,10 +9,21 @@
 //        type an email + duration; works even before that person signs up
 //        (the pass is waiting when they first verify their email).
 //   POST {action:"revoke", email}              -> end a plan immediately.
+//   POST {action:"reset_password", email}       -> clears the account's
+//        password so the owner must return through EMAIL CODE and set a
+//        new one next sign-in (see NOTE below).
 //
 // The GET response also includes `geo`: a country-by-country visitor tally
 // from /api/geo (IP-derived, hour-deduplicated) — real geography data for
 // conversion tracking, not tied to any one user account.
+//
+// NOTE — no endpoint here ever returns a password, hashed or otherwise.
+// Passwords are stored as scrypt(salt, 64) (api/_lib/auth.js) and the
+// plaintext is never retained anywhere, by design — there is nothing to
+// display. What IS shown per-account: whether a password is set
+// (`passwordSet`) and when it was last set (`pwSetAt`). Use `reset_password`
+// if you need to force re-verification (e.g. suspected compromise) —
+// this revokes the current password rather than exposing it.
 
 const store = require("./_lib/store");
 const A = require("./_lib/auth");
@@ -49,6 +60,7 @@ async function listUsers() {
       loginCount: u ? u.loginCount || 0 : 0,
       founder: u ? u.founder || null : null,
       passwordSet: !!(u && u.pw),
+      pwSetAt: u ? u.pwSetAt || null : null,
       signedUp: !!u,                              // false: granted, not yet signed up
       plan, planName: (B.PLANS[plan] || B.PLANS.free).name,
       via: active ? s.via || "checkout" : null,
@@ -110,7 +122,16 @@ module.exports = async (req, res) => {
       await store.del(`sub:${email}`);
       return A.json(res, 200, { ok: true, revoked: email });
     }
-    return A.json(res, 400, { error: "action MUST BE grant OR revoke" });
+    if (body.action === "reset_password") {
+      let user;
+      try { user = JSON.parse((await store.get(`user:${email}`)) || "null"); } catch { user = null; }
+      if (!user) return A.json(res, 404, { error: "NO ACCOUNT FOR THIS EMAIL" });
+      delete user.pw;
+      delete user.pwSetAt;
+      await store.set(`user:${email}`, JSON.stringify(user));
+      return A.json(res, 200, { ok: true, resetPassword: email });
+    }
+    return A.json(res, 400, { error: "action MUST BE grant, revoke OR reset_password" });
   } catch (err) {
     return A.json(res, 502, { error: String(err.message || err).slice(0, 180) });
   }

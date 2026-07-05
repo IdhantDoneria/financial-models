@@ -478,31 +478,6 @@ function setMobileView(mv) {
   if (mv === "viz") requestAnimationFrame(() => window.dispatchEvent(new Event("resize")));
 }
 
-/* --------------------------- phone bottom nav --------------------------- */
-//: ≤820px the grid collapses to one panel at a time (see terminal.css);
-//  the bottom tab bar picks which. Desktop never sets data-mview, so these
-//  are no-ops there. Selecting a model auto-jumps to INPUTS and a finished
-//  IB report to ANALYTICS, mirroring where a desktop user's eyes would go.
-const MOBILE_MQ = window.matchMedia ? window.matchMedia("(max-width: 820px)") : { matches: false };
-function isPhone() { return MOBILE_MQ.matches; }
-
-function initMobileNav() {
-  const nav = $("#mnav");
-  if (!nav) return;
-  nav.querySelectorAll("button").forEach((b) => { b.onclick = () => setMobileView(b.dataset.mv); });
-  setMobileView("inputs");
-  if (isPhone()) $("#cmd").placeholder = "MNEMONIC — DCF · BSM · IB ⏎";
-}
-
-function setMobileView(mv) {
-  const main = $("#main");
-  if (!main) return;
-  main.dataset.mview = mv;
-  document.querySelectorAll("#mnav button").forEach((b) => b.classList.toggle("on", b.dataset.mv === mv));
-  // Plotly sized itself while the viz panel was display:none — re-measure.
-  if (mv === "viz") requestAnimationFrame(() => window.dispatchEvent(new Event("resize")));
-}
-
 /* ------------------------------ live ticker ---------------------------- */
 //: One tape entry: LABEL  PRICE  ▲/▼ ±pct%  (green up, red down).
 function tapeItemHTML(q) {

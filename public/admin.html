@@ -43,7 +43,6 @@
     .tag.founder { border-color:var(--amber); color:var(--amber); }
     .tag.grant { border-color:var(--cyan); color:var(--cyan); }
     .tag.checkout { border-color:var(--green); color:var(--green); }
-    .tag.pw { border-color:var(--green); color:var(--green); }
     .plan-free { color:var(--dim); } .plan-pro, .plan-unlimited { color:var(--green); }
     .ghosted { color:var(--dim); font-style:italic; }
     #grantbox { border:1px solid var(--border); background:var(--panel); padding:14px; margin:18px 0; }
@@ -106,8 +105,12 @@
     </div>
     <table id="users"><thead><tr>
       <th>EMAIL</th><th>NAME</th><th>PLAN</th><th>ACCESS VIA</th><th>EXPIRES</th>
-      <th>UPLOADS (MO)</th><th>SIGN-INS</th><th>LAST SEEN</th><th>JOINED</th><th></th>
+      <th>UPLOADS (MO)</th><th>SIGN-INS</th><th>LAST SEEN</th><th>JOINED</th><th>PASSWORD</th><th></th>
     </tr></thead><tbody></tbody></table>
+    <div style="color:var(--dim);font-size:10px;line-height:1.6;margin-top:6px">
+      Passwords are never stored or shown in plaintext (scrypt-hashed, one-way) — there is
+      nothing to display here by design. RESET clears the current password and forces the
+      owner back through EMAIL CODE to set a new one; use it if an account may be compromised.</div>
 
     <div class="bar" style="margin-top:28px">
       <div class="t" style="color:var(--cyan);font-size:11px;letter-spacing:.12em">VISITOR GEOGRAPHY</div>
@@ -153,8 +156,7 @@ function render(data) {
   const tb = $("#users tbody");
   tb.innerHTML = data.rows.map((r) => `
     <tr>
-      <td><b>${r.email}</b>${r.founder ? ` <span class="tag founder">FOUNDER #${r.founder}</span>` : ""}${
-        r.passwordSet ? ` <span class="tag pw">PW</span>` : ""}</td>
+      <td><b>${r.email}</b>${r.founder ? ` <span class="tag founder">FOUNDER #${r.founder}</span>` : ""}</td>
       <td>${r.signedUp ? (r.name || "—") : `<span class="ghosted">not signed up yet</span>`}</td>
       <td class="plan-${r.plan}">${r.planName}</td>
       <td>${r.via ? `<span class="tag ${r.via}">${r.via.toUpperCase()}</span>` : "—"}</td>
@@ -163,11 +165,18 @@ function render(data) {
       <td class="num">${r.loginCount}</td>
       <td>${fdate(r.lastLoginAt)}</td>
       <td>${fdate(r.createdAt)}</td>
+      <td>${r.passwordSet
+        ? `SET ${fdate(r.pwSetAt)} <button class="ghost" data-resetpw="${r.email}">RESET</button>`
+        : `<span class="ghosted">not set</span>`}</td>
       <td>${r.plan !== "free"
         ? `<button class="danger" data-revoke="${r.email}">REVOKE</button>`
         : `<button data-grant="${r.email}">GIFT 30D</button>`}</td>
-    </tr>`).join("") || `<tr><td colspan="10" class="ghosted">No users yet — accounts appear
+    </tr>`).join("") || `<tr><td colspan="11" class="ghosted">No users yet — accounts appear
       here the moment someone verifies their email on the login page.</td></tr>`;
+  tb.querySelectorAll("[data-resetpw]").forEach((b) => b.onclick = async () => {
+    if (!confirm(`Reset the password for ${b.dataset.resetpw}? They will need to sign in via EMAIL CODE and set a new one.`)) return;
+    await act({ action: "reset_password", email: b.dataset.resetpw }, `PASSWORD RESET FOR ${b.dataset.resetpw}`);
+  });
   tb.querySelectorAll("[data-revoke]").forEach((b) => b.onclick = async () => {
     await act({ action: "revoke", email: b.dataset.revoke }, `REVOKED ${b.dataset.revoke}`);
   });

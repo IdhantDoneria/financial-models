@@ -65,12 +65,20 @@ function ok(cond, label) {
   r = await call(verifyOtp, { body: { email: "vp@example.com", code } });
   ok(r.code !== 200, "correct code refused after lockout (code burned)");
 
+  console.log("· password is compulsory for a brand-new account");
+  r = await call(requestOtp, { body: { email: "nopw@example.com" } });
+  r = await call(verifyOtp, { body: { email: "nopw@example.com", code: r.out.devCode } });
+  ok(r.code === 400 && /PASSWORD IS REQUIRED/.test(r.out.error),
+     `first signup without a password is rejected (${r.out.error})`);
+
   console.log("· fresh code -> successful login = signup");
   // separate address (the first one is inside its send cooldown)
   r = await call(requestOtp, { body: { email: "md@example.com" } });
   const code2 = r.out.devCode;
-  r = await call(verifyOtp, { body: { email: "md@example.com", code: code2, name: "Morgan Delaney" } });
-  ok(r.code === 200 && r.out.token && r.out.user.loginCount === 1 && r.out.user.name === "Morgan Delaney",
+  r = await call(verifyOtp, { body: { email: "md@example.com", code: code2,
+    name: "Morgan Delaney", password: "hunter2!secure" } });
+  ok(r.code === 200 && r.out.token && r.out.user.loginCount === 1 && r.out.user.name === "Morgan Delaney"
+     && r.out.passwordSet === true,
      `login ok — token issued, profile stored (loginCount=${r.out.user.loginCount})`);
   const token = r.out.token;
   r = await call(verifyOtp, { body: { email: "md@example.com", code: code2 } });

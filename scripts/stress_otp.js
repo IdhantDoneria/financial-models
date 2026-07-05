@@ -145,7 +145,7 @@ async function volumeFlow() {
     const code = r.out.devCode;
     r = await call(verifyOtp, { email: addr, code: other(code) });
     if (r.code !== 401) { ok(false, `wrong code rejected for #${i}`); return; }
-    r = await call(verifyOtp, { email: addr, code, name: `User ${i}` });
+    r = await call(verifyOtp, { email: addr, code, name: `User ${i}`, password: "Str0ngPass!400" });
     if (r.code === 200 && r.out.token) { logins++; tokens.add(r.out.token); }
   }
   const ms = Date.now() - t0;

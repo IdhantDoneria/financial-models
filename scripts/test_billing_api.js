@@ -50,7 +50,7 @@ const devSig = (msg) => crypto.createHmac("sha256", "devsecret").update(msg).dig
 async function login(email) {
   const sent = await call(handlers.requestOtp, { method: "POST", body: { email } });
   const ver = await call(handlers.verifyOtp,
-    { method: "POST", body: { email, code: sent.body.devCode, name: "Test User" } });
+    { method: "POST", body: { email, code: sent.body.devCode, name: "Test User", password: "Str0ngPass!Billing" } });
   return ver.body.token;
 }
 
