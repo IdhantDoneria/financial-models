@@ -311,6 +311,26 @@ html, body {
 .badge.missing { color: var(--red); border-color: var(--red); }
 .badge.assumed { color: var(--amber); border-color: var(--amber-dim); }
 .badge.live { color: var(--cyan); border-color: var(--cyan); }
+.badge.user { color: var(--cyan); border-color: var(--cyan); }
+.badge.clickable { cursor: pointer; }
+.badge.clickable:hover { background: rgba(255, 176, 0, 0.12); }
+.badge.user.clickable:hover { background: rgba(83, 201, 224, 0.12); }
+/* currency tag on monetary extraction rows (follows the selected market) */
+.ccytag { color: var(--amber-dim); font-size: 9px; margin-left: 4px; }
+/* inline editor for a manually-overridden extraction field */
+input.ibov {
+  width: 110px; background: #000; border: 1px solid var(--amber-dim);
+  color: var(--amber); font: 11px var(--mono); text-align: right; padding: 3px 6px;
+}
+input.ibov:focus { outline: none; border-color: var(--amber); }
+.ibov-set, .ibov-auto {
+  background: none; border: 1px solid var(--border); color: var(--text-dim);
+  font: 9px var(--mono); letter-spacing: 0.08em; padding: 3px 7px;
+  margin-left: 4px; cursor: pointer;
+}
+.ibov-set { border-color: var(--amber-dim); color: var(--amber); }
+.ibov-set:hover { background: rgba(255, 176, 0, 0.12); }
+.ibov-auto:hover { color: var(--text); }
 
 #report { display: none; padding: 16px 22px; overflow: auto; }
 #report h2 { color: var(--cyan); font-weight: 400; font-size: 14px; letter-spacing: 0.1em; margin: 14px 0 8px; }

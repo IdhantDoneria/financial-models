@@ -290,6 +290,7 @@ The backend is fully coded and tested — it activates on env vars alone:
 | 2 · Email | Create a dedicated Gmail "work" account for sending codes → enable **2-Step Verification** → *Google Account ▸ Security ▸ App passwords* → generate a 16-char **App password** (a normal login password will not work over SMTP). Delivery uses **Nodemailer** over Gmail SMTP. Free Gmail sends ~500 msgs/day (Workspace ~2000). | `GMAIL_USER` (the address), `GMAIL_APP_PASSWORD` (the 16-char app password), optional `EMAIL_FROM` |
 | 2 · Email (fallback) | Optional — if you'd rather use [resend.com](https://resend.com), leave the Gmail vars unset and provide a Resend key instead. Gmail takes priority when both are present. | `RESEND_API_KEY`, optional `EMAIL_FROM` |
 | 3 · Optional | Random string to pepper OTP hashes. | `AUTH_SECRET` |
+| 4 · Optional | Live 10Y sovereign yields for non-US markets on `/api/rates` (US Treasury FiscalData is keyless; other markets use FRED/OECD long-term government bond yields). Free key from [fred.stlouisfed.org](https://fred.stlouisfed.org/docs/api/api_key.html). Without it, non-US markets use the curated Damodaran baselines. FX context comes keyless from open.er-api.com. | `FRED_API_KEY` |
 
 Redeploy after setting the vars — `/api/auth-config` flips `serverAuth: true` and the login
 page switches to OTP mode by itself. Endpoints: `auth-request-otp` (6-digit code, salted

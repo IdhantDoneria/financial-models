@@ -255,6 +255,87 @@ def _annualise_quarterly(data: Any) -> None:
         data.revenue_growth = (1.0 + data.revenue_growth) ** 4 - 1.0
 
 
+#: Extraction fields the user may set by hand (numeric; ``net_debt`` is a
+#  derived property and ``free_cash_flows`` a synthesised series, so neither
+#  is directly editable — adjust their inputs instead).
+_OVERRIDABLE_FIELDS = (
+    "revenue", "net_income", "total_debt", "cash_and_equivalents",
+    "shares_outstanding", "current_price", "dividend_per_share", "beta",
+    "revenue_growth", "operating_margin", "tax_rate",
+)
+
+
+def _assumed_preview(data: Any) -> dict:
+    """The exact numbers the IB bot will use for each MISSING field.
+
+    Mirrors :class:`AutoAssumer`'s defaults (and calls its own synthesiser for
+    the FCF path) so the UI can show what "AUTO-ASSUMED" actually means —
+    e.g. a company with no debt shows an assumed 0, not a hidden guess.
+    """
+    from src.pipeline import AutoAssumer
+
+    auto = AutoAssumer()
+    spot = data.current_price or 100.0
+    preview: dict[str, Any] = {}
+    if data.current_price is None:
+        preview["current_price"] = 100.0            # normalised units
+    if data.beta is None:
+        preview["beta"] = auto.default_beta
+    if data.dividend_per_share is None:
+        preview["dividend_per_share"] = round(0.02 * spot, 4)
+    if data.revenue is None:
+        preview["revenue"] = 100.0                  # synth-FCF base, normalised
+    if data.revenue_growth is None:
+        preview["revenue_growth"] = 0.05
+    if data.operating_margin is None:
+        preview["operating_margin"] = 0.15
+    if data.tax_rate is None:
+        preview["tax_rate"] = auto.tax
+    if data.total_debt is None:
+        preview["total_debt"] = 0.0
+    if data.cash_and_equivalents is None:
+        preview["cash_and_equivalents"] = 0.0
+    if data.net_debt is None:
+        preview["net_debt"] = 0.0
+    if data.shares_outstanding is None:
+        preview["shares_outstanding"] = 1_000_000   # VaR notional proxy
+    if data.net_income is None:
+        preview["net_income"] = None                # not consumed by any model
+    if not data.free_cash_flows:
+        preview["free_cash_flows"] = [round(f, 2) for f in auto._synth_fcfs(data, 0.09)]
+    return _clean(preview)
+
+
+def override_field(key: str, value: Any = None) -> str:
+    """Manually set (or reset to auto) one extracted field.
+
+    ``value`` is a number, or ``None``/empty to hand the field back to the
+    auto-assumer. Returns the refreshed fields + assumed preview so the UI
+    can re-render, and invalidates any computed report (assumptions changed).
+    """
+    data = _ANALYZER["data"]
+    if data is None:
+        return json.dumps({"ok": False, "error": "No PDF analysed yet."})
+    if key not in _OVERRIDABLE_FIELDS:
+        return json.dumps({"ok": False, "error": f"Field {key!r} is not manually editable."})
+    try:
+        val = None if value in (None, "") else float(value)
+    except (TypeError, ValueError):
+        return json.dumps({"ok": False, "error": "Enter a number."})
+    setattr(data, key, val)
+    _ANALYZER["report"] = None            # previous report used old assumptions
+    return json.dumps({"ok": True, "fields": _clean(data.to_dict()),
+                       "assumed": _assumed_preview(data)})
+
+
+def get_assumed() -> str:
+    """Assumed-value preview for the current extraction (history restores)."""
+    data = _ANALYZER["data"]
+    if data is None:
+        return json.dumps({"ok": False, "error": "No extraction loaded."})
+    return json.dumps({"ok": True, "assumed": _assumed_preview(data)})
+
+
 def analyze_pdf(pdf_bytes: Any, period_mode: str = "auto") -> str:
     """Extract financials from an uploaded PDF; returns a JSON payload.
 
@@ -284,6 +365,7 @@ def analyze_pdf(pdf_bytes: Any, period_mode: str = "auto") -> str:
     return json.dumps({
         "ok": True, "fields": fields, "missing": missing, "period": period,
         "backends": fields.get("backends_used", []),
+        "assumed": _assumed_preview(data),   # what AUTO-ASSUMED will really use
     })
 
 
@@ -291,9 +373,13 @@ def run_report(params_json: str) -> str:
     """Build assumptions (auto or manual) and run the selected models.
 
     ``params_json``: ``{"mode": "auto"|"manual", "selected": [names],
-    "live_rf": float|null, "rf_source": str, "overrides": {field: value}}``.
-    In auto mode ``live_rf`` (scraped from the US Treasury FiscalData API in
-    the browser) replaces the assumer's default risk-free rate.
+    "live_rf": float|null, "rf_source": str, "erp": float|null,
+    "country": str, "currency": str, "overrides": {field: value}}``.
+
+    ``live_rf`` and ``erp`` carry the SELECTED COUNTRY's live 10-year
+    sovereign yield and Damodaran equity risk premium from the browser, so an
+    Indian filing analysed under the India market uses India's cost of
+    capital — never a hardcoded US base case.
     """
     from src.pipeline import (
         AnalysisRunner, AutoAssumer, ManualAssumer, ManualOverrides,
@@ -307,6 +393,8 @@ def run_report(params_json: str) -> str:
     auto_kwargs = {}
     if p.get("live_rf") is not None:
         auto_kwargs["risk_free_rate"] = float(p["live_rf"])
+    if p.get("erp") is not None:
+        auto_kwargs["equity_risk_premium"] = float(p["erp"])
     auto = AutoAssumer(**auto_kwargs)
 
     if p.get("mode") == "manual":
@@ -328,11 +416,19 @@ def run_report(params_json: str) -> str:
     summary = report.summary_frame().to_dict(orient="records")
     rationale = {f"{model} · {param}": text
                  for (model, param), text in assumptions.rationale.items()}
+    # Audit trail: which market the numbers were built in, in what currency.
+    market_context = dict(assumptions.market_context)
+    for extra_key in ("country", "currency", "fx_per_usd"):
+        if p.get(extra_key) not in (None, ""):
+            market_context[extra_key] = p[extra_key]
+    if p.get("erp") is not None:
+        market_context["equity_risk_premium"] = float(p["erp"])
     return json.dumps({
         "ok": True, "mode": mode, "summary": summary,
         "results": _clean(report.results), "errors": report.errors,
-        "market_context": _clean(assumptions.market_context),
+        "market_context": _clean(market_context),
         "rationale": rationale,
+        "currency_symbol": p.get("currency_symbol") or "$",
         "rf_source": p.get("rf_source") or "default (Damodaran base case 4.25%)",
     })
 
