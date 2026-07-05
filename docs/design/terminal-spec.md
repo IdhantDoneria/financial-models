@@ -351,32 +351,49 @@ direct contact) appear in the login footer (`.afoot`), the terminal's
 hamburger-menu GUIDE tab, and a `#menu-support` link in the menu footer —
 chosen to be reachable without interrupting the modeling workflow.
 
-**Password layer.** Optional password (min 8) set on the OTP code screen —
-the code proves the email first. Stored server-side as
-`scrypt(salt, 64)` (`user.pw`); `POST /api/auth-login {email, password}`
-issues the same 30-day bearer session as the OTP path, with a 10-tries /
-15-min lockout per address (`pwtry:*`). The login page's server mode shows
-EMAIL CODE · PASSWORD subtabs (`.stabs`); forgot-password = the code tab
-(re-verifying rotates the password). Sending a password again on the code
-screen rotates it.
+**Password layer — required, not optional.** A password (min 8) must be set
+on the OTP code screen to complete first-time signup — `auth-verify-otp`
+rejects the verify with 400 if the account has no `user.pw` yet and none was
+supplied (returning users who already have one aren't forced to resend it;
+supplying one anyway rotates it). This closes the "sign out → forced back
+through EMAIL CODE every time" complaint: since every account now has a
+password, `POST /api/auth-login {email, password}` — the same 30-day bearer
+session as the OTP path, 10-tries/15-min lockout per address (`pwtry:*`) —
+is always available afterwards. The login page's server mode shows EMAIL
+CODE · PASSWORD subtabs (`.stabs`); a device that has completed a server
+sign-in before (`localStorage["finmodels.lastServerEmail"]`, set on every
+successful OTP or password login) opens straight on PASSWORD, prefilled,
+instead of defaulting to EMAIL CODE — first-time visitors still see EMAIL
+CODE by default. The OTP code is only marked used once the password check
+also passes, so a signup submitted without a password (or with one under 8
+chars) can be corrected by resubmitting the *same* code rather than
+requesting a new one. Stored server-side as `scrypt(salt, 64)` (`user.pw`,
+`user.pwSetAt`); the plaintext is never retained — there is nothing to
+display anywhere, including the admin desk.
 
 **Admin desk.** `public/admin.html` (served at `/admin`, noindex) +
 `/api/admin`, authenticated with the `ADMIN_KEY` env var via `X-Admin-Key`
 (timing-safe; dev harness key `devadmin`; 503 until configured). GET returns
 the full directory from the `users:index` set (SADD on every sign-in) with
 one MGET batch each for `user:*`, `sub:*`, `use:*:<month>`: email, name,
-founder slot (legacy), passwordSet, plan + `via` (founder/grant/checkout),
-expiry, uploads this month, sign-ins, last seen, joined — plus totals and a
-`geo` breakdown (see §15). POST `{action:"grant", email, plan, days(1-365)}`
-writes a `via:"grant"` pass — this is how complimentary-access emails are now
-fulfilled, and it's valid even for emails that never signed up (SADD makes
-them visible as "not signed up yet"; the plan is waiting at first sign-in);
-re-granting stacks from the current expiry. `{action:"revoke", email}`
-deletes the pass.
+founder slot (legacy), passwordSet + pwSetAt (never the password itself),
+plan + `via` (founder/grant/checkout), expiry, uploads this month, sign-ins,
+last seen, joined — plus totals and a `geo` breakdown (see §15). POST
+`{action:"grant", email, plan, days(1-365)}` writes a `via:"grant"` pass —
+this is how complimentary-access emails are now fulfilled, and it's valid
+even for emails that never signed up (SADD makes them visible as "not
+signed up yet"; the plan is waiting at first sign-in); re-granting stacks
+from the current expiry. `{action:"revoke", email}` deletes the pass.
+`{action:"reset_password", email}` clears `user.pw`/`pwSetAt` so the owner
+must return through EMAIL CODE and set a new password — the secure response
+to a suspected compromise, since there is no plaintext to inspect or
+revoke individually.
 
 Tests: `scripts/test_admin_founders.js` (in-process: retired-promo behaviour,
-password set/login/lockout, directory contents, pre-signup grants, stacking,
-revoke, bounds, geo-breakdown shape) and `scripts/e2e_founders_admin.py`
+compulsory-password enforcement including a simulated legacy no-password
+account, password set/login/lockout, reset_password, directory contents,
+pre-signup grants, stacking, revoke, bounds, geo-breakdown shape) and
+`scripts/e2e_founders_admin.py`
 (real-browser concierge banner → signup stays FREE → password re-login →
 admin unlock → grant/revoke).
 

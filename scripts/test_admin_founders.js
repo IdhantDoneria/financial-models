@@ -56,7 +56,8 @@ const ADMIN = { "x-admin-key": "devadmin" };
     cfg0.body.foundersLeft === 0 && cfg0.body.passwordLogin === true);
 
   const results = [];
-  for (let i = 1; i <= 3; i++) results.push(await signup(`user${i}@example.com`));
+  for (let i = 1; i <= 3; i++)
+    results.push(await signup(`user${i}@example.com`, { password: `Str0ngPass!${i}` }));
   const winners = results.filter((r) => r.body.founder);
   check("founders: promo retired -> nobody wins a slot", winners.length === 0,
     `got ${winners.length}`);
@@ -64,11 +65,16 @@ const ADMIN = { "x-admin-key": "devadmin" };
   const use1 = await call(handlers.usage, { method: "GET", token: results[0].body.token });
   check("founders: signups stay on FREE 5/mo (no auto-grant)",
     use1.body.plan === "free" && use1.body.limit === 5 && use1.body.via === null);
-  const again = await signup("user1@example.com");
+  const again = await signup("user1@example.com");   // repeat sign-in: already has a password
   check("founders: re-login still never wins a slot", again.body.founder === null
+    && again.code === 200
     && (await call(handlers.authConfig)).body.foundersLeft === 0);
 
-  // -- password layer -------------------------------------------------------
+  // -- password layer: compulsory on first signup --------------------------
+  const nopass = await signup("nopass@example.com");
+  check("password: required on first signup (no password -> 400)",
+    nopass.code === 400 && /PASSWORD IS REQUIRED/.test(nopass.body.error));
+
   const pw = await signup("pwuser@example.com", { name: "P W", password: "hunter2!secure" });
   check("password: set during OTP verify", pw.body.passwordSet === true);
   const short = await signup("shortpw@example.com", { password: "short" });
@@ -85,10 +91,20 @@ const ADMIN = { "x-admin-key": "devadmin" };
     { method: "POST", body: { email: "pwuser@example.com", password: "wrong-pass" } });
   check("password: wrong password -> 401 with tries left",
     wrong.code === 401 && /TRIES LEFT/.test(wrong.body.error));
+
+  // simulate a legacy account that pre-dates the compulsory-password
+  // requirement (there's no way to create one through the public API any
+  // more) to prove auth-login still degrades it gracefully to EMAIL CODE
+  const legacy = JSON.parse(await store.get("user:user1@example.com"));
+  delete legacy.pw; delete legacy.pwSetAt;
+  await store.set("user:user1@example.com", JSON.stringify(legacy));
   const nopw = await call(handlers.login,
     { method: "POST", body: { email: "user1@example.com", password: "whatever123" } });
-  check("password: OTP-only account pointed back to email code",
+  check("password: legacy no-password account pointed back to email code",
     nopw.code === 401 && /EMAIL ME A CODE/.test(nopw.body.error));
+  const relogin = await signup("user1@example.com", { password: "NewStr0ngPass!" });
+  check("password: legacy account can set a password again via email code",
+    relogin.code === 200 && relogin.body.passwordSet === true);
   let lock;
   for (let i = 0; i < 10; i++) {
     lock = await call(handlers.login,
@@ -110,11 +126,14 @@ const ADMIN = { "x-admin-key": "devadmin" };
     list.body.totals.users === 4 && emails.includes("user2@example.com")
     && emails.includes("pwuser@example.com"));
   const row1 = list.body.rows.find((r) => r.email === "user1@example.com");
+  // user1 has signed in 3 times by now: initial signup, a repeat sign-in,
+  // and re-verifying via email code after the simulated legacy-account reset.
   check("admin: rows carry plan, sign-ins, usage (no founder auto-grant)",
     row1.founder === null && row1.plan === "free" && row1.via === null
-    && row1.loginCount === 2 && typeof row1.usedThisMonth === "number");
-  check("admin: password flag visible",
-    list.body.rows.find((r) => r.email === "pwuser@example.com").passwordSet === true);
+    && row1.loginCount === 3 && typeof row1.usedThisMonth === "number");
+  const rowPw = list.body.rows.find((r) => r.email === "pwuser@example.com");
+  check("admin: password metadata visible (set + when, never the password itself)",
+    rowPw.passwordSet === true && typeof rowPw.pwSetAt === "string" && rowPw.password === undefined);
   check("admin: founder totals right (promo retired)",
     list.body.totals.foundersClaimed === 0 && list.body.totals.foundersLeft === 0);
   check("admin: geo breakdown shape present (no visits tracked in this harness)",
@@ -130,7 +149,7 @@ const ADMIN = { "x-admin-key": "devadmin" };
     !!vip && vip.signedUp === false && vip.plan === "pro" && vip.via === "grant");
 
   // ...and the pass is waiting when they do sign up
-  const vipLogin = await signup("vip@bigbank.com", { name: "VIP" });
+  const vipLogin = await signup("vip@bigbank.com", { name: "VIP", password: "Str0ngPass!VIP" });
   const vipUse = await call(handlers.usage, { method: "GET", token: vipLogin.body.token });
   check("admin: grantee signs up into the waiting plan",
     vipUse.body.plan === "pro" && vipUse.body.limit === 50 && vipUse.body.via === "grant");
@@ -150,6 +169,27 @@ const ADMIN = { "x-admin-key": "devadmin" };
   const badDays = await call(handlers.admin, { method: "POST", headers: ADMIN,
     body: { action: "grant", email: "vip@bigbank.com", plan: "pro", days: 4000 } });
   check("admin: duration bounded to 1–365 days", badDays.code === 400);
+
+  // -- admin: reset_password (the secure alternative to displaying one) ----
+  // pwuser is already locked out from the brute-force test above (429
+  // persists regardless of password state) — use a fresh account so the
+  // reset's own effect is what's under test, not an unrelated lockout.
+  await signup("resetme@example.com", { name: "Reset Me", password: "OriginalPass!1" });
+  const rp = await call(handlers.admin, { method: "POST", headers: ADMIN,
+    body: { action: "reset_password", email: "resetme@example.com" } });
+  check("admin: reset_password clears the account's password",
+    rp.code === 200 && rp.body.ok && rp.body.resetPassword === "resetme@example.com");
+  const oldPwLogin = await call(handlers.login,
+    { method: "POST", body: { email: "resetme@example.com", password: "OriginalPass!1" } });
+  check("admin: old password rejected after reset (pointed back to email code)",
+    oldPwLogin.code === 401 && /EMAIL ME A CODE/.test(oldPwLogin.body.error));
+  const list3 = await call(handlers.admin, { headers: ADMIN });
+  const rowPwAfter = list3.body.rows.find((r) => r.email === "resetme@example.com");
+  check("admin: directory reflects the reset (passwordSet false)",
+    rowPwAfter.passwordSet === false && rowPwAfter.pwSetAt === null);
+  const rpMissing = await call(handlers.admin, { method: "POST", headers: ADMIN,
+    body: { action: "reset_password", email: "nobody@example.com" } });
+  check("admin: reset_password on an unknown email -> 404", rpMissing.code === 404);
 
   console.log(`\n${passed} passed · ${failed} failed`);
   process.exit(failed ? 1 : 0);

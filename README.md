@@ -267,11 +267,16 @@ Every stage runs the same `src/pipeline/` package the pytest suite validates.
 
 The terminal opens with a login page ([`/login`](https://financial-models-six.vercel.app/login)). It has **two auth modes**, switched automatically by what the deployment has configured:
 
-**Server mode — passwordless email OTP** (when a database + mailer are attached):
-enter your email → receive a 6-digit code by email → verify → signed in. First successful
-verify *is* the signup. All user details (email, name, created/last-login timestamps,
-login count) are stored server-side, sessions are 30-day revocable bearer tokens, and the
-terminal re-validates the session against `/api/auth-me` on every boot.
+**Server mode — email OTP + a required password** (when a database + mailer are attached):
+enter your email → receive a 6-digit code by email → verify, setting a password → signed
+in. First successful verify *is* the signup, and a password is required to complete it —
+so every account can sign back in through the **PASSWORD** tab afterwards without another
+email round-trip. A device that has completed a server sign-in before has the login page
+open straight on PASSWORD (prefilled with that email) instead of EMAIL CODE, so signing
+out and back in never feels like redoing onboarding. All user details (email, name,
+created/last-login timestamps, login count) are stored server-side, sessions are 30-day
+revocable bearer tokens, and the terminal re-validates the session against `/api/auth-me`
+on every boot.
 
 **Device-local mode** (out of the box, no credentials needed): email + password accounts
 hashed with PBKDF2-SHA256 (Web Crypto, per-account salt, 150k iterations), stored only in
@@ -361,28 +366,38 @@ powers paid-plan comps. The founder can also be reached directly at
 **doneriaidhant@gmail.com**. Accounts that already won a founder slot before retirement
 keep it; `FOUNDER_CAP = 0` in `api/_lib/billing.js` is what disables new automatic grants.
 
-#### 🔑 Password sign-in (cloud accounts)
+#### 🔑 Password sign-in (cloud accounts) — required, not optional
 
-On the email-code screen, users can optionally **set a password** (min 8 chars). It is
-stored server-side as an scrypt hash — the password itself never persists — and from
-then on the login page's **PASSWORD** tab signs them in directly, no code round-trip.
-Wrong-password attempts are rate-limited (10 per 15 min per address); "forgot password"
-is just the EMAIL CODE tab again (verifying a fresh code lets a new password be set).
-Everything about an account — profile, sign-in history, password hash, plan, usage —
-lives in the cloud store.
+On the email-code screen, users **must set a password** (min 8 chars) to finish signing
+up — the code only proves the email, so this is where the account gets a real credential.
+It is stored server-side as a one-way **scrypt hash**; the plaintext is never retained
+anywhere, by design. From then on the login page's **PASSWORD** tab signs them in
+directly, no code round-trip — and a device that has completed a server sign-in before
+opens straight on that tab (prefilled), so signing out is never a dead end back into the
+onboarding flow. Wrong-password attempts are rate-limited (10 per 15 min per address);
+"forgot password" is the EMAIL CODE tab again (a fresh code lets a new password be set —
+if the code is entered before the password field, the *same* code stays valid for a retry
+instead of expiring). Returning users who already have a password aren't forced to retype
+it just to use the code tab; supplying one there rotates it. Legacy accounts predating
+this requirement (none possible going forward) are prompted to set one the next time they
+use EMAIL CODE.
 
 #### ⚙ Admin desk — `/admin`
 
 The operator's console at **`https://<your-domain>/admin`** (set an `ADMIN_KEY` env var
 in Vercel, then enter it on the page — it is checked server-side, timing-safe, on every
-request). It shows **every account**: email, name, legacy founder slot (if any), whether
-a password is set, plan + how they got it (FOUNDER / GRANT / CHECKOUT), expiry, uploads
-this month, sign-in count, last seen, joined — plus a **visitor-geography** breakdown (see
-below). And it is the **manual grant mechanism**: type any email, choose a plan and a
-duration (7–365 days) → that person gets free premium — it works even before they sign up
-(the pass is waiting at first sign-in), re-granting stacks days, and REVOKE ends a plan
-instantly. Backed by `/api/admin`; tested by `node scripts/test_admin_founders.js` and
-`python scripts/e2e_founders_admin.py`.
+request). It shows **every account**: email, name, legacy founder slot (if any), plan +
+how they got it (FOUNDER / GRANT / CHECKOUT), expiry, uploads this month, sign-in count,
+last seen, joined, and a **PASSWORD** column — plus a **visitor-geography** breakdown (see
+below). **No endpoint ever returns a password, hashed or otherwise** — there is nothing to
+display by design (scrypt hashing is one-way). The PASSWORD column instead shows whether
+one is set and when it was last set, with a **RESET** button that clears it and forces the
+owner back through EMAIL CODE to set a new one — the safe way to respond to a suspected
+compromise, without ever exposing a credential. The desk is also the **manual grant
+mechanism**: type any email, choose a plan and a duration (7–365 days) → that person gets
+free premium — it works even before they sign up (the pass is waiting at first sign-in),
+re-granting stacks days, and REVOKE ends a plan instantly. Backed by `/api/admin`; tested
+by `node scripts/test_admin_founders.js` and `python scripts/e2e_founders_admin.py`.
 
 #### 🌍 Visitor geography & IP-derived local time
 

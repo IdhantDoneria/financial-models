@@ -118,8 +118,8 @@ def main() -> int:
             print(f"  stats: {stats.replace(chr(10), ' · ')[:110]}")
             if "founder1@example.com" not in table:
                 failures.append("ADMIN: user email missing from directory")
-            if "PW" not in table:
-                failures.append("ADMIN: password tag missing")
+            if "SET " not in table or "RESET" not in table:
+                failures.append("ADMIN: password-set metadata / RESET action missing")
             if "TRACKED VISITS" not in stats:
                 failures.append("ADMIN: visitor-geography stat missing")
             if "COUNTRY" not in geo:
@@ -146,6 +146,15 @@ def main() -> int:
                        .find((t) => t.textContent.includes('vip@bigbank.com'));
                      return r && r.textContent.includes('FREE'); }""", timeout=15_000)
             print("  revoked — back to FREE")
+
+            print("· resetting a password from the admin desk (never displaying one)…")
+            page.once("dialog", lambda d: d.accept())
+            page.locator('#users [data-resetpw="founder1@example.com"]').click()
+            page.wait_for_function(
+                """() => { const r = [...document.querySelectorAll('#users tr')]
+                       .find((t) => t.textContent.includes('founder1@example.com'));
+                     return r && r.textContent.includes('not set'); }""", timeout=15_000)
+            print("  password reset — directory shows 'not set', never the password itself")
 
             browser.close()
         if failures:

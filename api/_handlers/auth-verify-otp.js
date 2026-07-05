@@ -1,9 +1,14 @@
-// POST /api/auth-verify-otp  { email, code, name? }
+// POST /api/auth-verify-otp  { email, code, name?, password? }
 //
-// Verifies the emailed code (timing-safe hash compare, max 5 attempts, code
-// consumed on success), upserts the user profile in the store, and issues a
-// 30-day bearer session token. First successful verify for an address IS
-// the signup — passwordless accounts.
+// Verifies the emailed code (timing-safe hash compare, max 5 attempts),
+// upserts the user profile in the store, and issues a 30-day bearer session
+// token. A password is required to complete first-time signup — the code
+// only proves the email, so this is where an account gets one; a returning
+// user who already has a password isn't forced to resend it (sending one
+// again rotates it, e.g. a self-serve "forgot password" reset). The code
+// is only marked used once every check (including the password) has
+// passed, so a missing/short password can be corrected by resubmitting
+// the same code instead of requesting a new one.
 
 const store = require("../_lib/store");
 const A = require("../_lib/auth");
@@ -39,25 +44,34 @@ module.exports = async (req, res) => {
         ? `INVALID CODE — ${left} ATTEMPT${left === 1 ? "" : "S"} LEFT`
         : "TOO MANY WRONG ATTEMPTS — REQUEST A NEW CODE" });
     }
-    await store.del(`otp:${addr}`);   // single use
-
-    // upsert profile — this is where "all the user details" live server-side
+    // The code is correct — but don't consume it yet. A password is
+    // required to finish first-time signup, and if it's missing or too
+    // short we want the same still-valid code to be retryable (just add a
+    // password and press verify again) rather than forcing a whole new
+    // "request code" round-trip over a form-validation mistake.
     let user;
     try { user = JSON.parse((await store.get(`user:${addr}`)) || "null"); } catch { user = null; }
     const now = new Date().toISOString();
     if (!user) user = { email: addr, name: null, createdAt: now, loginCount: 0, provider: "email-otp" };
-    if (body.name && String(body.name).trim().length >= 2) user.name = String(body.name).trim().slice(0, 80);
-    user.lastLoginAt = now;
-    user.loginCount = (user.loginCount || 0) + 1;
 
-    // optional password (the code just proved the email): later sign-ins can
-    // use email+password directly. Sending one again rotates it.
+    let pwHash = null;
     if (body.password !== undefined && String(body.password).length > 0) {
       const pw = String(body.password).slice(0, 200);
       if (pw.length < A.PW_MIN)
         return A.json(res, 400, { error: `PASSWORD MUST BE AT LEAST ${A.PW_MIN} CHARACTERS` });
-      user.pw = A.hashPasswordRecord(pw);
+      pwHash = A.hashPasswordRecord(pw);
+    } else if (!user.pw) {
+      return A.json(res, 400,
+        { error: `A PASSWORD IS REQUIRED — SET ONE (MIN ${A.PW_MIN} CHARACTERS) TO FINISH SIGNING IN` });
     }
+
+    await store.del(`otp:${addr}`);   // single use — committed past this point
+
+    // upsert profile — this is where "all the user details" live server-side
+    if (body.name && String(body.name).trim().length >= 2) user.name = String(body.name).trim().slice(0, 80);
+    user.lastLoginAt = now;
+    user.loginCount = (user.loginCount || 0) + 1;
+    if (pwHash) { user.pw = pwHash; user.pwSetAt = now; }   // rotates if one was already set
 
     // founders promo — each account draws exactly once; the first 20 win a
     // free month of DESK UNLIMITED (pre-promo accounts claim on next login).

@@ -58,6 +58,7 @@ def main() -> int:
             page.wait_for_selector("#otp-step2", state="visible", timeout=20_000)
             page.fill("#otp-code", code_box.get("devCode", ""))
             page.fill("#otp-name", "Desk Buyer")
+            page.fill("#otp-pass", "Str0ngPass!Buyer")   # required for a first-time signup
             page.click("#otp-verify")
             page.wait_for_url(lambda u: "login" not in u, timeout=30_000)
             print("  in terminal (pyodide boot stubbed out) — fresh signup starts on FREE")

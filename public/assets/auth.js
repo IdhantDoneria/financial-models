@@ -12,7 +12,18 @@
 
 const LS_ACCOUNTS = "finmodels.accounts";
 const LS_SESSION = "finmodels.session";
+const LS_LAST_EMAIL = "finmodels.lastServerEmail";
 const $ = (s) => document.querySelector(s);
+
+//: Remembered locally (not security-sensitive — an email address, never a
+//  password) so a returning visitor's login page opens straight on the
+//  PASSWORD tab instead of making them retrace the EMAIL CODE signup flow.
+function rememberServerEmail(email) {
+  try { localStorage.setItem(LS_LAST_EMAIL, email); } catch { /* storage unavailable */ }
+}
+function lastServerEmail() {
+  try { return localStorage.getItem(LS_LAST_EMAIL); } catch { return null; }
+}
 
 const DAY = 86_400_000;
 const SESSION_SHORT = DAY / 2;      // 12 h without "keep me signed in"
@@ -198,22 +209,27 @@ async function onOtpVerify() {
   const code = $("#otp-code").value.replace(/\D/g, "");
   if (code.length !== 6) return showErr("ENTER THE 6-DIGIT CODE FROM YOUR EMAIL");
   const pass = $("#otp-pass").value;
-  if (pass && pass.length < 8) return showErr("PASSWORD MUST BE AT LEAST 8 CHARACTERS (OR LEAVE IT EMPTY)");
+  // A password is required to finish signup; returning users who already
+  // have one aren't forced to retype it here (the backend only enforces
+  // this for accounts with none on file yet), but validate length either way.
+  if (pass && pass.length < 8) return showErr("PASSWORD MUST BE AT LEAST 8 CHARACTERS");
   const btn = $("#otp-verify");
   btn.disabled = true; btn.textContent = "VERIFYING…";
   showErr("");
   try {
     const body = { email, code, name: $("#otp-name").value.trim() };
-    if (pass) body.password = pass;   // the code proves the email; save for next time
+    if (pass) body.password = pass;
     const out = await postJson("api/auth-verify-otp", body);
     if (out.founder) {   // founders promo: let the winner see it before the redirect
       try { sessionStorage.setItem("finmodels.founderToast", String(out.founder)); } catch { /* ignore */ }
     }
+    rememberServerEmail(email);
     finishLogin({ uid: email, name: (out.user && out.user.name) || email,
                   provider: "otp", token: out.token }, true);
     return;
   } catch (err) {
     showErr(String(err.message || err));
+    if (/PASSWORD IS REQUIRED/.test(String(err.message || err))) $("#otp-pass").focus();
   }
   btn.disabled = false; btn.textContent = "VERIFY & SIGN IN <GO>";
 }
@@ -231,6 +247,7 @@ async function onPwLogin(e) {
   showErr("");
   try {
     const out = await postJson("api/auth-login", { email, password: pass });
+    rememberServerEmail(email);
     finishLogin({ uid: email, name: (out.user && out.user.name) || email,
                   provider: "otp", token: out.token }, true);
     return;
@@ -254,12 +271,17 @@ function initServerAuth(cfg) {
     $(".afoot").innerHTML = "SERVER AUTH OFFLINE — DEVICE-LOCAL MODE<br>" + $(".afoot").innerHTML;
     return;
   }
-  // server mode: email OTP (+ optional saved password) replaces local accounts
+  // server mode: email OTP (+ a required password) replaces local accounts.
+  // A device that has already completed a server sign-in once jumps straight
+  // to PASSWORD — otherwise, signing out would mean redoing the email-code
+  // flow every time, which reads as "onboarding all over again".
   document.querySelector(".atabs").style.display = "none";
   $("#f-signin").style.display = "none";
   $("#f-signup").style.display = "none";
   $("#stabs").style.display = "";
-  setServerTab("code");
+  const known = lastServerEmail();
+  if (known) { $("#pw-email").value = known; setServerTab("pass"); $("#pw-pass").focus(); }
+  else setServerTab("code");
   $("#stab-code").onclick = () => setServerTab("code");
   $("#stab-pass").onclick = () => setServerTab("pass");
   $("#f-otp").addEventListener("submit", onOtpSend);
