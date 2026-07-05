@@ -1,14 +1,15 @@
-"""Browser E2E: founders promo, password sign-in layer, admin desk.
+"""Browser E2E: complimentary-access notice, password sign-in layer, admin desk.
 
 Full local stack (scripts/dev_auth_server.js — real api/*.js, in-memory
 store, dev admin key). Drives:
-  1. login page shows the founders banner (20 slots left),
-  2. OTP signup that also sets a password -> founder slot #1 won,
-     PLAN tab shows the FOUNDER PASS with the free month,
+  1. login page shows the complimentary-access (concierge) notice,
+  2. OTP signup that also sets a password -> stays on the FREE plan (the
+     automatic first-20 founders promo is retired; free access is now
+     granted manually via the admin desk),
   3. sign-out -> sign back in through the PASSWORD tab (no email code),
   4. /admin: unlock with the operator key, read the user directory
-     (email, founder tag, PW tag), grant premium to a typed email +
-     duration, revoke it.
+     (email, PW tag), confirm the visitor-geography section renders,
+     grant premium to a typed email + duration, revoke it.
 
     python scripts/e2e_founders_admin.py
 """
@@ -51,15 +52,18 @@ def main() -> int:
             page.on("response", lambda r: code_box.update(
                 json.loads(r.text() or "{}")) if "auth-request-otp" in r.url else None)
 
-            print("· founders banner on the login page…")
+            print("· complimentary-access notice on the login page…")
             page.goto(BASE + "login.html", timeout=30_000)
-            page.wait_for_selector("#founders", state="visible", timeout=15_000)
-            banner = page.inner_text("#founders")
+            page.wait_for_selector("#concierge", state="visible", timeout=15_000)
+            banner = page.inner_text("#concierge")
             print(f"  {banner[:90]}…")
-            if "20 SLOTS LEFT" not in banner or "1 MONTH OF DESK UNLIMITED FREE" not in banner:
-                failures.append(f"FOUNDERS: banner wrong ({banner[:80]})")
+            if "finmodels10@gmail.com" not in banner or "48 business hours" not in banner:
+                failures.append(f"CONCIERGE: banner wrong ({banner[:80]})")
+            afoot = page.inner_text(".afoot")
+            if "finmodels10@gmail.com" not in afoot or "doneriaidhant@gmail.com" not in afoot:
+                failures.append(f"CONCIERGE: footer support line missing ({afoot[:100]})")
 
-            print("· OTP signup + set password -> founder slot #1…")
+            print("· OTP signup + set password -> stays on FREE (no auto-grant)…")
             page.fill("#otp-email", "founder1@example.com")
             page.click("#otp-send")
             page.wait_for_selector("#otp-step2", state="visible", timeout=20_000)
@@ -68,18 +72,26 @@ def main() -> int:
             page.fill("#otp-pass", "Str0ngPass!Word")
             page.click("#otp-verify")
             page.wait_for_url(lambda u: "login" not in u, timeout=30_000)
-            page.wait_for_function("typeof openMenuTab === 'function'", timeout=15_000)
-            page.evaluate("document.getElementById('boot').style.display='none'")
-            page.evaluate("openMenuTab('plan')")
-            page.wait_for_selector(".pnote.gift", timeout=15_000)
-            gift = page.inner_text(".pnote.gift")
-            print(f"  {gift[:90]}…")
-            if "FOUNDER PASS #1" not in gift:
-                failures.append(f"FOUNDERS: pass banner missing ({gift[:80]})")
+            # Pyodide's CDN is unreachable in this sandbox, so boot() never
+            # completes and buildUI() (which wires up initBilling/#planchip)
+            # never runs on its own — call it directly, same as the other
+            # Pyodide-bypass suites in this repo.
+            page.wait_for_function("typeof buildUI === 'function'", timeout=15_000)
+            page.evaluate("""() => {
+              state.user = currentUser();
+              state.country = COUNTRIES[0];
+              applyCountryDefaults(state.country);
+              buildUI();
+              document.getElementById('boot').style.display = 'none';
+              document.getElementById('app').classList.add('ready');
+            }""")
+            page.wait_for_function(
+                "() => document.querySelector('#planchip').textContent.trim().length > 0",
+                timeout=15_000)
             chip = page.inner_text("#planchip")
-            if "DESK UNLIMITED" not in chip:
-                failures.append(f"FOUNDERS: chip not unlimited ({chip})")
             print(f"  chip: {chip}")
+            if "DESK UNLIMITED" in chip or "FREE" not in chip.upper():
+                failures.append(f"CONCIERGE: new signup unexpectedly not on FREE ({chip})")
 
             print("· sign out -> back in via the PASSWORD tab…")
             page.evaluate("localStorage.removeItem('finmodels.session')")
@@ -102,13 +114,16 @@ def main() -> int:
             page.wait_for_selector("#app", state="visible", timeout=15_000)
             table = page.inner_text("#users")
             stats = page.inner_text("#stats")
+            geo = page.inner_text("#geo")
             print(f"  stats: {stats.replace(chr(10), ' · ')[:110]}")
             if "founder1@example.com" not in table:
                 failures.append("ADMIN: user email missing from directory")
-            if "FOUNDER #1" not in table or "PW" not in table:
-                failures.append("ADMIN: founder/password tags missing")
-            if "FOUNDER SLOTS CLAIMED" not in stats:
-                failures.append("ADMIN: founder stats missing")
+            if "PW" not in table:
+                failures.append("ADMIN: password tag missing")
+            if "TRACKED VISITS" not in stats:
+                failures.append("ADMIN: visitor-geography stat missing")
+            if "COUNTRY" not in geo:
+                failures.append("ADMIN: geo breakdown table missing")
 
             print("· granting premium to a typed email + duration…")
             page.fill("#g-email", "vip@bigbank.com")
@@ -138,7 +153,7 @@ def main() -> int:
             for f in failures:
                 print(" -", f)
             return 1
-        print("\nFOUNDERS + PASSWORD + ADMIN E2E: ALL CHECKS PASS")
+        print("\nCONCIERGE + PASSWORD + ADMIN E2E: ALL CHECKS PASS")
         return 0
     finally:
         srv.terminate()

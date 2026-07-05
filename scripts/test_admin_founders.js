@@ -1,6 +1,7 @@
-// In-process tests for the founders promo, the password sign-in layer, and
-// the admin desk (user directory + manual premium grants). Store in
-// dev-memory mode; admin key is the dev default "devadmin".
+// In-process tests for the (now-retired) founders promo, the password
+// sign-in layer, and the admin desk (user directory + manual premium
+// grants). Store in dev-memory mode; admin key is the dev default
+// "devadmin".
 //
 //     node scripts/test_admin_founders.js
 
@@ -47,34 +48,24 @@ async function signup(email, extra = {}) {
 const ADMIN = { "x-admin-key": "devadmin" };
 
 (async () => {
-  console.log("FOUNDERS PROMO · PASSWORD LAYER · ADMIN DESK — in-memory store\n");
+  console.log("FOUNDERS PROMO (RETIRED) · PASSWORD LAYER · ADMIN DESK — in-memory store\n");
 
-  // -- promo advertised before anyone signs up ----------------------------
+  // -- promo retired: FOUNDER_CAP=0, so nobody ever wins a slot ------------
   const cfg0 = await call(handlers.authConfig);
-  check("config: 20 founder slots advertised", cfg0.body.foundersLeft === 20
-    && cfg0.body.founderPlanName === "DESK UNLIMITED" && cfg0.body.passwordLogin === true);
+  check("config: founders promo reports 0 slots (retired)",
+    cfg0.body.foundersLeft === 0 && cfg0.body.passwordLogin === true);
 
-  // -- 22 signups: exactly the first 20 win a free month ------------------
   const results = [];
-  for (let i = 1; i <= 22; i++) results.push(await signup(`user${i}@example.com`));
+  for (let i = 1; i <= 3; i++) results.push(await signup(`user${i}@example.com`));
   const winners = results.filter((r) => r.body.founder);
-  check("founders: exactly 20 of 22 signups win", winners.length === 20,
+  check("founders: promo retired -> nobody wins a slot", winners.length === 0,
     `got ${winners.length}`);
-  check("founders: slots numbered 1..20 in order",
-    results[0].body.founder === 1 && results[19].body.founder === 20
-    && results[20].body.founder === null && results[21].body.founder === null);
 
   const use1 = await call(handlers.usage, { method: "GET", token: results[0].body.token });
-  check("founders: winner holds DESK UNLIMITED via 'founder'",
-    use1.body.plan === "unlimited" && use1.body.limit === null
-    && use1.body.via === "founder" && use1.body.founderNo === 1);
-  const use21 = await call(handlers.usage, { method: "GET", token: results[20].body.token });
-  check("founders: user #21 stays on FREE 5/mo",
-    use21.body.plan === "free" && use21.body.limit === 5);
-  const cfg1 = await call(handlers.authConfig);
-  check("founders: slots exhausted -> 0 left", cfg1.body.foundersLeft === 0);
+  check("founders: signups stay on FREE 5/mo (no auto-grant)",
+    use1.body.plan === "free" && use1.body.limit === 5 && use1.body.via === null);
   const again = await signup("user1@example.com");
-  check("founders: re-login never draws twice", again.body.founder === 1
+  check("founders: re-login still never wins a slot", again.body.founder === null
     && (await call(handlers.authConfig)).body.foundersLeft === 0);
 
   // -- password layer -------------------------------------------------------
@@ -113,19 +104,21 @@ const ADMIN = { "x-admin-key": "devadmin" };
 
   const list = await call(handlers.admin, { headers: ADMIN });
   const emails = list.body.rows.map((r) => r.email);
-  // 22 promo signups + pwuser (the short-password attempt was rejected
+  // 3 promo signups + pwuser (the short-password attempt was rejected
   // before any account was created).
-  check("admin: directory lists every signed-up email (23)",
-    list.body.totals.users === 23 && emails.includes("user7@example.com")
+  check("admin: directory lists every signed-up email (4)",
+    list.body.totals.users === 4 && emails.includes("user2@example.com")
     && emails.includes("pwuser@example.com"));
   const row1 = list.body.rows.find((r) => r.email === "user1@example.com");
-  check("admin: rows carry founder #, plan, sign-ins, usage",
-    row1.founder === 1 && row1.plan === "unlimited" && row1.via === "founder"
+  check("admin: rows carry plan, sign-ins, usage (no founder auto-grant)",
+    row1.founder === null && row1.plan === "free" && row1.via === null
     && row1.loginCount === 2 && typeof row1.usedThisMonth === "number");
   check("admin: password flag visible",
     list.body.rows.find((r) => r.email === "pwuser@example.com").passwordSet === true);
-  check("admin: founder totals right",
-    list.body.totals.foundersClaimed === 20 && list.body.totals.foundersLeft === 0);
+  check("admin: founder totals right (promo retired)",
+    list.body.totals.foundersClaimed === 0 && list.body.totals.foundersLeft === 0);
+  check("admin: geo breakdown shape present (no visits tracked in this harness)",
+    list.body.geo && list.body.geo.total === 0 && Array.isArray(list.body.geo.countries));
 
   // grant premium to someone who has never signed up
   const g = await call(handlers.admin, { method: "POST", headers: ADMIN,

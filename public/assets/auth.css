@@ -140,10 +140,10 @@ label.remember input { accent-color: var(--amber); }
 }
 .stabs button.on { background: var(--amber); color: #000; }
 
-/* founders promo banner */
-#founders {
-  border: 1px dashed var(--amber); color: var(--amber);
-  font-size: 10px; letter-spacing: 0.06em; line-height: 1.7;
+/* complimentary-access notice */
+#concierge {
+  border: 1px solid var(--cyan); color: var(--text);
+  font-size: 10px; letter-spacing: 0.04em; line-height: 1.7;
   padding: 9px 12px; margin-bottom: 16px;
 }
-#founders b { letter-spacing: 0.1em; }
+#concierge b { color: var(--cyan); font-weight: 400; letter-spacing: 0.06em; }

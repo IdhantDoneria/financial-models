@@ -33,12 +33,11 @@
     .stats { display:flex; gap:12px; flex-wrap:wrap; margin:14px 0; }
     .stat { border:1px solid var(--border); background:var(--panel); padding:10px 16px; min-width:130px; }
     .stat b { display:block; color:var(--cyan); font-size:17px; margin-top:2px; }
-    .stat.founder b { color:var(--amber); }
     table { border-collapse:collapse; width:100%; margin-top:14px; }
     th, td { border:1px solid var(--border); padding:6px 9px; text-align:left; font-size:11px; }
     th { color:var(--dim); font-weight:400; letter-spacing:.1em; font-size:10px;
       background:var(--panel); position:sticky; top:0; }
-    td.num { text-align:right; }
+    td.num, th.num-h { text-align:right; }
     .tag { display:inline-block; padding:1px 6px; font-size:9px; letter-spacing:.08em;
       border:1px solid var(--border); color:var(--dim); }
     .tag.founder { border-color:var(--amber); color:var(--amber); }
@@ -62,7 +61,7 @@
 
   <!-- key gate -->
   <div id="gate">
-    <h1>⚙ FINMODELS ADMIN DESK<small>USERS · FOUNDERS PROMO · PREMIUM GRANTS</small></h1>
+    <h1>⚙ FINMODELS ADMIN DESK<small>USERS · CONCIERGE ACCESS · PREMIUM GRANTS · VISITOR GEOGRAPHY</small></h1>
     <p>Enter the operator key (the <b>ADMIN_KEY</b> environment variable set in Vercel).
        It is checked server-side on every request and never stored on the server pages.</p>
     <input id="key" type="password" placeholder="ADMIN KEY" autocomplete="off">
@@ -110,9 +109,18 @@
       <th>UPLOADS (MO)</th><th>SIGN-INS</th><th>LAST SEEN</th><th>JOINED</th><th></th>
     </tr></thead><tbody></tbody></table>
 
+    <div class="bar" style="margin-top:28px">
+      <div class="t" style="color:var(--cyan);font-size:11px;letter-spacing:.12em">VISITOR GEOGRAPHY</div>
+    </div>
+    <div style="color:var(--dim);font-size:10px;line-height:1.6;margin-bottom:8px">
+      Country-level tally from IP-derived geolocation (<b>/api/geo</b>), used to display each
+      visitor's local time. One count per visitor per hour — no raw IP address is retained.</div>
+    <table id="geo"><thead><tr><th>COUNTRY</th><th class="num-h">VISITS</th><th class="num-h">SHARE</th></tr></thead><tbody></tbody></table>
+
     <div class="foot">Every value comes live from the Redis store (<b>user:*</b>,
-      <b>sub:*</b>, <b>use:*</b> keys) via <b>/api/admin</b>. Founder slots: the first 20
-      verified email accounts automatically receive one month of DESK UNLIMITED.</div>
+      <b>sub:*</b>, <b>use:*</b>, <b>geo:*</b> keys) via <b>/api/admin</b>. Complimentary access
+      is now granted manually (GRANT box above) after a request to <b>finmodels10@gmail.com</b>;
+      the automatic first-20 founders promo is retired, though founders already granted keep it.</div>
   </div>
 
 <script>
@@ -141,8 +149,7 @@ function render(data) {
     <div class="stat">SIGNED-UP USERS<b>${t.users}</b></div>
     <div class="stat">ACTIVE PAID<b>${t.activePaid}</b></div>
     <div class="stat">FREE-ACCESS GRANTS<b>${t.granted}</b></div>
-    <div class="stat founder">FOUNDER SLOTS CLAIMED<b>${t.foundersClaimed} / 20</b></div>
-    <div class="stat founder">FOUNDER SLOTS LEFT<b>${t.foundersLeft}</b></div>`;
+    <div class="stat">TRACKED VISITS<b>${data.geo ? data.geo.total : 0}</b></div>`;
   const tb = $("#users tbody");
   tb.innerHTML = data.rows.map((r) => `
     <tr>
@@ -169,6 +176,13 @@ function render(data) {
               `GRANTED 30 DAYS UNLIMITED TO ${b.dataset.grant}`);
   });
   $("#asof").textContent = `AS OF ${new Date().toLocaleTimeString()} · MONTH ${data.month}`;
+
+  const geo = data.geo || { total: 0, countries: [] };
+  const gtb = $("#geo tbody");
+  gtb.innerHTML = geo.countries.map((c) => `
+    <tr><td>${c.code}</td><td class="num">${c.count}</td>
+      <td class="num">${geo.total ? ((c.count / geo.total) * 100).toFixed(1) : "0.0"}%</td></tr>`
+  ).join("") || `<tr><td colspan="3" class="ghosted">No tracked visits yet.</td></tr>`;
 }
 
 function msg(text, cls) { const el = $("#msg"); el.textContent = text; el.className = cls || ""; }

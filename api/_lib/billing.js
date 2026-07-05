@@ -130,12 +130,17 @@ async function activate(email, plan, paymentId, orderId, via) {
 }
 
 /* ------------------------- grants & founders ---------------------------- *
- * Non-payment activations: the first-20 founders promo (every one of the
- * first 20 accounts gets a free month of DESK UNLIMITED, claimed atomically
- * at signup) and operator grants (the admin desk types an email + duration
- * -> free premium). Both write the same sub:<email> record the paywall
- * reads, tagged with `via` so the UI can say where the access came from.   */
-const FOUNDER_CAP = 20;
+ * Non-payment activations: the first-20 founders promo (retired — see below)
+ * and operator grants (the admin desk types an email + duration -> free
+ * premium; this is now how complimentary-access requests emailed in are
+ * fulfilled). Both write the same sub:<email> record the paywall reads,
+ * tagged with `via` so the UI can say where the access came from.
+ *
+ * FOUNDER_CAP is 0: the automatic first-20-signups promo is disabled.
+ * Free access is now granted manually, case-by-case, after a request to
+ * the concierge inbox (see login page) — via admin.js `grant`. Existing
+ * founder grants already issued are unaffected. */
+const FOUNDER_CAP = 0;
 const FOUNDER_PLAN = "unlimited";
 const FOUNDER_DAYS = 30;
 
