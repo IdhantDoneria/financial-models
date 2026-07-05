@@ -401,6 +401,7 @@ function buildUI() {
   $("#tab-scen").onclick = () => setTab("scen");
   $("#tab-doc").onclick = () => setTab("doc");
 
+  initMobileNav();
   initMenu();
   initCountry();
   initBilling();
@@ -415,6 +416,31 @@ function buildUI() {
   setInterval(() => {
     $("#clock").textContent = new Date().toISOString().slice(0, 19).replace("T", " ") + " UTC";
   }, 1000);
+}
+
+/* --------------------------- phone bottom nav --------------------------- */
+//: ≤820px the grid collapses to one panel at a time (see terminal.css);
+//  the bottom tab bar picks which. Desktop never sets data-mview, so these
+//  are no-ops there. Selecting a model auto-jumps to INPUTS and a finished
+//  IB report to ANALYTICS, mirroring where a desktop user's eyes would go.
+const MOBILE_MQ = window.matchMedia ? window.matchMedia("(max-width: 820px)") : { matches: false };
+function isPhone() { return MOBILE_MQ.matches; }
+
+function initMobileNav() {
+  const nav = $("#mnav");
+  if (!nav) return;
+  nav.querySelectorAll("button").forEach((b) => { b.onclick = () => setMobileView(b.dataset.mv); });
+  setMobileView("inputs");
+  if (isPhone()) $("#cmd").placeholder = "MNEMONIC — DCF · BSM · IB ⏎";
+}
+
+function setMobileView(mv) {
+  const main = $("#main");
+  if (!main) return;
+  main.dataset.mview = mv;
+  document.querySelectorAll("#mnav button").forEach((b) => b.classList.toggle("on", b.dataset.mv === mv));
+  // Plotly sized itself while the viz panel was display:none — re-measure.
+  if (mv === "viz") requestAnimationFrame(() => window.dispatchEvent(new Event("resize")));
 }
 
 /* ------------------------------ live ticker ---------------------------- */
@@ -512,6 +538,7 @@ function execCommand() {
 function selectModel(mn) {
   const model = MODELS.find((m) => m.mn === mn);
   state.view = "model";
+  if (isPhone()) setMobileView("inputs");
   $("#oerr").style.display = "none";
   $("#output header .title").textContent = "OUTPUT";
   setTab("chart");
@@ -828,6 +855,7 @@ async function applyCountryToIB(c) {
 function selectAnalyzer() {
   state.view = "ib";
   state.current = null;
+  if (isPhone()) setMobileView("inputs");
   clearTimeout(state.timer);
   if (!state.ib.selected) state.ib.selected = new Set(IB_MODELS);
   document.querySelectorAll(".mrow").forEach((r) => r.classList.toggle("active", r.dataset.mn === "IB"));
@@ -1195,6 +1223,7 @@ async function runIBReport() {
     renderIBReport();
     recordHistory();          // persist this company's analysis to menu history
     setTab("chart");
+    if (isPhone()) setMobileView("viz");   // the report renders in ANALYTICS
     const nErr = Object.keys(out.errors).length;
     ibStatus(`REPORT READY · ${out.summary.length} MODELS${nErr ? ` · ${nErr} FAILED` : ""}`);
     $("#ostat").className = "meta";

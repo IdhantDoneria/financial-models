@@ -2,7 +2,8 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#050608">
   <title>FINMODELS TERMINAL — 10 quant models, live in your browser</title>
   <meta name="description" content="Bloomberg-terminal-style interface running ten canonical quantitative finance models (Black-Scholes, Heston, DCF, MPT, VaR, Fama-French…) live in the browser via Python/WebAssembly.">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' fill='%23050608'/><text y='72' x='50' font-size='58' text-anchor='middle' fill='%23ffb000' font-family='monospace'>ƒ</text></svg>">
@@ -90,6 +91,14 @@
         <span id="clock"></span>
       </span>
     </div>
+
+    <!-- phone-only bottom navigation (hidden ≥821px; see terminal.css) -->
+    <nav id="mnav" aria-label="Terminal panels">
+      <button data-mv="rail"><span class="mi">▤</span>MODELS</button>
+      <button data-mv="inputs" class="on"><span class="mi">⌁</span>INPUTS</button>
+      <button data-mv="output"><span class="mi">Σ</span>OUTPUT</button>
+      <button data-mv="viz"><span class="mi">◫</span>ANALYTICS</button>
+    </nav>
   </div>
 
   <!-- hamburger menu -->
