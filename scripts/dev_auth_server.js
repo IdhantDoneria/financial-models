@@ -30,6 +30,7 @@ const API = {
   "admin": require("../api/admin.js"),
   "quotes": require("../api/quotes.js"),
   "usage": require("../api/usage.js"),
+  "rates": require("../api/rates.js"),
 };
 
 const MIME = {

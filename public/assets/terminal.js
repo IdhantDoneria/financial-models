@@ -202,8 +202,8 @@ const state = {
   scen: { built: null, busy: false },   // scenario & sensitivity engine
   billing: { cfg: null, usage: null },  // Razorpay plans + upload metering
   ib: { pkgsReady: false, fns: null, extracted: null, report: null,
-        liveRf: null, rfSource: null, period: "auto", mode: "auto",
-        dirty: {}, selected: null },
+        liveRf: null, rfSource: null, fx: null, fxDate: null,
+        period: "auto", mode: "auto", dirty: {}, selected: null },
 };
 
 /* ------------------------------------------------------------------------ *
@@ -341,12 +341,14 @@ async function boot() {
     const savedCc = (() => { try { return localStorage.getItem(LS_COUNTRY); } catch { return null; } })();
     state.country = COUNTRIES.find((c) => c.code === savedCc) || COUNTRIES[0];
     applyCountryDefaults(state.country);   // repoint rate defaults before first build
+    applyCountryToIB(state.country);       // IB desk rates follow the saved market
+                                           // from boot — never default to US
 
     buildUI();
     document.getElementById("boot").style.display = "none";
     document.getElementById("app").classList.add("ready");
     window.TERMINAL_READY = true;   // e2e hook
-    selectModel("BSM");
+    selectModel("DCF");   // land new users on valuation first, not derivatives
     $("#cmd").focus();
   } catch (err) {
     bootLog("BOOT FAILURE: " + err, "err");
@@ -794,23 +796,32 @@ const IB_FIELD_LABELS = {
 };
 
 /* ------------------------- live market data ---------------------------- */
-async function fetchLiveRiskFree() {
-  // US Treasury FiscalData API — free, keyless, CORS-open. Average interest
-  // rate on marketable Treasury Notes ≈ intermediate-tenor risk-free proxy.
-  const url = "https://api.fiscaldata.treasury.gov/services/api/fiscal_service/" +
-    "v2/accounting/od/avg_interest_rates?filter=security_desc:eq:Treasury%20Notes" +
-    "&sort=-record_date&page%5Bsize%5D=1";
-  try {
-    const r = await fetch(url, { signal: AbortSignal.timeout(8000) });
-    const j = await r.json();
-    const row = j.data[0];
-    state.ib.liveRf = parseFloat(row.avg_interest_rate_amt) / 100;
-    state.ib.rfSource = `US TREASURY FISCALDATA · NOTES AVG ${row.record_date}`;
-  } catch {
-    state.ib.liveRf = null;   // bridge falls back to the Damodaran base case
-    state.ib.rfSource = "OFFLINE — DAMODARAN BASE CASE 4.25%";
-  }
+//: Anchor the IB desk to the selected country: baseline sovereign yield takes
+//  effect IMMEDIATELY (so an upload can never run on another market's rate),
+//  then /api/rates upgrades it to a live figure — US Treasury FiscalData for
+//  the US, FRED/OECD 10Y govt yields elsewhere (free FRED_API_KEY), plus the
+//  keyless er-api USD fix for FX context. Any fetch failure keeps the
+//  curated Damodaran baseline, clearly labelled as such.
+async function applyCountryToIB(c) {
+  const seq = (state.ib.rateSeq = (state.ib.rateSeq || 0) + 1);
+  state.ib.liveRf = c.rf;
+  state.ib.rfSource = `${c.name.toUpperCase()} 10Y SOVEREIGN BASELINE (DAMODARAN)`;
+  state.ib.fx = null; state.ib.fxDate = null;
   renderIBContext();
+  try {
+    const r = await fetch(`api/rates?cc=${c.code}`, { signal: AbortSignal.timeout(9000) });
+    if (!r.ok) return;
+    const j = await r.json();
+    if (seq !== state.ib.rateSeq) return;   // stale — country changed again
+    if (typeof j.rf === "number" && j.rf > 0 && j.rf < 0.5) {
+      state.ib.liveRf = j.rf;
+      state.ib.rfSource = j.rfSource || state.ib.rfSource;
+      //: live yield also re-anchors the manual sliders' defaults
+      applyCountryDefaults({ ...c, rf: j.rf });
+    }
+    if (typeof j.fx === "number") { state.ib.fx = j.fx; state.ib.fxDate = j.fxDate; }
+    renderIBContext();
+  } catch { /* baseline already applied */ }
 }
 
 /* --------------------------- view assembly ----------------------------- */
@@ -833,7 +844,7 @@ function selectAnalyzer() {
   renderIBContext();
   renderIBReport();
   setTab("chart");
-  if (state.ib.liveRf === null && state.ib.rfSource === null) fetchLiveRiskFree();
+  if (state.ib.liveRf === null) applyCountryToIB(state.country);
   ensureAnalyzerPackages();
 }
 
@@ -864,10 +875,13 @@ function buildIBForm() {
     state.ib.mode = v; buildIBForm();
   }));
   if (state.ib.mode === "auto") {
+    const c = state.country || COUNTRIES[0];
     body.insertAdjacentHTML("beforeend",
       `<div class="ibhint">IB BOT: CAPM WACC (80/20 equity-debt, +150bp credit spread), terminal g ≤ r_f
-       (Gordon constraint), sector-neutral β fallback, Damodaran ERP 5%. Risk-free scraped LIVE
-       from the US Treasury FiscalData API, with an offline fallback.</div>`);
+       (Gordon constraint), sector-neutral β fallback. Anchored to <b>${c.flag} ${c.name.toUpperCase()}</b>:
+       ERP ${(c.erp * 100).toFixed(1)}% (Damodaran country rating), risk-free from the live 10Y
+       sovereign yield (US Treasury FiscalData / FRED-OECD), baseline fallback offline.
+       Change the market with the country button (top-right).</div>`);
   } else {
     body.insertAdjacentHTML("beforeend",
       `<div class="ibhint">Move a slider to override the bot — untouched inputs keep the auto value.</div>`);
@@ -967,6 +981,8 @@ function ensureAnalyzerPackages() {
         run: state.pyodide.runPython("web_bridge.run_report"),
         exportR: state.pyodide.runPython("web_bridge.export_report"),
         restore: state.pyodide.runPython("web_bridge.restore_extraction"),
+        override: state.pyodide.runPython("web_bridge.override_field"),
+        assumed: state.pyodide.runPython("web_bridge.get_assumed"),
       };
       state.ib.pkgsReady = true;
       ibStatus("READY — UPLOAD A FILING");
@@ -1013,6 +1029,7 @@ async function onIBUpload() {
     if (!out.ok) throw new Error(out.error);
     state.ib.extracted = out;
     state.ib.report = null;
+    state.ib.userSet = new Set();       // fresh filing — no manual overrides yet
     renderIBExtracted();
     ibStatus(`EXTRACTED · ${out.period.toUpperCase()} BASIS · ${out.backends.join("+") || "no backend"}`);
     $("#ostat").className = "meta";
@@ -1024,37 +1041,134 @@ async function onIBUpload() {
   syncIBButtons();
 }
 
+//: Monetary extraction fields — labelled with the selected market's currency
+//  (the filing's own currency; pick the matching country for coherent rates).
+const IB_MONEY_FIELDS = new Set([
+  "revenue", "free_cash_flows", "net_income", "total_debt",
+  "cash_and_equivalents", "net_debt", "current_price", "dividend_per_share",
+]);
+//: Fields with no direct manual override: text/derived/synthesised.
+const IB_NO_OVERRIDE = new Set([
+  "company_name", "ticker", "fiscal_year", "net_debt", "free_cash_flows",
+]);
+
 function renderIBExtracted() {
   const grid = $("#ogrid");
   grid.innerHTML = "";
   $("#oerr").style.display = "none";
   const out = state.ib.extracted;
   if (!out) { renderIBContext(); return; }
+  const assumed = out.assumed || {};
+  const userSet = state.ib.userSet || (state.ib.userSet = new Set());
+
   Object.entries(IB_FIELD_LABELS).forEach(([key, label]) => {
     const value = out.fields[key];
     const isMissing = value === null || value === undefined || (Array.isArray(value) && !value.length);
     const tr = document.createElement("tr");
-    const shown = isMissing
-      ? `<span class="badge assumed">AUTO-ASSUMED</span>`
-      : `${fmtValue(key, value)} <span class="badge found">PDF</span>`;
-    tr.innerHTML = `<td class="k">${label}</td><td class="v">${shown}</td>`;
+    tr.dataset.key = key;
+    const ccyTag = IB_MONEY_FIELDS.has(key) ? ` <span class="ccytag">${ccySymbol().trim()}</span>` : "";
+
+    let shown;
+    if (!isMissing) {
+      //: USER = manually entered; click the badge to change or revert to auto.
+      shown = userSet.has(key)
+        ? `${fmtValue(key, value)} <span class="badge user clickable" data-key="${key}"
+             title="manually set — click to edit or revert to auto">USER</span>`
+        : `${fmtValue(key, value)} <span class="badge found">PDF</span>`;
+    } else {
+      //: Transparency: show the exact number the bot will assume, and let the
+      //  user click AUTO-ASSUMED to take that field over manually.
+      const av = assumed[key];
+      const avTxt = av === null || av === undefined ? "—" : fmtValue(key, av);
+      const editable = !IB_NO_OVERRIDE.has(key);
+      shown = `${avTxt} <span class="badge assumed${editable ? " clickable" : ""}" data-key="${key}"
+        title="${editable ? "click to switch off auto-assumption and enter your own value"
+                          : key === "net_debt" ? "derived from total debt − cash; edit those instead"
+                          : key === "free_cash_flows" ? "synthesised from revenue × margin × growth"
+                          : "not used by the models"}">AUTO-ASSUMED</span>`;
+    }
+    tr.innerHTML = `<td class="k">${label}${ccyTag}</td><td class="v">${shown}</td>`;
     grid.appendChild(tr);
+  });
+  grid.querySelectorAll(".badge.clickable").forEach((b) => {
+    b.onclick = () => openIBFieldEditor(b.dataset.key);
   });
   renderIBContext();
 }
 
+//: Inline editor for one extracted field: input prefilled with the current /
+//  assumed number, SET commits the manual value, AUTO hands it back to the bot.
+function openIBFieldEditor(key) {
+  const tr = $(`#ogrid tr[data-key="${key}"]`);
+  if (!tr || !state.ib.fns) return;
+  const out = state.ib.extracted;
+  const cur = out.fields[key] ?? (out.assumed || {})[key];
+  const isPct = PCT_KEY.test(key);
+  const prefill = cur === null || cur === undefined ? ""
+    : isPct && Math.abs(cur) <= 1.5 ? +(cur * 100).toFixed(4) : cur;
+  tr.querySelector(".v").innerHTML =
+    `<input class="ibov" value="${prefill}" placeholder="${isPct ? "e.g. 4.6 (%)" : "number"}">
+     <button class="ibov-set">SET</button><button class="ibov-auto"
+       title="revert to the bot's auto-assumption">↺ AUTO</button>`;
+  const input = tr.querySelector(".ibov");
+  const commit = (revert) => {
+    let v = null;
+    if (!revert) {
+      v = parseFloat(String(input.value).replace(/[%,$\s]/g, ""));
+      if (Number.isNaN(v)) { input.focus(); return; }
+      if (isPct && Math.abs(v) > 1.5) v /= 100;   // "4.6" typed for 4.6%
+    }
+    commitIBField(key, v);
+  };
+  tr.querySelector(".ibov-set").onclick = () => commit(false);
+  tr.querySelector(".ibov-auto").onclick = () => commit(true);
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") commit(false);
+    if (e.key === "Escape") renderIBExtracted();
+  });
+  input.focus(); input.select();
+}
+
+async function commitIBField(key, valueOrNull) {
+  try {
+    const res = JSON.parse(state.ib.fns.override(key, valueOrNull));
+    if (!res.ok) { ibStatus(res.error, true); return; }
+    state.ib.extracted.fields = res.fields;
+    state.ib.extracted.assumed = res.assumed;
+    if (valueOrNull === null) state.ib.userSet.delete(key);
+    else state.ib.userSet.add(key);
+    state.ib.report = null;                     // assumptions changed
+    renderIBExtracted();
+    syncIBButtons();
+    ibStatus(valueOrNull === null
+      ? `${IB_FIELD_LABELS[key] || key} BACK TO AUTO — RE-RUN THE REPORT`
+      : `${IB_FIELD_LABELS[key] || key} SET MANUALLY — RE-RUN THE REPORT`);
+    $("#ostat").className = "meta";
+  } catch (err) {
+    ibStatus("OVERRIDE FAILED: " + String(err).slice(0, 120), true);
+  }
+}
+
 function renderIBContext() {
   if (state.view !== "ib") return;
+  const grid = $("#ogrid");
+  const c = state.country || COUNTRIES[0];
   let ctx = $("#ibctx");
-  if (!ctx) {
-    ctx = document.createElement("tr");
-    ctx.id = "ibctx";
-  }
+  if (!ctx) { ctx = document.createElement("tr"); ctx.id = "ibctx"; }
   const rf = state.ib.liveRf;
-  ctx.innerHTML = `<td class="k">RISK-FREE (LIVE)</td><td class="v">${
+  ctx.innerHTML = `<td class="k">RISK-FREE (${c.code})</td><td class="v">${
     rf !== null && rf !== undefined ? (rf * 100).toFixed(3) + "%" : "—"
   } <span class="badge live">${state.ib.rfSource || "FETCHING…"}</span></td>`;
-  $("#ogrid").appendChild(ctx);
+  grid.appendChild(ctx);
+
+  let mkt = $("#ibmkt");
+  if (!mkt) { mkt = document.createElement("tr"); mkt.id = "ibmkt"; }
+  const fx = state.ib.fx && c.ccy !== "USD"
+    ? ` · FX 1 USD = ${state.ib.fx.toFixed(3)} ${c.ccy}` : "";
+  mkt.innerHTML = `<td class="k">MARKET / ERP</td><td class="v">${c.flag} ${
+    c.name.toUpperCase()} · ${c.ccy} · ERP ${(c.erp * 100).toFixed(1)}%${fx}
+    <span class="badge live">ALL ASSUMPTIONS ANCHOR HERE</span></td>`;
+  grid.appendChild(mkt);
 }
 
 async function runIBReport() {
@@ -1063,11 +1177,16 @@ async function runIBReport() {
   ibStatus(`RUNNING ${state.ib.selected.size} MODELS…`);
   await new Promise((r) => setTimeout(r, 25));
   try {
+    const c = state.country || COUNTRIES[0];
     const payload = {
       mode: state.ib.mode,
       selected: [...state.ib.selected],
       live_rf: state.ib.liveRf,
       rf_source: state.ib.rfSource,
+      erp: c.erp,                       // country equity risk premium (Damodaran)
+      country: c.name, country_code: c.code,
+      currency: c.ccy, currency_symbol: ccySymbol(),
+      fx_per_usd: state.ib.fx,
       overrides: state.ib.mode === "manual" ? state.ib.dirty : {},
     };
     const out = JSON.parse(state.ib.fns.run(JSON.stringify(payload)));
@@ -1213,14 +1332,13 @@ function selectCountry(code) {
   try { localStorage.setItem(LS_COUNTRY, code); } catch { /* best-effort */ }
   applyCountryDefaults(c);
   syncCountryUI();
-  // Point the IB desk's risk-free at this market. For the US we still prefer
-  // the live Treasury number; others use the curated sovereign baseline.
-  if (c.live) {
-    fetchLiveRiskFree();
-  } else {
-    state.ib.liveRf = c.rf;
-    state.ib.rfSource = `${c.name.toUpperCase()} 10Y SOVEREIGN BASELINE`;
-    if (state.view === "ib") renderIBContext();
+  // Repoint the IB desk to this market: baseline instantly, live yield + FX
+  // from /api/rates async. Every market now gets its own rate — never US-only.
+  applyCountryToIB(c);
+  // A report computed under the previous market's rates is now stale.
+  if (state.ib.report && !state.ib.report.restored) {
+    state.ib.report = null;
+    if (state.view === "ib") { renderIBReport(); ibStatus("MARKET CHANGED — RE-RUN THE REPORT"); }
   }
   // Re-render whatever is on screen so the new defaults take effect.
   if (state.view === "model" && state.current) selectModel(state.current.mn);
@@ -1384,6 +1502,7 @@ async function loadHistoryItem(i) {
   selectAnalyzer();                 // switch to the IB desk view
   state.ib.extracted = h.extracted;
   state.ib.report = { ...h.report, restored: true };  // display-only until re-run
+  state.ib.userSet = new Set();     // snapshot restore — overrides start clean
   renderIBExtracted();
   renderIBReport();
   setTab("chart");
@@ -1395,6 +1514,14 @@ async function loadHistoryItem(i) {
     const out = JSON.parse(state.ib.fns.restore(
       JSON.stringify(h.extracted.fields), h.extracted.period || "annual"));
     if (!out.ok) throw new Error(out.error);
+    //: Older snapshots pre-date the assumed-value preview — backfill it so the
+    //  AUTO-ASSUMED rows show their numbers (and become editable) here too.
+    if (!state.ib.extracted.assumed) {
+      try {
+        const ap = JSON.parse(state.ib.fns.assumed());
+        if (ap.ok) { state.ib.extracted.assumed = ap.assumed; renderIBExtracted(); }
+      } catch { /* preview only — snapshot still renders */ }
+    }
     ibStatus(`RESTORED · ${(h.company || "").toUpperCase()} — SNAPSHOT SHOWN · PRESS ▶ RUN TO RECOMPUTE & EXPORT`);
     $("#ostat").className = "meta";
   } catch (err) {
