@@ -64,6 +64,7 @@ html, body {
 
 /* ticker tape */
 #tape {
+  position: relative;
   flex: 0 0 26px; overflow: hidden; white-space: nowrap;
   border-bottom: 1px solid var(--border);
   background: #000; line-height: 26px; font-size: 11px;
@@ -77,6 +78,16 @@ html, body {
 #tape i.flat { color: var(--text-dim); }
 #tape span { margin-right: 42px; color: var(--text-dim); }
 @keyframes tape { to { transform: translateX(-100%); } }
+
+/* non-scrolling "last updated" badge, pinned to the right edge of the tape */
+#tape-ts {
+  position: absolute; top: 0; right: 0; z-index: 1;
+  height: 100%; display: flex; align-items: center;
+  padding: 0 12px 0 26px; margin: 0 !important;
+  background: linear-gradient(to right, transparent, #000 40%);
+  color: var(--text-dim); font-size: 9.5px; letter-spacing: 0.06em;
+  pointer-events: none;
+}
 
 /* command bar */
 #cmdbar {

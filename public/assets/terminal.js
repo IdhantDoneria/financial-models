@@ -16,12 +16,12 @@ const MODELS = [
     mn: "DCF", name: "Discounted Cash Flow", cat: "Valuation",
     formula: "EV = Σ FCF_t/(1+r)^t + TV/(1+r)^N",
     params: [
-      { id: "base_fcf", label: "BASE FCF ($M)", min: 1, max: 500, step: 1, def: 100 },
+      { id: "base_fcf", label: "BASE FCF", money: true, scale: "M", min: 1, max: 500, step: 1, def: 100 },
       { id: "fcf_growth", label: "FCF GROWTH", min: -0.10, max: 0.25, step: 0.005, def: 0.08, pct: true },
       { id: "years", label: "HORIZON (Y)", min: 3, max: 10, step: 1, def: 5, int: true },
       { id: "discount_rate", label: "WACC", min: 0.04, max: 0.20, step: 0.0025, def: 0.09, pct: true },
       { id: "terminal_growth", label: "TERMINAL G", min: 0.0, max: 0.05, step: 0.0025, def: 0.025, pct: true },
-      { id: "net_debt", label: "NET DEBT ($M)", min: -500, max: 2000, step: 10, def: 250 },
+      { id: "net_debt", label: "NET DEBT", money: true, scale: "M", min: -500, max: 2000, step: 10, def: 250 },
       { id: "shares_outstanding", label: "SHARES (M)", min: 10, max: 2000, step: 10, def: 150 },
     ],
   },
@@ -29,7 +29,7 @@ const MODELS = [
     mn: "GG", name: "Gordon Growth (DDM)", cat: "Valuation",
     formula: "P₀ = D₁ / (r − g)",
     params: [
-      { id: "dividend", label: "DIVIDEND D₀ ($)", min: 0.1, max: 20, step: 0.1, def: 2.5 },
+      { id: "dividend", label: "DIVIDEND D₀", money: true, min: 0.1, max: 20, step: 0.1, def: 2.5 },
       { id: "required_return", label: "REQUIRED r", min: 0.02, max: 0.25, step: 0.0025, def: 0.08, pct: true },
       { id: "growth", label: "GROWTH g", min: 0.0, max: 0.10, step: 0.0025, def: 0.04, pct: true },
     ],
@@ -56,7 +56,7 @@ const MODELS = [
       { id: "sigma_annual", label: "ANNUAL σ", min: 0.05, max: 0.80, step: 0.005, def: 0.20, pct: true },
       { id: "confidence", label: "CONFIDENCE", min: 0.90, max: 0.99, step: 0.005, def: 0.95, pct: true },
       { id: "horizon_days", label: "HORIZON (D)", min: 1, max: 30, step: 1, def: 10, int: true },
-      { id: "portfolio_value", label: "PORTFOLIO ($M)", min: 0.1, max: 1000, step: 0.1, def: 100 },
+      { id: "portfolio_value", label: "PORTFOLIO", money: true, scale: "M", min: 0.1, max: 1000, step: 0.1, def: 100 },
       { id: "method", label: "METHOD", select: ["historical", "parametric", "monte_carlo"], def: "historical" },
     ],
   },
@@ -85,8 +85,8 @@ const MODELS = [
     mn: "BSM", name: "Black-Scholes-Merton", cat: "Derivatives",
     formula: "C = S e^{−qT} N(d₁) − K e^{−rT} N(d₂)",
     params: [
-      { id: "spot", label: "SPOT S", min: 1, max: 500, step: 1, def: 100 },
-      { id: "strike", label: "STRIKE K", min: 1, max: 500, step: 1, def: 100 },
+      { id: "spot", label: "SPOT S", money: true, min: 1, max: 500, step: 1, def: 100 },
+      { id: "strike", label: "STRIKE K", money: true, min: 1, max: 500, step: 1, def: 100 },
       { id: "rate", label: "RATE r", min: 0, max: 0.15, step: 0.0025, def: 0.05, pct: true },
       { id: "sigma", label: "VOL σ", min: 0.05, max: 1.0, step: 0.005, def: 0.20, pct: true },
       { id: "maturity", label: "MATURITY T (Y)", min: 0.05, max: 5, step: 0.05, def: 1 },
@@ -98,8 +98,8 @@ const MODELS = [
     mn: "CRR", name: "Binomial Tree (CRR)", cat: "Derivatives",
     formula: "p = (e^{(r−q)Δt} − d) / (u − d),  u = e^{σ√Δt}",
     params: [
-      { id: "spot", label: "SPOT S", min: 1, max: 500, step: 1, def: 100 },
-      { id: "strike", label: "STRIKE K", min: 1, max: 500, step: 1, def: 100 },
+      { id: "spot", label: "SPOT S", money: true, min: 1, max: 500, step: 1, def: 100 },
+      { id: "strike", label: "STRIKE K", money: true, min: 1, max: 500, step: 1, def: 100 },
       { id: "rate", label: "RATE r", min: 0, max: 0.15, step: 0.0025, def: 0.05, pct: true },
       { id: "sigma", label: "VOL σ", min: 0.05, max: 1.0, step: 0.005, def: 0.20, pct: true },
       { id: "maturity", label: "MATURITY T (Y)", min: 0.05, max: 5, step: 0.05, def: 1 },
@@ -113,8 +113,8 @@ const MODELS = [
     mn: "MC", name: "Monte Carlo (GBM)", cat: "Derivatives",
     formula: "Ĉ = e^{−rT} · mean[payoff(S_T)],  antithetic variates",
     params: [
-      { id: "spot", label: "SPOT S", min: 1, max: 500, step: 1, def: 100 },
-      { id: "strike", label: "STRIKE K", min: 1, max: 500, step: 1, def: 100 },
+      { id: "spot", label: "SPOT S", money: true, min: 1, max: 500, step: 1, def: 100 },
+      { id: "strike", label: "STRIKE K", money: true, min: 1, max: 500, step: 1, def: 100 },
       { id: "rate", label: "RATE r", min: 0, max: 0.15, step: 0.0025, def: 0.05, pct: true },
       { id: "sigma", label: "VOL σ", min: 0.05, max: 1.0, step: 0.005, def: 0.20, pct: true },
       { id: "maturity", label: "MATURITY T (Y)", min: 0.05, max: 5, step: 0.05, def: 1 },
@@ -128,8 +128,8 @@ const MODELS = [
     mn: "HES", name: "Heston Stochastic Vol", cat: "Derivatives",
     formula: "dv_t = κ(θ − v_t)dt + ξ√v_t dW_t,  corr(dW^S, dW^v) = ρ",
     params: [
-      { id: "spot", label: "SPOT S", min: 1, max: 500, step: 1, def: 100 },
-      { id: "strike", label: "STRIKE K", min: 1, max: 500, step: 1, def: 100 },
+      { id: "spot", label: "SPOT S", money: true, min: 1, max: 500, step: 1, def: 100 },
+      { id: "strike", label: "STRIKE K", money: true, min: 1, max: 500, step: 1, def: 100 },
       { id: "rate", label: "RATE r", min: 0, max: 0.15, step: 0.0025, def: 0.03, pct: true },
       { id: "maturity", label: "MATURITY T (Y)", min: 0.1, max: 5, step: 0.05, def: 1 },
       { id: "v0", label: "INITIAL VAR v₀", min: 0.005, max: 0.5, step: 0.005, def: 0.04 },
@@ -170,6 +170,17 @@ const COUNTRIES = [
 ];
 //: Parameter ids that represent a risk-free / short rate across the models.
 const RF_PARAM_IDS = new Set(["risk_free_rate", "rate"]);
+
+//: Display symbol per currency — used to relabel every monetary model input
+//  (spot, strike, FCF, dividend, portfolio, net debt…) to the selected
+//  country's currency. This relabels the unit only; it does not convert the
+//  number, since these are illustrative playground inputs the user sets
+//  themselves, not live FX-quoted figures.
+const CCY_SYMBOL = {
+  USD: "$", CNY: "¥", JPY: "¥", INR: "₹", HKD: "HK$", EUR: "€", GBP: "£",
+  CAD: "C$", SAR: "SAR ", CHF: "CHF ", TWD: "NT$", AUD: "A$", KRW: "₩",
+};
+const ccySymbol = () => CCY_SYMBOL[(state.country && state.country.ccy) || "USD"] || "$";
 
 //: Shown only if every live source is unreachable — the tape never goes blank.
 const TAPE_FALLBACK = [
@@ -425,6 +436,16 @@ function renderTape(items) {
   $("#tape .inner").innerHTML = seq.repeat(3);
 }
 
+//: Non-scrolling "AS OF HH:MM:SS UTC" badge pinned to the tape's right edge —
+//  lets a user see data recency at a glance instead of just trusting the
+//  numbers. Indices only tick during their own exchange's trading hours, so
+//  an unchanged price outside that window is correct, not stale; this makes
+//  that distinguishable from an actually-frozen feed.
+function updateTapeTimestamp(ts) {
+  const el = $("#tape-ts");
+  if (el) el.textContent = `AS OF ${new Date(ts).toISOString().slice(11, 19)} UTC`;
+}
+
 async function refreshTape() {
   if (await fetchTapePrimary()) return;    // same-origin /api/quotes (full set)
   await fetchTapeFallback();               // CORS-open CoinGecko (crypto+gold)
@@ -437,6 +458,7 @@ async function fetchTapePrimary() {
     const j = await r.json();
     if (!j.quotes || !j.quotes.length) return false;
     renderTape(j.quotes.map(tapeItemHTML));
+    updateTapeTimestamp(j.ts || Date.now());
     return true;
   } catch { return false; }
 }
@@ -454,6 +476,7 @@ async function fetchTapeFallback() {
     add("bitcoin", "BITCOIN"); add("ethereum", "ETHEREUM"); add("pax-gold", "GOLD (PAXG)");
     if (!items.length) return false;
     renderTape(items.concat(TAPE_FALLBACK));
+    updateTapeTimestamp(Date.now());
     return true;
   } catch { return false; }
 }
@@ -514,10 +537,17 @@ function fmtParam(p, v) {
   return String(+(+v).toFixed(4));
 }
 
+//: Money params show a currency unit suffix ("BASE FCF (₹M)") that reflects
+//  the selected country — selectCountry() rebuilds the open model's param
+//  panel on every country change, so this always re-reads the current ccy.
+function moneyLabelHTML(p) {
+  return `<label>${p.label} (${ccySymbol()}${p.scale || ""})</label>`;
+}
+
 function paramRow(p) {
   const row = document.createElement("div");
   row.className = "prow";
-  const label = `<label>${p.label}</label>`;
+  const label = p.money ? moneyLabelHTML(p) : `<label>${p.label}</label>`;
 
   if (p.select) {
     row.innerHTML = label + `<select></select>`;
@@ -1269,7 +1299,7 @@ function openMenuTab(tab) {
 
 function renderGuide(body) {
   const steps = [
-    ["1", "<b>Pick your market.</b> Use the country button (top-right) to choose from the 15 largest equity markets. The risk-free rate, market return and cost of capital across every model instantly re-anchor to that country — no more US-only assumptions."],
+    ["1", "<b>Pick your market.</b> Use the country button (top-right) to choose from the 15 largest equity markets. The risk-free rate, market return and cost of capital across every model instantly re-anchor to that country, and every monetary input (spot, strike, FCF, dividend, portfolio, net debt) relabels to that market's currency — no more US-only, dollar-only assumptions."],
     ["2", "<b>Choose a model.</b> Click a row in the MODELS rail, press its function key (F1–F10), or type its mnemonic in the amber command bar and hit &lt;GO&gt; (e.g. type <b>BSM</b> ⏎). See the MODELS tab here for what each one is best for."],
     ["3", "<b>Drive the inputs.</b> Every parameter is a slider paired with an editable field. Move either and the model recalculates live — no run button. Percentages are entered as percentages (e.g. 5 = 5%)."],
     ["4", "<b>Read the output.</b> OUTPUT shows the headline results (green = positive, red = negative). The ANALYTICS panel has a CHART tab (interactive Plotly) and a DOC tab explaining the math with formulas."],

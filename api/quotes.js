@@ -62,8 +62,10 @@ module.exports = async (req, res) => {
   const quotes = settled.filter(Boolean);
   res.setHeader("Content-Type", "application/json; charset=utf-8");
   // Serve stale instantly while revalidating in the background — the tape is
-  // never blocked on a cold Yahoo fetch.
-  res.setHeader("Cache-Control", "public, s-maxage=60, stale-while-revalidate=300");
+  // never blocked on a cold Yahoo fetch. Kept short so the shared edge cache
+  // can't hold a quote for long even in the worst case (revalidation failing
+  // repeatedly); the client itself polls this endpoint every 60s regardless.
+  res.setHeader("Cache-Control", "public, s-maxage=30, stale-while-revalidate=90");
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.status(200).json({ ts: Date.now(), quotes });
 };
