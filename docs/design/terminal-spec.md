@@ -330,18 +330,26 @@ the modal so the whole purchase is locally testable: 24 backend checks in
 Unconfigured production stays free/unmetered with an explicit PLAN-tab
 offline state.
 
-## 14 · Founders promo · password layer · admin desk
+## 14 · Founders promo (retired) · complimentary access · password layer · admin desk
 
-**Founders promo.** The first `FOUNDER_CAP = 20` verified email accounts each
-receive `FOUNDER_DAYS = 30` days of DESK UNLIMITED free. Claim happens in
-`auth-verify-otp` guarded by a per-user `founderChecked` flag; the atomic
-arbiter is `INCR founders:claimed` (permanent counter), so concurrent
-sign-ups can't share a slot and an account can never draw twice. Slot number
-is stored on the profile (`user.founder`) and the pass (`sub.founderNo`).
-Visibility: the login page banner (`#founders`, fed by `foundersLeft` on
-`auth-config`), a one-shot PLAN-tab auto-open after the winning sign-in
-(sessionStorage toast), the 🎁 FOUNDER PASS banner + plan chip in the
-terminal, and per-row FOUNDER #N tags on the admin desk.
+**Founders promo — retired.** The automatic first-`FOUNDER_CAP` (was 20)
+verified-email grant of `FOUNDER_DAYS` (30) days of DESK UNLIMITED is
+disabled by setting `FOUNDER_CAP = 0` in `api/_lib/billing.js`; the claim
+path (`auth-verify-otp` -> `B.claimFounderSlot`) and its arbiter
+(`INCR founders:claimed`) are untouched code-wise, they simply never award a
+slot now (`n > 0` for any signup). Accounts that already won a slot before
+retirement keep their grant. `auth-config`'s `foundersLeft` field stays for
+API compatibility and now always reads 0.
+
+**Complimentary access.** Replaces the promo's role on the login page: a
+static notice (`#concierge` in `login.html`, rendered in `initServerAuth()`
+in `auth.js`) directs prospective users to email `finmodels10@gmail.com`
+with their intended use; requests are reviewed and granted manually via the
+admin desk's `{action:"grant"}` (see below), with a stated 48-business-hour
+response commitment. The same commitment and addresses (plus the founder's
+direct contact) appear in the login footer (`.afoot`), the terminal's
+hamburger-menu GUIDE tab, and a `#menu-support` link in the menu footer —
+chosen to be reachable without interrupting the modeling workflow.
 
 **Password layer.** Optional password (min 8) set on the OTP code screen —
 the code proves the email first. Stored server-side as
@@ -357,17 +365,36 @@ screen rotates it.
 (timing-safe; dev harness key `devadmin`; 503 until configured). GET returns
 the full directory from the `users:index` set (SADD on every sign-in) with
 one MGET batch each for `user:*`, `sub:*`, `use:*:<month>`: email, name,
-founder slot, passwordSet, plan + `via` (founder/grant/checkout), expiry,
-uploads this month, sign-ins, last seen, joined — plus totals. POST
-`{action:"grant", email, plan, days(1-365)}` writes a `via:"grant"` pass —
-valid even for emails that never signed up (SADD makes them visible as "not
-signed up yet"; the plan is waiting at first sign-in); re-granting stacks
-from the current expiry. `{action:"revoke", email}` deletes the pass.
+founder slot (legacy), passwordSet, plan + `via` (founder/grant/checkout),
+expiry, uploads this month, sign-ins, last seen, joined — plus totals and a
+`geo` breakdown (see §15). POST `{action:"grant", email, plan, days(1-365)}`
+writes a `via:"grant"` pass — this is how complimentary-access emails are now
+fulfilled, and it's valid even for emails that never signed up (SADD makes
+them visible as "not signed up yet"; the plan is waiting at first sign-in);
+re-granting stacks from the current expiry. `{action:"revoke", email}`
+deletes the pass.
 
-Tests: `scripts/test_admin_founders.js` (26 in-process checks: slot
-arithmetic under 22 signups, no double-draw, password set/login/lockout,
-directory contents, pre-signup grants, stacking, revoke, bounds) and
-`scripts/e2e_founders_admin.py` (real-browser banner → founder signup with
-password → FOUNDER PASS reveal → password re-login → admin unlock →
-grant/revoke). The billing suite pre-exhausts the promo to keep testing the
-paid path.
+Tests: `scripts/test_admin_founders.js` (in-process: retired-promo behaviour,
+password set/login/lockout, directory contents, pre-signup grants, stacking,
+revoke, bounds, geo-breakdown shape) and `scripts/e2e_founders_admin.py`
+(real-browser concierge banner → signup stays FREE → password re-login →
+admin unlock → grant/revoke).
+
+## 15 · IP-derived local clock · visitor geography
+
+`api/geo.js` resolves the caller's IP (from `x-forwarded-for`, falling back
+to the socket address) via `ipwho.is` (free, keyless, HTTPS) to a city,
+country and IANA timezone. `terminal.js`'s `initGeoClock()` calls it once at
+boot and, on success, switches the status-bar clock (`renderClock()`) from
+UTC to the visitor's local time (`Intl.DateTimeFormat` with the resolved
+`timeZone`); the clock's tooltip names the detected city/country. Private/
+loopback IPs and lookup failures leave the clock on UTC.
+
+Each successful lookup also increments a lightweight, privacy-light tally:
+`geo:country:<ISO-2>` and `geo:total` (permanent counters), gated by a
+`geo:seen:<sha256(ip)[:24]>` key with a 1-hour TTL so a single visitor
+refreshing the page isn't counted twice — no raw IP is retained past that
+hour. `api/admin.js`'s `geoBreakdown()` reads the `geo:countries` set (SADD'd
+alongside each new counter) to enumerate and sort the per-country tally,
+surfaced in `admin.html` under VISITOR GEOGRAPHY for real conversion-by-
+geography visibility.

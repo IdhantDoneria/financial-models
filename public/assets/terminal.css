@@ -399,6 +399,11 @@ input.ibov:focus { outline: none; border-color: var(--amber); }
 }
 .menu-foot #menu-who { color: var(--text-dim); font-size: 10px; letter-spacing: 0.08em; }
 .menu-foot #menu-who b { color: var(--text); }
+#menu-support {
+  color: var(--cyan); font-size: 9.5px; letter-spacing: 0.1em; text-decoration: none;
+  border: 1px solid var(--cyan); padding: 6px 10px; margin-left: auto;
+}
+#menu-support:hover { background: rgba(83, 201, 224, 0.1); }
 #menu-signout {
   background: none; border: 1px solid var(--red); color: var(--red);
   font: 10px var(--mono); letter-spacing: 0.12em; padding: 7px 16px; cursor: pointer;

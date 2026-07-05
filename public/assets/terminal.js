@@ -413,9 +413,69 @@ function buildUI() {
   const mw = $("#menu-who");
   if (mw) mw.innerHTML = `SIGNED IN · <b>${String(u.name || u.uid).toUpperCase().slice(0, 22)}</b>`;
 
-  setInterval(() => {
-    $("#clock").textContent = new Date().toISOString().slice(0, 19).replace("T", " ") + " UTC";
-  }, 1000);
+  renderClock();
+  setInterval(renderClock, 1000);
+  initGeoClock();
+}
+
+/* --------------------------- IP-derived local clock ---------------------- *
+ * The status-bar clock defaults to UTC; initGeoClock() resolves the
+ * visitor's IP (server-side, /api/geo) to a timezone once at boot and
+ * renderClock() switches to it from then on — a small "this feels built
+ * for me" touch, and the country tally behind /api/geo also gives the
+ * operator real visitor-geography data for conversion tracking. */
+let clockTz = null;
+function renderClock() {
+  const now = new Date();
+  if (clockTz) {
+    try {
+      const parts = new Intl.DateTimeFormat("en-GB", {
+        timeZone: clockTz, hour: "2-digit", minute: "2-digit", second: "2-digit",
+        hour12: false, timeZoneName: "shortOffset",
+      }).formatToParts(now);
+      const get = (t) => (parts.find((p) => p.type === t) || {}).value || "";
+      $("#clock").textContent = `${get("hour")}:${get("minute")}:${get("second")} ${get("timeZoneName")}`;
+      return;
+    } catch { /* unsupported tz string from the geo API — fall back to UTC */ }
+  }
+  $("#clock").textContent = now.toISOString().slice(0, 19).replace("T", " ") + " UTC";
+}
+
+async function initGeoClock() {
+  try {
+    const r = await fetch("/api/geo", { cache: "no-store", signal: AbortSignal.timeout(6000) });
+    const j = await r.json();
+    if (j.ok && j.timezone) {
+      clockTz = j.timezone;
+      const loc = [j.city, j.country].filter(Boolean).join(", ");
+      $("#clock").title = `LOCAL TIME${loc ? " · " + loc : ""}${j.flag ? " " + j.flag : ""} — DETECTED FROM YOUR IP ADDRESS`;
+    }
+  } catch { /* geolocation unreachable — clock stays on UTC */ }
+}
+
+/* --------------------------- phone bottom nav --------------------------- */
+//: ≤820px the grid collapses to one panel at a time (see terminal.css);
+//  the bottom tab bar picks which. Desktop never sets data-mview, so these
+//  are no-ops there. Selecting a model auto-jumps to INPUTS and a finished
+//  IB report to ANALYTICS, mirroring where a desktop user's eyes would go.
+const MOBILE_MQ = window.matchMedia ? window.matchMedia("(max-width: 820px)") : { matches: false };
+function isPhone() { return MOBILE_MQ.matches; }
+
+function initMobileNav() {
+  const nav = $("#mnav");
+  if (!nav) return;
+  nav.querySelectorAll("button").forEach((b) => { b.onclick = () => setMobileView(b.dataset.mv); });
+  setMobileView("inputs");
+  if (isPhone()) $("#cmd").placeholder = "MNEMONIC — DCF · BSM · IB ⏎";
+}
+
+function setMobileView(mv) {
+  const main = $("#main");
+  if (!main) return;
+  main.dataset.mview = mv;
+  document.querySelectorAll("#mnav button").forEach((b) => b.classList.toggle("on", b.dataset.mv === mv));
+  // Plotly sized itself while the viz panel was display:none — re-measure.
+  if (mv === "viz") requestAnimationFrame(() => window.dispatchEvent(new Event("resize")));
 }
 
 /* --------------------------- phone bottom nav --------------------------- */
@@ -1461,6 +1521,13 @@ function renderGuide(body) {
      <div class="guide-step"><div class="txt" style="color:var(--text-dim)">
        Open the <b style="color:var(--cyan)">MODELS</b> tab for a plain-English brief on each technique and the situation it fits best —
        so you can match the tool to your question (value a company, size risk, price an option, allocate a portfolio).
+     </div></div>
+     <h3>SUPPORT</h3>
+     <div class="guide-step"><div class="txt" style="color:var(--text-dim)">
+       For assistance, or to request complimentary access on behalf of an individual or
+       organisation, please write to <a href="mailto:finmodels10@gmail.com" style="color:var(--cyan)">finmodels10@gmail.com</a>.
+       To reach the founder directly, write to <a href="mailto:doneriaidhant@gmail.com" style="color:var(--cyan)">doneriaidhant@gmail.com</a>.
+       All enquiries are reviewed personally and answered within <b style="color:var(--text)">48 business hours</b>.
      </div></div>`;
 }
 

@@ -31,6 +31,7 @@ const API = {
   "quotes": require("../api/quotes.js"),
   "usage": require("../api/usage.js"),
   "rates": require("../api/rates.js"),
+  "geo": require("../api/geo.js"),
 };
 
 const MIME = {

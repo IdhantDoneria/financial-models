@@ -71,10 +71,6 @@ async function buy(token, plan) {
 (async () => {
   console.log("BILLING BACKEND — dev-fake gateway, in-memory store\n");
 
-  // The founders promo gifts the first 20 signups a free month of UNLIMITED;
-  // this suite tests the paid paths, so start with the promo exhausted.
-  await store.set("founders:claimed", "20");
-
   // -- catalogue ---------------------------------------------------------
   const cfg = await call(handlers.billingConfig);
   check("config: billing on (dev-fake)", cfg.body.billing === true && cfg.body.devFake === true);

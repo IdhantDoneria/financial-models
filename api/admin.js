@@ -9,6 +9,10 @@
 //        type an email + duration; works even before that person signs up
 //        (the pass is waiting when they first verify their email).
 //   POST {action:"revoke", email}              -> end a plan immediately.
+//
+// The GET response also includes `geo`: a country-by-country visitor tally
+// from /api/geo (IP-derived, hour-deduplicated) — real geography data for
+// conversion tracking, not tied to any one user account.
 
 const store = require("./_lib/store");
 const A = require("./_lib/auth");
@@ -64,13 +68,25 @@ async function listUsers() {
   };
 }
 
+async function geoBreakdown() {
+  const codes = await store.smembers("geo:countries");
+  const [counts, totalRaw] = await Promise.all([
+    store.mget(codes.map((c) => `geo:country:${c}`)),
+    store.get("geo:total"),
+  ]);
+  const countries = codes.map((code, i) => ({ code, count: parseInt(counts[i] || "0", 10) || 0 }))
+    .sort((a, b) => b.count - a.count);
+  return { total: parseInt(totalRaw || "0", 10) || 0, countries };
+}
+
 module.exports = async (req, res) => {
   if (!KEY || !store.configured())
     return A.json(res, 503, { error: "ADMIN DESK NOT CONFIGURED — set ADMIN_KEY (and a store) in Vercel env vars" });
   if (!authorized(req)) return A.json(res, 401, { error: "INVALID ADMIN KEY" });
 
   try {
-    if (req.method === "GET") return A.json(res, 200, { ok: true, ...(await listUsers()) });
+    if (req.method === "GET")
+      return A.json(res, 200, { ok: true, ...(await listUsers()), geo: await geoBreakdown() });
     if (req.method !== "POST") return A.json(res, 405, { error: "GET or POST" });
 
     let body;

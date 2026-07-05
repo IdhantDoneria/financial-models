@@ -250,8 +250,8 @@ function setServerTab(which) {
 
 function initServerAuth(cfg) {
   if (!cfg || !cfg.serverAuth) {
-    // device-local mode stays; say so under the card footer for transparency
-    $(".afoot").textContent = "SERVER AUTH OFFLINE — DEVICE-LOCAL MODE";
+    // device-local mode stays; say so above the (still-present) support line
+    $(".afoot").innerHTML = "SERVER AUTH OFFLINE — DEVICE-LOCAL MODE<br>" + $(".afoot").innerHTML;
     return;
   }
   // server mode: email OTP (+ optional saved password) replaces local accounts
@@ -275,14 +275,14 @@ function initServerAuth(cfg) {
     "password) is stored in the cloud; analyses and model work still run entirely in " +
     "<b>your</b> browser.";
 
-  // founders promo banner — first 20 accounts get a free month of premium
-  if (typeof cfg.foundersLeft === "number" && cfg.foundersLeft > 0) {
-    const f = $("#founders");
-    f.style.display = "";
-    f.innerHTML = `🎁 <b>FOUNDERS OFFER</b> — the first 20 accounts get
-      <b>1 MONTH OF ${cfg.founderPlanName || "DESK UNLIMITED"} FREE</b>, applied
-      automatically at sign-up · <b>${cfg.foundersLeft} SLOT${cfg.foundersLeft === 1 ? "" : "S"} LEFT</b>`;
-  }
+  // complimentary-access notice — reviewed and granted manually by the team,
+  // rather than an automatic promo (see admin.js `grant`).
+  const c = $("#concierge");
+  c.style.display = "";
+  c.innerHTML = `COMPLIMENTARY ACCESS — Individuals and organisations may request complimentary
+    access to FINMODELS TERMINAL by writing to <b>finmodels10@gmail.com</b> with a brief note on
+    intended use. Each request is reviewed personally by our team, and a response is provided
+    within <b>48 business hours</b>.`;
 }
 
 async function initGoogle(cfg) {
