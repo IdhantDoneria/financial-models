@@ -7,6 +7,12 @@
  */
 "use strict";
 
+// HTML-escape untrusted text before it reaches innerHTML. The display name
+// originates from user input (set at OTP verify, echoed back by /auth-me), so
+// interpolating it raw is an XSS sink.
+const esc = (v) => String(v == null ? "" : v).replace(/[&<>"']/g,
+  (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
 /* ------------------------------------------------------------------------ *
  * Model registry: mnemonics, function keys, formulas, parameter schemas.
  * `pct` params are stored as decimals and displayed as percentages.
@@ -257,7 +263,7 @@ async function validateServerSession() {
         u.name = j.user.name;
         localStorage.setItem(LS_SESSION, JSON.stringify(u));
         const who = $("#who");
-        if (who) who.innerHTML = `◉ USER <b>${String(u.name).toUpperCase().slice(0, 24)}</b>`;
+        if (who) who.innerHTML = `◉ USER <b>${esc(String(u.name).toUpperCase().slice(0, 24))}</b>`;
       }
     }
   } catch { /* offline — keep the local session */ }
@@ -409,9 +415,9 @@ function buildUI() {
   // signed-in identity chip (SIGN OUT now lives inside the hamburger menu)
   const u = state.user;
   $("#who").innerHTML = `${["google", "otp"].includes(u.provider) ? "◉" : "●"} USER <b>${
-    String(u.name || u.uid).toUpperCase().slice(0, 24)}</b>`;
+    esc(String(u.name || u.uid).toUpperCase().slice(0, 24))}</b>`;
   const mw = $("#menu-who");
-  if (mw) mw.innerHTML = `SIGNED IN · <b>${String(u.name || u.uid).toUpperCase().slice(0, 22)}</b>`;
+  if (mw) mw.innerHTML = `SIGNED IN · <b>${esc(String(u.name || u.uid).toUpperCase().slice(0, 22))}</b>`;
 
   renderClock();
   setInterval(renderClock, 1000);
@@ -2081,7 +2087,7 @@ async function renderPlanTab(body) {
         free of charge, active until ${us.expiresAt ? new Date(us.expiresAt).toLocaleDateString() : "—"}.</div>`;
     }
     head = gift + `<div class="pusage">
-      <div class="purow"><span>SIGNED IN AS</span><b>${String(u.name || u.uid).toUpperCase().slice(0, 28)}</b></div>
+      <div class="purow"><span>SIGNED IN AS</span><b>${esc(String(u.name || u.uid).toUpperCase().slice(0, 28))}</b></div>
       <div class="purow"><span>CURRENT PLAN</span><b class="${current !== "free" ? "paid" : ""}">${us.planName}</b></div>
       <div class="purow"><span>UPLOADS THIS MONTH (${us.month || ""})</span><b>${us.used} / ${lim}</b></div>
       ${us.limit !== null ? `<div class="pmeterbar"><div style="width:${pctUsed}%"></div></div>` : ""}
