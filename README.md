@@ -285,6 +285,38 @@ your browser.
 Both modes also offer **Continue with Google** (real Google Identity Services, enabled by
 `GOOGLE_CLIENT_ID`) and **Explore as guest**.
 
+#### Enabling Google Sign-In
+
+`/api/auth-config` exposes `process.env.GOOGLE_CLIENT_ID` to the login page; until it's
+set, the **Continue with Google** button stays disabled with an explicit "not configured"
+hint instead of failing silently. To turn it on:
+
+1. [console.cloud.google.com](https://console.cloud.google.com) → *APIs & Services ▸
+   Credentials* → **Create Credentials ▸ OAuth client ID** → application type
+   **Web application** (create an OAuth consent screen first if the project doesn't have
+   one yet).
+2. Under **Authorized JavaScript origins**, add every origin the login page is served
+   from — e.g. `https://financial-models-six.vercel.app`, any custom domain, and
+   `http://localhost:3000` for local testing. Google Identity Services authorises by
+   origin, not by redirect URI, so no "Authorized redirect URIs" entry is needed for this
+   flow.
+3. Copy the **Client ID** (ends in `.apps.googleusercontent.com` — not the Client secret)
+   and set it as `GOOGLE_CLIENT_ID` in the Vercel project's environment variables, then
+   redeploy.
+4. Verify by requesting `/api/auth-config` directly — `googleClientId` should show the
+   value you set, not `null`.
+
+**"Error 401: invalid_client — The OAuth client was not found"** when clicking the button
+means Google doesn't recognise the `client_id` it received — `GOOGLE_CLIENT_ID` is set to
+something, just not a live OAuth client. Almost always one of:
+- The value was mistyped, truncated, wrapped in quotes, or is actually the Client
+  *secret*/an API key rather than the Client ID.
+- The OAuth client (or its whole GCP project) was deleted or belongs to a different
+  Google Cloud project than the one you're checking.
+- The env var is set for the wrong Vercel environment scope (e.g. only *Preview*, while
+  you're testing *Production*) — pull up **Settings ▸ Environment Variables** and confirm
+  it's attached to the scope you're hitting, then redeploy.
+
 #### Enabling the server backend (10 minutes, free tiers)
 
 The backend is fully coded and tested — it activates on env vars alone:
