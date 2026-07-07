@@ -316,31 +316,71 @@ async function initGoogle(cfg) {
       "in Vercel env vars (OAuth web client) to enable. Email & guest access work fully.";
     return;
   }
-  await new Promise((ok, bad) => {
-    const s = document.createElement("script");
-    s.src = "https://accounts.google.com/gsi/client";
-    s.onload = ok; s.onerror = bad;
-    document.head.appendChild(s);
-  });
+  try {
+    await new Promise((ok, bad) => {
+      const s = document.createElement("script");
+      s.src = "https://accounts.google.com/gsi/client";
+      s.onload = ok;
+      s.onerror = () => bad(new Error("Failed to load Google Identity Services library"));
+      s.async = true;
+      s.defer = true;
+      document.head.appendChild(s);
+    });
+  } catch (err) {
+    $("#gfake").disabled = true;
+    $("#ghint").textContent =
+      "GOOGLE LIBRARY LOAD FAILED — check that accounts.google.com is accessible. " +
+      "If blocked by network policy, email/guest access work fully.";
+    console.error("Google GSI script load failed:", err);
+    return;
+  }
+
+  if (typeof google === "undefined" || !google.accounts || !google.accounts.id) {
+    $("#gfake").disabled = true;
+    $("#ghint").textContent =
+      "GOOGLE IDENTITY SERVICES UNAVAILABLE — library loaded but google.accounts undefined";
+    console.error("google.accounts.id not available after script load");
+    return;
+  }
+
   google.accounts.id.initialize({
     client_id: cid,
+    ux_mode: "popup",  // requires Cross-Origin-Opener-Policy: same-origin-allow-popups
+    auto_select: false,
     callback: (resp) => {
       try {
+        if (!resp || !resp.credential) {
+          return showErr(
+            "GOOGLE DID NOT RETURN CREDENTIALS — verify that: " +
+            "(1) this domain is in the OAuth app's Authorized JavaScript Origins, " +
+            "(2) Redirect URIs include this domain, " +
+            "(3) Cross-Origin-Opener-Policy header is 'same-origin-allow-popups'"
+          );
+        }
         const p = decodeJwtPayload(resp.credential);
         const email = (p.email || "").toLowerCase();
-        if (!email) return showErr("GOOGLE DID NOT RETURN AN EMAIL");
+        if (!email) return showErr("GOOGLE DID NOT RETURN AN EMAIL ADDRESS");
         const all = accounts();
         all[email] = { ...(all[email] || {}), name: p.name || email,
                        provider: all[email] && all[email].hash ? "password+google" : "google",
                        created: (all[email] && all[email].created) || Date.now() };
         saveAccounts(all);
         finishLogin({ uid: email, name: p.name || email, provider: "google" }, true);
-      } catch (err) { showErr("GOOGLE SIGN-IN FAILED: " + err); }
+      } catch (err) {
+        console.error("Google callback error:", err);
+        showErr("GOOGLE SIGN-IN FAILED: " + String(err.message || err).slice(0, 100));
+      }
     },
   });
+
   $("#gwrap").classList.add("live");
-  google.accounts.id.renderButton($("#gbtn"),
-    { theme: "filled_black", size: "large", text: "continue_with", width: 300 });
+  try {
+    google.accounts.id.renderButton($("#gbtn"),
+      { theme: "filled_black", size: "large", text: "continue_with", width: 300 });
+  } catch (err) {
+    console.error("Failed to render Google button:", err);
+    $("#gbtn").style.display = "none";
+  }
 }
 
 /* -------------------------------- boot --------------------------------- */
