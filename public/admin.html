@@ -146,6 +146,13 @@ async function api(method, body) {
 const fdate = (iso) => iso ? new Date(iso).toLocaleString(undefined,
   { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : "—";
 
+// HTML-escape untrusted values before they hit innerHTML. email/name (and the
+// geo country code) are attacker-controlled — anyone can register — so
+// rendering them raw is a stored-XSS sink that runs in the operator's origin
+// (where the admin key lives). Escapes both text and quoted-attribute contexts.
+const esc = (v) => String(v == null ? "" : v).replace(/[&<>"']/g,
+  (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
 function render(data) {
   const t = data.totals;
   $("#stats").innerHTML = `
@@ -156,21 +163,21 @@ function render(data) {
   const tb = $("#users tbody");
   tb.innerHTML = data.rows.map((r) => `
     <tr>
-      <td><b>${r.email}</b>${r.founder ? ` <span class="tag founder">FOUNDER #${r.founder}</span>` : ""}</td>
-      <td>${r.signedUp ? (r.name || "—") : `<span class="ghosted">not signed up yet</span>`}</td>
-      <td class="plan-${r.plan}">${r.planName}</td>
-      <td>${r.via ? `<span class="tag ${r.via}">${r.via.toUpperCase()}</span>` : "—"}</td>
+      <td><b>${esc(r.email)}</b>${r.founder ? ` <span class="tag founder">FOUNDER #${esc(r.founder)}</span>` : ""}</td>
+      <td>${r.signedUp ? esc(r.name || "—") : `<span class="ghosted">not signed up yet</span>`}</td>
+      <td class="plan-${esc(r.plan)}">${esc(r.planName)}</td>
+      <td>${r.via ? `<span class="tag ${esc(r.via)}">${esc(String(r.via).toUpperCase())}</span>` : "—"}</td>
       <td>${r.expiresAt ? new Date(r.expiresAt).toLocaleDateString() : "—"}</td>
-      <td class="num">${r.usedThisMonth}</td>
-      <td class="num">${r.loginCount}</td>
+      <td class="num">${esc(r.usedThisMonth)}</td>
+      <td class="num">${esc(r.loginCount)}</td>
       <td>${fdate(r.lastLoginAt)}</td>
       <td>${fdate(r.createdAt)}</td>
       <td>${r.passwordSet
-        ? `SET ${fdate(r.pwSetAt)} <button class="ghost" data-resetpw="${r.email}">RESET</button>`
+        ? `SET ${fdate(r.pwSetAt)} <button class="ghost" data-resetpw="${esc(r.email)}">RESET</button>`
         : `<span class="ghosted">not set</span>`}</td>
       <td>${r.plan !== "free"
-        ? `<button class="danger" data-revoke="${r.email}">REVOKE</button>`
-        : `<button data-grant="${r.email}">GIFT 30D</button>`}</td>
+        ? `<button class="danger" data-revoke="${esc(r.email)}">REVOKE</button>`
+        : `<button data-grant="${esc(r.email)}">GIFT 30D</button>`}</td>
     </tr>`).join("") || `<tr><td colspan="11" class="ghosted">No users yet — accounts appear
       here the moment someone verifies their email on the login page.</td></tr>`;
   tb.querySelectorAll("[data-resetpw]").forEach((b) => b.onclick = async () => {
@@ -189,7 +196,7 @@ function render(data) {
   const geo = data.geo || { total: 0, countries: [] };
   const gtb = $("#geo tbody");
   gtb.innerHTML = geo.countries.map((c) => `
-    <tr><td>${c.code}</td><td class="num">${c.count}</td>
+    <tr><td>${esc(c.code)}</td><td class="num">${esc(c.count)}</td>
       <td class="num">${geo.total ? ((c.count / geo.total) * 100).toFixed(1) : "0.0"}%</td></tr>`
   ).join("") || `<tr><td colspan="3" class="ghosted">No tracked visits yet.</td></tr>`;
 }
