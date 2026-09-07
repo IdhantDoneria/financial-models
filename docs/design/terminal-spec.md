@@ -287,23 +287,27 @@ E2E coverage: `run_scenario_engine_scenario` in `scripts/e2e_terminal.py`
 ## 13 · Billing (Razorpay) — plans, metering, PLAN tab
 
 **Catalogue** (authoritative in `api/_lib/billing.js`; the client never sends
-amounts): FREE — 5 uploads/mo · ANALYST PRO — ₹299/mo, 50 uploads ·
-DESK UNLIMITED — ₹499/mo with a struck ₹599 MRP anchor (`SAVE ₹100` badge,
-`BEST VALUE` flag). An upload = one IB-desk PDF analysis; model runs and the
-SCEN engine are never metered. Paid plans are 30-day passes; early
+amounts): FREE — 3 uploads/mo · ANALYST PRO — 50 uploads/mo, ₹299/mo or
+₹2,499/yr, plus the Ind AS 116 hidden-debt normalizer and reverse-DCF solver
+(gated client-side — `PREMIUM_MODELS` in `terminal.js`) · DESK UNLIMITED —
+unlimited uploads, ₹599/mo or ₹4,999/yr (`BEST VALUE` flag). An upload = one
+IB-desk PDF analysis; model runs and the SCEN engine are never metered. Paid
+plans are day-based passes (30 for monthly, 365 for annual); early
 renewal/upgrade carries unused days forward.
 
-**Purchase flow.** `POST /api/billing-order` (Bearer session) creates the
-Razorpay order server-side and pins `order:<id> → {email, plan, amount}`
-(1 h TTL) so only the buying account can redeem it. The front end opens
-Razorpay Checkout (`checkout.js`, amber-themed, email prefilled); its handler
-posts the gateway's `{order_id, payment_id, signature}` to
-`POST /api/billing-verify`, which runs the documented timing-safe
-`HMAC-SHA256(order_id|payment_id, key_secret)` check, verifies order
-ownership, activates `sub:<email>` and consumes the order (single-use;
-replays 404). `POST /api/billing-webhook` (raw-body signature via
-`RAZORPAY_WEBHOOK_SECRET`, `payment.captured`) is the idempotent fallback
-when the buyer's tab dies pre-verify.
+**Purchase flow.** `POST /api/billing-order` (Bearer session, `{plan, period}`)
+creates the Razorpay order server-side (amount read from
+`PLANS[plan].periods[period]`) and pins
+`order:<id> → {email, plan, period, amount}` (1 h TTL) so only the buying
+account can redeem it. The front end opens Razorpay Checkout (`checkout.js`,
+amber-themed, email prefilled); its handler posts the gateway's
+`{order_id, payment_id, signature}` to `POST /api/billing-verify`, which runs
+the documented timing-safe `HMAC-SHA256(order_id|payment_id, key_secret)`
+check, verifies order ownership, activates `sub:<email>` for `periods[period].days`
+and consumes the order (single-use; replays 404). `POST /api/billing-webhook`
+(raw-body signature via `RAZORPAY_WEBHOOK_SECRET`, `payment.captured`) is the
+idempotent fallback when the buyer's tab dies pre-verify, reading
+`plan`/`period` from the same order record or the Razorpay order's `notes`.
 
 **Metering.** `GET/POST /api/usage` — monthly counter `use:<email>:<YYYY-MM>`
 (35-day TTL). GET returns `{plan, used, limit(null=∞), expiresAt}`; POST

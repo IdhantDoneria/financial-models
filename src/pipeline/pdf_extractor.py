@@ -22,7 +22,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from ..base_model import ModelError, ValidationError
 
@@ -110,10 +110,16 @@ class PDFExtractor:
         >>> data.revenue                                    # doctest: +SKIP
     """
 
-    #: Multipliers for "in millions" / "in thousands" / "in billions" headers.
+    #: Multipliers for "in millions" / "in thousands" / "in billions" headers,
+    #: plus the Indian numbering system (1 lakh = 1e5, 1 crore = 1e7) used by
+    #: every BSE/NSE-listed company's filings — absent here, a real Indian
+    #: filing's "Amount in (Rs.) in lakhs" figures were silently treated as
+    #: already being in whole rupees, understating every value 100,000x.
     SCALE_HINTS = {
         "billion": 1e9, "bn": 1e9, "bil": 1e9,
+        "crore": 1e7, "crores": 1e7, "cr": 1e7,
         "million": 1e6, "mn": 1e6, "mil": 1e6, "mm": 1e6,
+        "lakh": 1e5, "lakhs": 1e5, "lac": 1e5, "lacs": 1e5,
         "thousand": 1e3, "k": 1e3,
     }
 
@@ -211,53 +217,152 @@ class PDFExtractor:
         (?:\.(\d+))?                        # optional decimal
         \)?                                 # optional closing )
         \s*(million|billion|thousand|bn|mn|mm|bil|mil|k)?
-        (?![\w.])
+        (?!\w|\.\d)
         """,
+        # The trailing guard excludes a following word character (so "1990s"
+        # or "3rd" don't get read as bare numbers) and a period that's
+        # itself followed by a digit (a truncated decimal point). It must
+        # NOT exclude a bare trailing period with no digit after it — a
+        # sentence simply ending right after the number (e.g. "...752.") is
+        # extremely common, and excluding it forces the engine to backtrack
+        # off the number's last comma-group to find a position where the
+        # lookahead is satisfied, silently truncating large real figures
+        # (a real bug found via a 3,210,875,752-style share count regressing
+        # to 3,210,875 when it happened to end a sentence).
         re.IGNORECASE | re.VERBOSE,
     )
 
-    @classmethod
-    def _parse_number(cls, match_text: str) -> float | None:
-        """Parse a single numeric token, honouring $, (), commas and scale suffix."""
-        m = cls._NUMBER_RE.search(match_text)
-        if not m:
-            return None
-        raw, dec, unit = m.groups()
-        try:
-            value = float(raw.replace(",", "") + ("." + dec if dec else ""))
-        except ValueError:
-            return None
-        if "(" in match_text and ")" in match_text:
-            value = -value
-        if unit:
-            value *= cls.SCALE_HINTS.get(unit.lower(), 1.0)
-        return value
+    #: A number immediately followed by ", <year>" (as in "...on June 30,
+    #: 2025)...") is a date fragment, not a financial figure — narrative text
+    #: around a keyword match routinely contains a nearby date, and without
+    #: this guard it gets picked up as if it were the actual figure.
+    _DATE_TAIL_RE = re.compile(r"^\s*,\s*(?:19|20)\d{2}\b")
 
     @classmethod
-    def _first_after(cls, text: str, patterns: list[str], window: int = 120) -> float | None:
-        """Return the first number appearing after any of ``patterns`` (case-insensitive)."""
+    def _parse_number(cls, match_text: str) -> float | None:
+        """Parse the first *plausible* numeric token, honouring $, (), commas and scale suffix.
+
+        The "wrapped in parentheses means negative" accounting convention is
+        checked against the matched token itself (``m.group(0)``, which the
+        regex's own ``\\(?...\\)?`` already anchors tightly around the digits)
+        — never against the wider ``match_text`` window it was found in. A
+        window can legitimately contain unrelated parenthesised text before
+        or after the number (a footnote reference, an adjacent unrelated
+        line in a comparison table, a qualifying phrase like "(before
+        consolidation adjustment)") that has nothing to do with the sign of
+        *this* number; checking the whole window there flips figures that
+        were never actually negative.
+
+        Every candidate token in the window is considered in order (not just
+        the first): a token immediately followed by ", <year>" is a date
+        fragment (e.g. the "30" in "reported ... on June 30, 2025") and is
+        skipped in favour of the next number in the window, if any.
+        """
+        for m in cls._NUMBER_RE.finditer(match_text):
+            if cls._DATE_TAIL_RE.match(match_text[m.end():]):
+                continue
+            raw, dec, unit = m.groups()
+            try:
+                value = float(raw.replace(",", "") + ("." + dec if dec else ""))
+            except ValueError:
+                continue
+            token = m.group(0)
+            if "(" in token and ")" in token:
+                value = -value
+            if unit:
+                value *= cls.SCALE_HINTS.get(unit.lower(), 1.0)
+            return value
+        return None
+
+    @classmethod
+    def _first_after(
+        cls, text: str, patterns: list[str], window: int = 120,
+        apply_scale: bool = False,
+        plausible: Callable[[float], bool] | None = None,
+    ) -> float | None:
+        """Return the first *plausible* number appearing after any of ``patterns``.
+
+        Args:
+            text: Full document text to search.
+            patterns: Regexes tried in order; every match of every pattern is
+                considered (not just the first pattern's first match) before
+                giving up — a keyword can legitimately appear many times in a
+                long filing (footnotes, narrative prose, comparison tables)
+                before its primary-statement occurrence.
+            window: How many characters after the keyword to search for a number.
+            apply_scale: When set, multiply the value by the scale ("in
+                millions"/"in lakhs"/etc.) detected near *this* match (see
+                :meth:`_local_scale`) rather than leaving it in raw document units.
+            plausible: Optional predicate a candidate value must satisfy to be
+                accepted; an implausible candidate (e.g. a percentage that's
+                actually a bare calendar year, a share count in the tens) is
+                skipped in favour of the next occurrence instead of being
+                returned as-is.
+        """
         for pat in patterns:
             for match in re.finditer(pat, text, re.IGNORECASE):
                 trailing = text[match.end() : match.end() + window]
                 value = cls._parse_number(trailing)
-                if value is not None:
-                    return value
+                if value is None:
+                    continue
+                if apply_scale and abs(value) < 1e5:
+                    value *= cls._local_scale(text, match.start())
+                if plausible is not None and not plausible(value):
+                    continue
+                return value
         return None
 
     @classmethod
-    def _guess_scale_for_statement(cls, text: str) -> float:
-        """Detect "in $ millions" / "in $ billions" headers and return the multiplier."""
-        header = text[:6000].lower()
+    def _guess_scale_for_text(cls, snippet: str) -> float:
+        """Detect an "in $ millions" / "in lakhs" / etc. header within ``snippet``."""
+        header = snippet.lower()
         if re.search(r"in\s+\$?\s*billion", header) or "in $bn" in header:
             return 1e9
+        if re.search(r"\bcrores?\b", header):
+            return 1e7
         if re.search(r"in\s+\$?\s*million", header) or "in $mm" in header or "in $m" in header:
             return 1e6
+        if re.search(r"\blakh|\blacs?\b", header):
+            return 1e5
         if re.search(r"in\s+\$?\s*thousand", header):
             return 1e3
         return 1.0
 
     @classmethod
-    def _scrape_fcf_series(cls, text: str, scale: float) -> list[float]:
+    def _guess_scale_for_statement(cls, text: str) -> float:
+        """Document-level scale guess from its opening lines (fallback only).
+
+        Kept for backward compatibility with any caller wanting a single
+        whole-document guess; :meth:`_local_scale` is what :meth:`_first_after`
+        actually uses now, since a real filing's financial-statement tables
+        (and the scale header for the specific figure being read) routinely
+        sit far past the first few thousand characters — see :meth:`_local_scale`.
+        """
+        return cls._guess_scale_for_text(text[:6000])
+
+    @classmethod
+    def _local_scale(cls, text: str, pos: int, lookback: int = 3000) -> float:
+        """Scale multiplier for a figure found at ``pos`` in ``text``.
+
+        Prefers a scale header that appears close to (before) this specific
+        match over one guessed once from the document's opening lines. A
+        single document-wide guess anchored to the first ~6000 characters
+        misses the real header entirely on a long filing — a full SEC 10-K
+        routinely runs 150+ pages of legal boilerplate (forward-looking
+        statements, risk factors, business description) before Item 7's
+        "(Dollars in millions)" tables appear, so the actual balance-sheet
+        figures were being read as if no scale applied at all. Falls back to
+        the document-level guess when no local header is found (preserves
+        behaviour for short documents where the header is near the top).
+        """
+        window = text[max(0, pos - lookback):pos]
+        local = cls._guess_scale_for_text(window)
+        if local != 1.0:
+            return local
+        return cls._guess_scale_for_text(text[:6000])
+
+    @classmethod
+    def _scrape_fcf_series(cls, text: str) -> list[float]:
         """Find a Free Cash Flow row and return its multi-year values (in $)."""
         rows = re.finditer(
             r"(free\s+cash\s+flow|fcf|cash\s+flow\s+from\s+operations\s*-\s*capex)"
@@ -270,9 +375,27 @@ class PDFExtractor:
             nums = [cls._parse_number(m.group(0)) for m in cls._NUMBER_RE.finditer(tail)]
             nums = [n for n in nums if n is not None and abs(n) > 0.01]
             if 2 <= len(nums) <= 8:
-                scaled = [n * scale if abs(n) < 1e5 else n for n in nums]
+                # Scale detected near this specific row, not a single
+                # document-wide guess (see _local_scale).
+                local_scale = cls._local_scale(text, row.start())
+                scaled = [n * local_scale if abs(n) < 1e5 else n for n in nums]
                 return scaled[:6]
         return []
+
+    #: A bare 4-digit value that's also a plausible calendar year is almost
+    #: certainly a mis-scrape (a nearby "fiscal 2025"/"as of 2026" caught
+    #: instead of an actual percentage) — no real growth rate, margin or tax
+    #: rate in a filing is ever going to land on e.g. exactly 2025%.
+    @staticmethod
+    def _not_year_like(value: float) -> bool:
+        return not (1900 <= value <= 2099 and value == int(value))
+
+    #: No real public company has under a thousand shares outstanding —
+    #: reject a match that's actually an unrelated small number (a footnote
+    #: reference, a vesting period) caught by too-broad a keyword pattern.
+    @staticmethod
+    def _plausible_share_count(value: float) -> bool:
+        return value >= 1_000
 
     def scrape_figures(self, text: str) -> ExtractedFinancials:
         """Apply regex heuristics to a raw text blob and populate a report.
@@ -285,49 +408,62 @@ class PDFExtractor:
             possible. Unresolved fields remain ``None`` and will be filled by
             the assumer stage.
         """
-        scale = self._guess_scale_for_statement(text)
-        raw_or_scaled = lambda v: v * scale if (v is not None and abs(v) < 1e5) else v
-
-        # Company name — take the first non-empty line if it looks like a title.
-        first_lines = [ln.strip() for ln in text.splitlines()[:15] if ln.strip()]
-        company = next(
-            (ln for ln in first_lines
-             if 3 <= len(ln) <= 80 and not any(c.isdigit() for c in ln[:6])),
-            None,
+        company = self._extract_company_name(text)
+        # NYSE/NASDAQ/LSE cover-page listings ("NYSE: ACME"), plus the
+        # "NSE Symbol: X" / "BSE Scrip Code: N" wording Indian filings use
+        # instead (scrip codes are numeric, so only the NSE symbol form
+        # yields a ticker here).
+        ticker_match = (
+            re.search(r"\b(?:NYSE|NASDAQ|LSE)\s*:\s*([A-Z]{1,6})\b", text)
+            or re.search(r"\bNSE\s+Symbol\s*:\s*([A-Z]{1,10})\b", text, re.IGNORECASE)
         )
-        ticker_match = re.search(r"\b(?:NYSE|NASDAQ|LSE)\s*:\s*([A-Z]{1,6})\b", text)
         fy_match = re.search(r"(?:fiscal|for the year ended)[^\n]{0,40}(20\d{2})",
                              text, re.IGNORECASE)
 
         data = ExtractedFinancials(
             company_name=company,
-            ticker=ticker_match.group(1) if ticker_match else None,
+            ticker=ticker_match.group(1).upper() if ticker_match else None,
             fiscal_year=int(fy_match.group(1)) if fy_match else None,
-            revenue=raw_or_scaled(self._first_after(
-                text, [r"total\s+revenue", r"net\s+revenue", r"revenues?\b"])),
-            free_cash_flows=self._scrape_fcf_series(text, scale),
-            net_income=raw_or_scaled(self._first_after(
-                text, [r"net\s+income", r"net\s+earnings"])),
-            total_debt=raw_or_scaled(self._first_after(
-                text, [r"total\s+debt", r"long[-\s]term\s+debt"])),
-            cash_and_equivalents=raw_or_scaled(self._first_after(
-                text, [r"cash\s+and\s+(?:cash\s+)?equivalents"])),
-            shares_outstanding=raw_or_scaled(self._first_after(
+            revenue=self._first_after(
+                text, [r"total\s+revenue", r"net\s+revenue", r"revenues?\b"],
+                apply_scale=True),
+            free_cash_flows=self._scrape_fcf_series(text),
+            net_income=self._first_after(
+                text, [r"net\s+income", r"net\s+earnings",
+                       r"profit\s+for\s+the\s+(?:period|quarter|year)",
+                       r"profit\s+after\s+tax", r"\bPAT\b"],
+                apply_scale=True),
+            total_debt=self._first_after(
+                text, [r"total\s+debt", r"long[-\s]term\s+debt",
+                       r"total\s+borrowings", r"\bborrowings\b"],
+                apply_scale=True),
+            cash_and_equivalents=self._first_after(
+                text, [r"cash\s+and\s+(?:cash\s+)?equivalents"], apply_scale=True),
+            shares_outstanding=self._first_after(
                 text, [r"shares\s+outstanding",
                        r"weighted[-\s]average\s+shares\s+outstanding",
-                       r"diluted\s+shares"])),
+                       r"diluted\s+shares"],
+                apply_scale=True, plausible=self._plausible_share_count),
+            # "volatility" excluded: an option-pricing assumption in a stock-
+            # comp footnote ("Expected share price volatility 60%"), not the
+            # market price, but shares the "share price" keyword.
             current_price=self._first_after(
-                text, [r"share\s+price", r"stock\s+price", r"closing\s+price"]),
+                text, [r"share\s+price(?!\s+volatility)",
+                       r"stock\s+price(?!\s+volatility)", r"closing\s+price"],
+                plausible=lambda v: 0 < v < 1_000_000 and self._not_year_like(v)),
             dividend_per_share=self._first_after(
                 text, [r"dividend\s+per\s+share", r"dps\b",
                        r"declared\s+dividends\s+per\s+share"]),
             beta=self._first_after(text, [r"\bbeta\b"], window=30),
             revenue_growth=self._first_after(
-                text, [r"revenue\s+growth", r"y[/-]?o[/-]?y\s+growth"], window=40),
+                text, [r"revenue\s+growth", r"y[/-]?o[/-]?y\s+growth"], window=40,
+                plausible=self._not_year_like),
             operating_margin=self._first_after(
-                text, [r"operating\s+margin"], window=40),
+                text, [r"operating\s+margin"], window=40,
+                plausible=self._not_year_like),
             tax_rate=self._first_after(
-                text, [r"effective\s+tax\s+rate", r"tax\s+rate"], window=40),
+                text, [r"effective\s+tax\s+rate", r"tax\s+rate"], window=40,
+                plausible=self._not_year_like),
         )
 
         # A percent scraped as e.g. "12" from "12%" should read as 0.12.
@@ -338,6 +474,47 @@ class PDFExtractor:
 
         data.raw_text = text[:50_000]
         return data
+
+    @staticmethod
+    def _extract_company_name(text: str) -> str | None:
+        """Locate the filer's actual name, preferring explicit signals over guesswork.
+
+        The previous approach — take the first short non-numeric-leading
+        line — reliably picks up boilerplate instead of the real name: every
+        SEC 10-K cover page starts with the literal line ``UNITED STATES``
+        (then ``SECURITIES AND EXCHANGE COMMISSION``, ``FORM 10-K``, ...)
+        before the actual company name appears; every BSE/NSE regulatory
+        filing is formatted as a letter starting with the filing date. Two
+        much more reliable, format-specific signals exist instead:
+
+        1. SEC cover pages state the name immediately before the phrase
+           "(Exact name of registrant as specified in its charter)".
+        2. Indian board-resolution letters close with "For and on behalf
+           of, <Company Name>".
+
+        The original first-short-line heuristic is kept as a last-resort
+        fallback for formats that match neither.
+        """
+        sec_cover = re.search(
+            r"([A-Z][^\n(]{2,78}?)\s*\(Exact name of registrant",
+            text, re.IGNORECASE,
+        )
+        if sec_cover:
+            return sec_cover.group(1).strip().rstrip(",.")
+
+        signoff = re.search(
+            r"for and on behalf of[,:]?\s+([^\n]{3,80})",
+            text, re.IGNORECASE,
+        )
+        if signoff:
+            return signoff.group(1).strip()
+
+        first_lines = [ln.strip() for ln in text.splitlines()[:15] if ln.strip()]
+        return next(
+            (ln for ln in first_lines
+             if 3 <= len(ln) <= 80 and not any(c.isdigit() for c in ln[:6])),
+            None,
+        )
 
     # ------------------------------------------------------------------ #
     # Public entry-point

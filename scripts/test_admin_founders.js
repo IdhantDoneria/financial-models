@@ -63,8 +63,8 @@ const ADMIN = { "x-admin-key": "devadmin" };
     `got ${winners.length}`);
 
   const use1 = await call(handlers.usage, { method: "GET", token: results[0].body.token });
-  check("founders: signups stay on FREE 5/mo (no auto-grant)",
-    use1.body.plan === "free" && use1.body.limit === 5 && use1.body.via === null);
+  check("founders: signups stay on FREE 3/mo (no auto-grant)",
+    use1.body.plan === "free" && use1.body.limit === 3 && use1.body.via === null);
   const again = await signup("user1@example.com");   // repeat sign-in: already has a password
   check("founders: re-login still never wins a slot", again.body.founder === null
     && again.code === 200

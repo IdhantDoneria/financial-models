@@ -1,4 +1,5 @@
-// POST /api/billing-order  { plan: "pro" | "unlimited" }   (Bearer session)
+// POST /api/billing-order  { plan: "pro"|"unlimited", period: "monthly"|"annual" }
+//                                                             (Bearer session)
 //
 // Creates a Razorpay order server-side — the amount comes from the plan
 // catalogue, never from the client — and pins the order to the buyer's
@@ -19,16 +20,20 @@ module.exports = async (req, res) => {
   let body;
   try { body = await A.readBody(req); } catch { return A.json(res, 400, { error: "invalid JSON" }); }
   const plan = String(body.plan || "");
+  const period = String(body.period || "monthly");
   const p = B.PLANS[plan];
-  if (!p || !p.amount) return A.json(res, 400, { error: "UNKNOWN PLAN" });
+  if (!p || !p.periods) return A.json(res, 400, { error: "UNKNOWN PLAN" });
+  if (!B.PERIODS.includes(period)) return A.json(res, 400, { error: "PERIOD MUST BE monthly OR annual" });
+  const term = p.periods[period];
+  if (!term) return A.json(res, 400, { error: `${plan.toUpperCase()} HAS NO ${period.toUpperCase()} OPTION` });
 
   try {
-    const order = await B.createOrder(plan, sess.email);
+    const order = await B.createOrder(plan, period, sess.email);
     await store.setex(`order:${order.id}`, B.ORDER_TTL,
-      JSON.stringify({ email: sess.email, plan, amount: p.amount }));
+      JSON.stringify({ email: sess.email, plan, period, amount: term.amount }));
     return A.json(res, 200, {
-      ok: true, orderId: order.id, amount: p.amount, currency: "INR",
-      keyId: B.keyId(), plan, planName: p.name,
+      ok: true, orderId: order.id, amount: term.amount, currency: "INR",
+      keyId: B.keyId(), plan, period, days: term.days, planName: p.name,
     });
   } catch (err) {
     return A.json(res, 502, { error: String(err.message || err).slice(0, 180) });

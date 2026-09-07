@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Financial Models — 10 Canonical Models, Validated & Documented</title>
-<meta name="description" content="Ten canonical quantitative-finance models with literature-validated numerics, pedagogical documentation, and a production-grade Python architecture." />
+<title>Financial Models — 10 Canonical Models, Self-Assessed & Documented</title>
+<meta name="description" content="Ten canonical quantitative-finance models with literature-validated numerics, self-assessed quality scores, and a production-grade Python architecture." />
 <style>
   :root{
     --bg:#0f1420; --surface:#171d2b; --surface-2:#1e2636; --line:#2a3346;
@@ -66,11 +66,12 @@
 <div class="wrap">
   <header>
     <span class="eyebrow">Quantitative Finance · Python · Jupyter</span>
-    <h1>Ten canonical <span class="grad">financial models</span>,<br/>validated to machine precision.</h1>
+    <h1>Ten canonical <span class="grad">financial models</span>,<br/>benchmarked to machine precision.</h1>
     <p class="lede">A single, integrated codebase implementing the models every analyst and
     researcher relies on — rigorous enough for academia, transparent enough to teach from,
-    and hardened for production. Each model is graded 10/10 on clarity, numerical accuracy,
-    and production readiness.</p>
+    and hardened for production. Each model is self-graded 10/10 by our own automated
+    scorer on clarity, numerical accuracy, and production readiness — an internal quality
+    bar, not third-party or independent validation.</p>
     <div class="cta">
       <a class="btn primary" href="./">▸ Launch the terminal</a>
       <a class="btn ghost" href="login.html">Sign in ▸</a>
@@ -80,12 +81,14 @@
   <div class="stats">
     <div class="stat"><div class="n">10</div><div class="l">canonical models</div></div>
     <div class="stat"><div class="n">75</div><div class="l">passing tests</div></div>
-    <div class="stat"><div class="n">30/30</div><div class="l">metric scores at 10/10</div></div>
+    <div class="stat"><div class="n">30/30</div><div class="l">self-graded metric scores at 10/10</div></div>
     <div class="stat"><div class="n">&lt;1e-9</div><div class="l">benchmark rel. error</div></div>
   </div>
 
   <h2>The three metrics</h2>
-  <p class="section-sub">Every model is measured by an automated scorer — scores are computed, not asserted.</p>
+  <p class="section-sub">Every model is measured by this platform's own automated scorer (<code>src/scorer.py</code>) —
+  scores are computed from real code properties, not asserted by hand, but this is a self-assessment we run on
+  our own code, not a third-party audit or independent certification.</p>
   <div class="metrics">
     <div class="metric"><h4>1 · Pedagogical clarity</h4><p>Google-style docstrings, formulas tied to inline comments, LaTeX derivations, worked examples, and an interactive chart per model.</p></div>
     <div class="metric"><h4>2 · Numerical accuracy</h4><p>Validated against Hull's option tables, closed-form identities, and live Fama-French data — with machine-precision benchmarks.</p></div>
@@ -95,20 +98,21 @@
   <h2>The models</h2>
   <p class="section-sub">Each inherits a common interface: <code>calculate()</code> · <code>explain()</code> · <code>visualize()</code>.</p>
   <div class="grid">
-    <div class="card"><div class="cat">Valuation</div><h3>Discounted Cash Flow</h3><p>Intrinsic enterprise &amp; equity value from projected free cash flows and a Gordon terminal value.</p><div class="formula">EV = Σ FCFₜ/(1+r)ᵗ + TV/(1+r)ᴺ</div><span class="tag">10 / 10</span></div>
-    <div class="card"><div class="cat">Valuation</div><h3>Gordon Growth (DDM)</h3><p>Dividend-discount valuation of a constantly growing perpetuity.</p><div class="formula">P₀ = D₁ / (r − g)</div><span class="tag">10 / 10</span></div>
-    <div class="card"><div class="cat">Portfolio</div><h3>Modern Portfolio Theory</h3><p>Markowitz efficient frontier, global-minimum-variance and max-Sharpe tangency portfolios.</p><div class="formula">w* = Σ⁻¹μ / 1ᵀΣ⁻¹μ</div><span class="tag">10 / 10</span></div>
-    <div class="card"><div class="cat">Risk</div><h3>Value at Risk / CVaR</h3><p>Historical, parametric and Monte Carlo VaR &amp; expected shortfall.</p><div class="formula">VaRₐ = −(μ + z_α σ)·V</div><span class="tag">10 / 10</span></div>
-    <div class="card"><div class="cat">Equity / Factor</div><h3>CAPM</h3><p>Expected return from systematic risk; beta estimated by OLS.</p><div class="formula">E[R] = r_f + β(E[Rₘ] − r_f)</div><span class="tag">10 / 10</span></div>
-    <div class="card"><div class="cat">Equity / Factor</div><h3>Fama-French 3-Factor</h3><p>Market, size and value loadings — factors fetched live from Ken French's library.</p><div class="formula">Rᵢ−R_f = α + b·MKT + s·SMB + h·HML</div><span class="tag">10 / 10</span></div>
-    <div class="card"><div class="cat">Derivatives</div><h3>Black-Scholes-Merton</h3><p>European option pricing and the full set of Greeks.</p><div class="formula">C = S·N(d₁) − K·e⁻ʳᵀ·N(d₂)</div><span class="tag">10 / 10</span></div>
-    <div class="card"><div class="cat">Derivatives</div><h3>Binomial Tree (CRR)</h3><p>European &amp; American options on a recombining lattice; converges to Black-Scholes.</p><div class="formula">p = (e^{(r−q)Δt} − d)/(u − d)</div><span class="tag">10 / 10</span></div>
-    <div class="card"><div class="cat">Derivatives</div><h3>Monte Carlo (GBM)</h3><p>Simulation pricing with antithetic variates and convergence diagnostics.</p><div class="formula">Ĉ = e⁻ʳᵀ · mean[max(Sₜ−K,0)]</div><span class="tag">10 / 10</span></div>
-    <div class="card"><div class="cat">Derivatives</div><h3>Heston Stochastic Vol</h3><p>Semi-analytical pricing via the characteristic function; reproduces the volatility smile.</p><div class="formula">dvₜ = κ(θ−vₜ)dt + ξ√vₜ dWₜ</div><span class="tag">10 / 10</span></div>
+    <div class="card"><div class="cat">Valuation</div><h3>Discounted Cash Flow</h3><p>Intrinsic enterprise &amp; equity value from projected free cash flows and a Gordon terminal value.</p><div class="formula">EV = Σ FCFₜ/(1+r)ᵗ + TV/(1+r)ᴺ</div><span class="tag" title="Self-assessed by this platform's own scorer — not third-party validated.">SELF 10/10</span></div>
+    <div class="card"><div class="cat">Valuation</div><h3>Gordon Growth (DDM)</h3><p>Dividend-discount valuation of a constantly growing perpetuity.</p><div class="formula">P₀ = D₁ / (r − g)</div><span class="tag" title="Self-assessed by this platform's own scorer — not third-party validated.">SELF 10/10</span></div>
+    <div class="card"><div class="cat">Portfolio</div><h3>Modern Portfolio Theory</h3><p>Markowitz efficient frontier, global-minimum-variance and max-Sharpe tangency portfolios.</p><div class="formula">w* = Σ⁻¹μ / 1ᵀΣ⁻¹μ</div><span class="tag" title="Self-assessed by this platform's own scorer — not third-party validated.">SELF 10/10</span></div>
+    <div class="card"><div class="cat">Risk</div><h3>Value at Risk / CVaR</h3><p>Historical, parametric and Monte Carlo VaR &amp; expected shortfall.</p><div class="formula">VaRₐ = −(μ + z_α σ)·V</div><span class="tag" title="Self-assessed by this platform's own scorer — not third-party validated.">SELF 10/10</span></div>
+    <div class="card"><div class="cat">Equity / Factor</div><h3>CAPM</h3><p>Expected return from systematic risk; beta estimated by OLS.</p><div class="formula">E[R] = r_f + β(E[Rₘ] − r_f)</div><span class="tag" title="Self-assessed by this platform's own scorer — not third-party validated.">SELF 10/10</span></div>
+    <div class="card"><div class="cat">Equity / Factor</div><h3>Fama-French 3-Factor</h3><p>Market, size and value loadings — factors fetched live from Ken French's library.</p><div class="formula">Rᵢ−R_f = α + b·MKT + s·SMB + h·HML</div><span class="tag" title="Self-assessed by this platform's own scorer — not third-party validated.">SELF 10/10</span></div>
+    <div class="card"><div class="cat">Derivatives</div><h3>Black-Scholes-Merton</h3><p>European option pricing and the full set of Greeks.</p><div class="formula">C = S·N(d₁) − K·e⁻ʳᵀ·N(d₂)</div><span class="tag" title="Self-assessed by this platform's own scorer — not third-party validated.">SELF 10/10</span></div>
+    <div class="card"><div class="cat">Derivatives</div><h3>Binomial Tree (CRR)</h3><p>European &amp; American options on a recombining lattice; converges to Black-Scholes.</p><div class="formula">p = (e^{(r−q)Δt} − d)/(u − d)</div><span class="tag" title="Self-assessed by this platform's own scorer — not third-party validated.">SELF 10/10</span></div>
+    <div class="card"><div class="cat">Derivatives</div><h3>Monte Carlo (GBM)</h3><p>Simulation pricing with antithetic variates and convergence diagnostics.</p><div class="formula">Ĉ = e⁻ʳᵀ · mean[max(Sₜ−K,0)]</div><span class="tag" title="Self-assessed by this platform's own scorer — not third-party validated.">SELF 10/10</span></div>
+    <div class="card"><div class="cat">Derivatives</div><h3>Heston Stochastic Vol</h3><p>Semi-analytical pricing via the characteristic function; reproduces the volatility smile.</p><div class="formula">dvₜ = κ(θ−vₜ)dt + ξ√vₜ dWₜ</div><span class="tag" title="Self-assessed by this platform's own scorer — not third-party validated.">SELF 10/10</span></div>
   </div>
 
-  <h2>Scorecard</h2>
-  <p class="section-sub">Generated by <code>src/scorer.py</code> across all ten models.</p>
+  <h2>Scorecard <span style="font-size:12px;font-weight:400;color:var(--faint);text-transform:none;letter-spacing:normal">(self-assessed)</span></h2>
+  <p class="section-sub">Generated by <code>src/scorer.py</code> — this platform's own scorer — across all ten models.
+  It's a self-assessment, not a third-party audit.</p>
   <table>
     <thead><tr><th>Model</th><th>Clarity</th><th>Accuracy</th><th>Production</th><th>Total</th></tr></thead>
     <tbody id="scorebody"></tbody>

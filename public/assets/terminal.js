@@ -140,6 +140,43 @@ const MODELS = [
       { id: "option_type", label: "TYPE", toggle: ["call", "put"], def: "call" },
     ],
   },
+  {
+    mn: "HDEBT", name: "Ind AS 116 Hidden-Debt Normalizer", cat: "Forensic Accounting",
+    formula: "Adj. Debt = Reported Debt + L + F + Σ Aᵢpᵢ,  L = C·(1−(1+r)⁻ⁿ)/r",
+    params: [
+      { id: "net_income", label: "NET INCOME", money: true, scale: "M", min: -500, max: 1000, step: 5, def: 100 },
+      { id: "reported_net_debt", label: "REPORTED NET DEBT", money: true, scale: "M", min: -500, max: 2000, step: 10, def: 500 },
+      { id: "reported_equity_value", label: "REPORTED EQUITY VAL", money: true, scale: "M", min: -1000, max: 5000, step: 10, def: 2000 },
+      { id: "shares_outstanding", label: "SHARES (M)", min: 10, max: 2000, step: 10, def: 100 },
+      { id: "annual_lease_payment", label: "ANNUAL LEASE PMT", money: true, scale: "M", min: 0, max: 200, step: 5, def: 50 },
+      { id: "lease_term_years", label: "LEASE TERM (Y)", min: 1, max: 15, step: 1, def: 3, int: true },
+      { id: "lease_discount_rate", label: "LEASE IBR", min: 0.02, max: 0.15, step: 0.0025, def: 0.08, pct: true },
+      { id: "reverse_factoring_exposure", label: "REVERSE FACTORING", money: true, scale: "M", min: 0, max: 500, step: 5, def: 75 },
+      { id: "cl1_amount", label: "CONTINGENT LIAB 1", money: true, scale: "M", min: 0, max: 1000, step: 10, def: 200 },
+      { id: "cl1_probability", label: "CL1 PROBABILITY", min: 0, max: 1, step: 0.05, def: 0.25, pct: true },
+      { id: "cl2_amount", label: "CONTINGENT LIAB 2", money: true, scale: "M", min: 0, max: 1000, step: 10, def: 100 },
+      { id: "cl2_probability", label: "CL2 PROBABILITY", min: 0, max: 1, step: 0.05, def: 0.10, pct: true },
+      { id: "depreciation_amortization", label: "D&A ADD-BACK", money: true, scale: "M", min: 0, max: 300, step: 5, def: 40 },
+      { id: "rd_capitalized_amortization", label: "CAP. R&D AMORT.", money: true, scale: "M", min: 0, max: 200, step: 5, def: 15 },
+      { id: "rd_cash_spend", label: "R&D CASH SPEND", money: true, scale: "M", min: 0, max: 300, step: 5, def: 25 },
+      { id: "maintenance_capex", label: "MAINTENANCE CAPEX", money: true, scale: "M", min: 0, max: 300, step: 5, def: 30 },
+    ],
+  },
+  {
+    mn: "RDCF", name: "Reverse DCF (Market-Implied)", cat: "Market-Implied",
+    formula: "Solve g:  EV(g) = P·shares + net debt",
+    params: [
+      { id: "current_price", label: "PRICE (MANUAL)", money: true, min: 1, max: 2000, step: 1, def: 42 },
+      { id: "shares_outstanding", label: "SHARES (M)", min: 1, max: 5000, step: 10, def: 100 },
+      { id: "net_debt", label: "NET DEBT", money: true, scale: "M", min: -1000, max: 5000, step: 10, def: 200 },
+      { id: "base_fcf", label: "BASE FCF", money: true, scale: "M", min: 1, max: 1000, step: 1, def: 100 },
+      { id: "base_revenue", label: "BASE REVENUE", money: true, scale: "M", min: 1, max: 5000, step: 10, def: 1000 },
+      { id: "total_addressable_market", label: "TAM", money: true, scale: "M", min: 1, max: 100000, step: 100, def: 10000 },
+      { id: "years", label: "HORIZON (Y)", min: 1, max: 10, step: 1, def: 5, int: true },
+      { id: "discount_rate", label: "WACC", min: 0.04, max: 0.20, step: 0.0025, def: 0.10, pct: true },
+      { id: "terminal_growth", label: "TERMINAL G", min: 0.0, max: 0.05, step: 0.0025, def: 0.03, pct: true },
+    ],
+  },
 ];
 
 /* ------------------------------------------------------------------------ *
@@ -204,6 +241,7 @@ const state = {
   ib: { pkgsReady: false, fns: null, extracted: null, report: null,
         liveRf: null, rfSource: null, fx: null, fxDate: null,
         period: "auto", mode: "auto", dirty: {}, selected: null },
+  rdcf: { mode: "manual", ticker: "" },  // Reverse DCF price-source toggle
 };
 
 /* ------------------------------------------------------------------------ *
@@ -241,12 +279,14 @@ function signOut() {
   location.replace("login.html");
 }
 
-//: Server (OTP) sessions are validated against the backend after boot; a
-//  revoked/expired token signs the visitor out instead of trusting local
-//  state forever. Device-local and guest sessions have no server to ask.
+//: Server-backed sessions (email-OTP/password, or Google now that it's
+//  verified server-side too) are validated against the backend after boot;
+//  a revoked/expired token signs the visitor out instead of trusting local
+//  state forever. Device-local and guest sessions carry no token, so they
+//  have no server to ask and this is a no-op for them.
 async function validateServerSession() {
   const u = state.user;
-  if (!u || u.provider !== "otp" || !u.token) return;
+  if (!u || !u.token) return;
   try {
     const r = await fetch("api/auth-me",
       { headers: { Authorization: "Bearer " + u.token }, signal: AbortSignal.timeout(10000) });
@@ -590,8 +630,143 @@ function selectModel(mn) {
 
   const body = $("#pform");
   body.innerHTML = "";
+
+  if (PREMIUM_MODELS.has(mn)) {
+    body.innerHTML = `<div class="plan-lock">CHECKING PLAN…</div>`;
+    premiumModelGate().then((gate) => {
+      if (state.current !== model) return;   // user navigated away while checking
+      if (!gate.allowed) { renderPremiumLocked(gate.reason); return; }
+      buildModelForm(model, mn);
+    });
+    return;
+  }
+  buildModelForm(model, mn);
+}
+
+function buildModelForm(model, mn) {
+  const body = $("#pform");
+  body.innerHTML = "";
+  if (mn === "RDCF") body.appendChild(buildRDCFPriceSource());
   model.params.forEach((p) => body.appendChild(paramRow(p)));
+  if (mn === "RDCF") applyRDCFPriceMode();
   scheduleRun(0);
+}
+
+//: Blocks entry to a premium model for a free-tier (or signed-out) visitor —
+//  clears the output/chart/doc panels too, so nothing from the previously
+//  selected model lingers behind the lock notice.
+function renderPremiumLocked(reason) {
+  const body = $("#pform");
+  body.innerHTML = `<div class="plan-lock"><b>🔒 ANALYST PRO REQUIRED.</b> ${reason}</div>`;
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.textContent = "VIEW PLANS";
+  btn.onclick = () => openMenuTab("plan");
+  body.querySelector(".plan-lock").appendChild(document.createElement("br"));
+  body.querySelector(".plan-lock").appendChild(btn);
+  $("#ogrid").innerHTML = "";
+  $("#oerr").style.display = "none";
+  $("#ostat").textContent = "LOCKED";
+  $("#ostat").className = "meta";
+  $("#doc").innerHTML = "";
+  if (window.Plotly) Plotly.purge("chart");
+}
+
+/* --------------------------- Reverse DCF price source -------------------- *
+ * Two user-selectable price-input modes, not a single hardcoded default:
+ * MANUAL (the user types a price — the ordinary slider param) or LIVE (this
+ * platform fetches a named security's current price via api/quotes?sym=).
+ *
+ * Why the disclosures differ by mode: SEBI's uniform 30-day price-data usage
+ * lag (circular effective 1 Jul 2026) applies to an entity "engaged solely in
+ * education" that uses market price data tied to specific securities. LIVE
+ * mode has this platform itself sourcing and using a live price, so it
+ * carries a disclosure attached to that mode specifically — not buried in a
+ * general Terms page. MANUAL mode doesn't trigger the same rule (the price is
+ * user-supplied), so it only gets the lighter, always-visible disclaimer.
+ * The LIVE-mode copy is drafted here for review, not legal sign-off — see the
+ * Phase 2 summary this shipped with.                                        */
+function buildRDCFPriceSource() {
+  const wrap = document.createElement("div");
+  wrap.className = "rdcf-src";
+  wrap.innerHTML = `
+    <div class="tgl">
+      <button type="button" data-mode="manual">MANUAL ENTRY</button>
+      <button type="button" data-mode="live">LIVE PRICE</button>
+    </div>
+    <div class="fetch">
+      <input type="text" placeholder="TICKER — e.g. AAPL, RELIANCE.NS" maxlength="16">
+      <button type="button">FETCH LIVE PRICE</button>
+    </div>
+    <div class="rdcf-disclosure general">
+      <b>ⓘ NOT INVESTMENT ADVICE.</b> This is a calculator applying a standard DCF identity to
+      numbers you provide (or a security's market price, in LIVE mode). It is not a
+      recommendation to buy or sell, and FINMODELS TERMINAL is not a registered investment
+      adviser or research analyst.
+    </div>
+    <div class="rdcf-disclosure live">
+      <b>⚠ SEBI DISCLOSURE — LIVE PRICE MODE.</b> This mode fetches a live market price tied to a
+      specific security. Per SEBI's price-data usage circular (effective 1 Jul 2026), this
+      output is a mechanical calculator result, not investment education or advice, and this
+      platform is not acting as a "research analyst" under the SEBI (Research Analysts)
+      Regulations. Data shown may be delayed and is provided for illustrative, calculator-only
+      use. <i>Draft disclosure — pending legal review before this mode is used in production.</i>
+    </div>
+  `;
+  wrap.querySelectorAll(".tgl button").forEach((b) => { b.onclick = () => setRDCFMode(b.dataset.mode); });
+  const tickerInput = wrap.querySelector(".fetch input");
+  tickerInput.value = state.rdcf.ticker;
+  const doFetch = () => fetchRDCFPrice(tickerInput.value.trim().toUpperCase());
+  wrap.querySelector(".fetch button").onclick = doFetch;
+  tickerInput.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); doFetch(); } });
+  return wrap;
+}
+
+function setRDCFMode(mode) {
+  state.rdcf.mode = mode;
+  applyRDCFPriceMode();
+}
+
+function applyRDCFPriceMode() {
+  const src = $(".rdcf-src");
+  if (!src) return;
+  const live = state.rdcf.mode === "live";
+  src.querySelectorAll(".tgl button").forEach((b) => b.classList.toggle("on", b.dataset.mode === state.rdcf.mode));
+  src.querySelector(".fetch").style.display = live ? "flex" : "none";
+  src.querySelector(".rdcf-disclosure.live").style.display = live ? "block" : "none";
+  // MANUAL mode's price slider IS the input; LIVE mode's fetch replaces it.
+  const priceRow = document.querySelector('.prow[data-pid="current_price"]');
+  if (priceRow) priceRow.style.display = live ? "none" : "";
+}
+
+async function fetchRDCFPrice(ticker) {
+  if (!ticker) return;
+  state.rdcf.ticker = ticker;
+  const btn = document.querySelector(".rdcf-src .fetch button");
+  if (!btn) return;
+  const original = btn.textContent;
+  btn.disabled = true; btn.textContent = "FETCHING…";
+  try {
+    const r = await fetch(`api/quotes?sym=${encodeURIComponent(ticker)}`,
+      { cache: "no-store", signal: AbortSignal.timeout(9000) });
+    let j = {};
+    try { j = await r.json(); } catch { /* non-JSON error body */ }
+    if (!r.ok || !j.ok) throw new Error(j.error || `HTTP ${r.status}`);
+    state.values.current_price = j.price;
+    const priceParam = state.current.params.find((p) => p.id === "current_price");
+    const priceRow = document.querySelector('.prow[data-pid="current_price"]');
+    if (priceRow && priceParam) {
+      priceRow.querySelector("input[type=range]").value = j.price;
+      priceRow.querySelector(".val").value = fmtParam(priceParam, j.price);
+    }
+    btn.textContent = `${ticker} = ${ccySymbol()}${j.price.toFixed(2)} ✓`;
+    scheduleRun(0);
+  } catch (err) {
+    btn.textContent = "FETCH FAILED";
+    console.error("RDCF live price fetch failed:", err);
+  } finally {
+    setTimeout(() => { if (btn) { btn.disabled = false; btn.textContent = original; } }, 2500);
+  }
 }
 
 function fmtParam(p, v) {
@@ -611,6 +786,7 @@ function moneyLabelHTML(p) {
 function paramRow(p) {
   const row = document.createElement("div");
   row.className = "prow";
+  row.dataset.pid = p.id;
   const label = p.money ? moneyLabelHTML(p) : `<label>${p.label}</label>`;
 
   if (p.select) {
@@ -737,7 +913,10 @@ function renderResults(model, payload) {
     tr.innerHTML = `<td class="k">${k.replace(/_/g, " ").toUpperCase()}</td><td class="v ${cls}">${vs}</td>`;
     grid.appendChild(tr);
   };
-  Object.entries(payload.results).forEach(([k, v]) => addRow(k, v, false));
+  Object.entries(payload.results).forEach(([k, v]) => {
+    if (model.mn === "RDCF" && k === "solver_note") return;  // shown as the advisory row below
+    addRow(k, v, false);
+  });
   Object.entries(payload.extras || {}).forEach(([k, v]) => {
     if (k !== "figure_error") addRow(k, v, true);
   });
@@ -754,6 +933,40 @@ function renderResults(model, payload) {
       nd !== null ? ` (${fmtValue("ev", ev)})` : ""
     } is below net debt${nd !== null ? ` (${fmtValue("net_debt", nd)})` : ""}, so intrinsic
       equity and per-share value are negative. Raise FCF / growth, or lower WACC / net debt.</td>`;
+    grid.appendChild(note);
+  }
+  // HDEBT: plain-language delta explanation — why the adjusted figures differ
+  // from the reported ones, surfaced inline rather than buried in the DOC tab.
+  if (model.mn === "HDEBT") {
+    const r = payload.results;
+    const erosion = typeof r.pct_equity_erosion === "number"
+      ? (r.pct_equity_erosion * 100).toFixed(1) + "%" : "n/a";
+    const note = document.createElement("tr");
+    note.className = "advisory";
+    note.innerHTML = `<td colspan="2">⚠ HIDDEN DEBT ADJUSTMENT — capitalising ${fmtValue("lease_liability", r.lease_liability)}
+      of Ind AS 116 lease liability, ${fmtValue("reverse_factoring_exposure", r.reverse_factoring_exposure)} of reverse-factoring
+      exposure, and ${fmtValue("weighted_contingent_liabilities", r.weighted_contingent_liabilities)} of probability-weighted
+      contingent liabilities lowers adjusted equity value by ${erosion} vs. the reported figure. Owner earnings of
+      ${fmtValue("owner_earnings", r.owner_earnings)} vs. reported net income of ${fmtValue("net_income", state.values.net_income)}
+      reflect reversing capitalised R&D and expensing it as spent instead.</td>`;
+    grid.appendChild(note);
+  }
+  // RDCF: what growth the price implies, or why no growth rate in-range
+  // justifies it — the reverse solve's whole point, so it's front and centre.
+  if (model.mn === "RDCF") {
+    const r = payload.results;
+    const note = document.createElement("tr");
+    note.className = "advisory";
+    if (r.implied_fcf_cagr === null) {
+      note.innerHTML = `<td colspan="2">⚠ ${r.solver_note}</td>`;
+    } else {
+      const cagrPct = (r.implied_fcf_cagr * 100).toFixed(2) + "%";
+      const tamPct = typeof r.implied_tam_capture === "number"
+        ? (r.implied_tam_capture * 100).toFixed(2) + "%" : "n/a";
+      note.innerHTML = `<td colspan="2">⚠ MARKET-IMPLIED EXPECTATIONS — this price requires the market to believe
+        FCF grows ${cagrPct}/yr for ${state.values.years} years, reaching ${tamPct} of the assumed TAM by year
+        ${state.values.years}. Judge that against the company's real growth history and TAM before trusting the price.</td>`;
+    }
     grid.appendChild(note);
   }
   $("#output header .title").textContent = `OUTPUT — ${model.mn}`;
@@ -1268,6 +1481,32 @@ async function runIBReport() {
   syncIBButtons();
 }
 
+//: Mirrors web_bridge.py's `_KEY_FIELDS` tuple length — the fields the
+//  extractor reports as FOUND/MISSING (see analyze_pdf()'s `missing` list).
+const IB_KEY_FIELD_COUNT = 15;
+
+//: A report built mostly from auto-assumed generic defaults (a placeholder
+//  price, a 5% growth default, etc.) can still show every model as "OK" —
+//  arithmetically valid numbers with no relationship to the real company.
+//  Unlike a validation-error failure (loud, obvious), that reads as a
+//  complete, confident analysis with nothing to flag it as mostly
+//  fabricated. This banner makes that visible in the one place a user
+//  actually reads the results, not just as per-field badges in the
+//  EXTRACTED DATA panel above (which a user can easily not scroll to).
+function confidenceBannerHTML() {
+  const missing = state.ib.extracted?.missing;
+  if (!missing || !missing.length) return "";
+  const pct = Math.round((missing.length / IB_KEY_FIELD_COUNT) * 100);
+  if (missing.length < IB_KEY_FIELD_COUNT / 2) return "";
+  return `<div class="pnote warn">⚠ LOW-CONFIDENCE EXTRACTION — ${missing.length} of
+    ${IB_KEY_FIELD_COUNT} fields (${pct}%) could not be found in this filing and were
+    filled with generic auto-assumed defaults, not real figures from the document.
+    Every model below still runs and reports "OK" — that only means the arithmetic is
+    valid, not that the inputs describe this company. Check the EXTRACTED DATA panel's
+    AUTO-ASSUMED badges before trusting these numbers, or switch to MANUAL mode to set
+    them yourself.</div>`;
+}
+
 function renderIBReport() {
   const el = $("#report");
   const out = state.ib.report;
@@ -1279,8 +1518,9 @@ function renderIBReport() {
     return;
   }
   const company = state.ib.extracted?.fields?.company_name || "UPLOADED COMPANY";
-  let html = `<h2>REPORT — ${company.toUpperCase()} · ${out.mode.toUpperCase()} MODE</h2>
-    <table><tr><th>MODEL</th><th>HEADLINE RESULT</th><th>STATUS</th></tr>`;
+  let html = `<h2>REPORT — ${company.toUpperCase()} · ${out.mode.toUpperCase()} MODE</h2>`;
+  html += confidenceBannerHTML();
+  html += `<table><tr><th>MODEL</th><th>HEADLINE RESULT</th><th>STATUS</th></tr>`;
   out.summary.forEach((row) => {
     const ok = !String(row.Status).toLowerCase().includes("error");
     html += `<tr class="${ok ? "" : "err"}"><td>${row.Model}</td>
@@ -1958,12 +2198,20 @@ async function runSensitivityGrid() {
 
 /* ======================================================================== *
  * BILLING — Razorpay plans, upload metering, PLAN tab.
- * FREE: 5 uploads/mo · ANALYST PRO ₹299/mo: 50 uploads · DESK UNLIMITED
- * ₹499/mo (MRP ₹599): unlimited. "Upload" = one IB-desk PDF analysis.
- * Amounts are authoritative server-side (api/_lib/billing.js); checkout is
- * Razorpay's hosted modal; payment proof is verified server-side. Until
- * RAZORPAY_* env vars exist, billing reports offline and nothing is gated.
+ * FREE: 3 uploads/mo · ANALYST PRO ₹299/mo or ₹2,499/yr: 50 uploads, plus
+ * the Ind AS hidden-debt normalizer and reverse-DCF solver · DESK UNLIMITED
+ * ₹599/mo or ₹4,999/yr: unlimited uploads. "Upload" = one IB-desk PDF
+ * analysis. Amounts are authoritative server-side (api/_lib/billing.js);
+ * checkout is Razorpay's hosted modal; payment proof is verified
+ * server-side. Until RAZORPAY_* env vars exist, billing reports offline
+ * and nothing is gated.
  * ======================================================================== */
+
+//: The two new models this pass shipped — available from ANALYST PRO up.
+//  Purely a client-side UX gate (see premiumModelGate()): like every other
+//  model's math, there is no server round-trip to enforce this more
+//  strongly, the same trust model the other 10 models already have.
+const PREMIUM_MODELS = new Set(["HDEBT", "RDCF"]);
 
 async function getBillingCfg() {
   if (state.billing.cfg) return state.billing.cfg;
@@ -1976,7 +2224,10 @@ async function getBillingCfg() {
 
 async function refreshUsage() {
   const u = state.user;
-  if (!u || u.provider !== "otp" || !u.token) return null;
+  // Any server-backed session (email-OTP/password, or Google since it was
+  // wired to a real server-side account) carries a bearer token — guest and
+  // device-local-only sessions don't, and have nothing for /api/usage to look up.
+  if (!u || !u.token) return null;
   try {
     const r = await fetch("api/usage",
       { headers: { Authorization: "Bearer " + u.token }, signal: AbortSignal.timeout(8000) });
@@ -2017,9 +2268,9 @@ async function uploadGate() {
   const cfg = await getBillingCfg();
   if (!cfg || !cfg.billing) return { allowed: true, metered: false };
   const u = state.user;
-  if (!u || u.provider !== "otp" || !u.token) {
+  if (!u || !u.token) {
     return { allowed: false, upgrade: true,
-      reason: "UPLOADS NEED AN EMAIL ACCOUNT — SIGN OUT & SIGN IN WITH EMAIL (FREE PLAN: 5/MO)" };
+      reason: "UPLOADS NEED A SERVER-BACKED ACCOUNT — SIGN OUT & SIGN IN WITH EMAIL OR GOOGLE (FREE PLAN: 3/MO)" };
   }
   const us = await refreshUsage();
   if (!us) return { allowed: true, metered: false };   // fail-open on hiccup
@@ -2028,6 +2279,26 @@ async function uploadGate() {
       reason: `MONTHLY UPLOAD LIMIT REACHED (${us.used}/${us.limit}) — UPGRADE IN MENU ▸ PLAN` };
   }
   return { allowed: true, metered: true };
+}
+
+/* ------------------------- premium model gate --------------------------- *
+ * HDEBT and RDCF (Ind AS hidden-debt normalizer, reverse-DCF solver) need
+ * ANALYST PRO or higher. Mirrors uploadGate()'s shape/fail-open behaviour.  */
+async function premiumModelGate() {
+  const cfg = await getBillingCfg();
+  if (!cfg || !cfg.billing) return { allowed: true };   // billing offline -> open
+  const u = state.user;
+  if (!u || !u.token) {
+    return { allowed: false,
+      reason: "This tool needs a server-backed account on ANALYST PRO or higher — sign out and sign in with email or Google, then upgrade." };
+  }
+  const us = await refreshUsage();
+  if (!us) return { allowed: true };   // fail-open on a network hiccup
+  if (us.plan === "free") {
+    return { allowed: false,
+      reason: "This tool requires ANALYST PRO or higher — upgrade to unlock the Ind AS hidden-debt normalizer and reverse-DCF solver." };
+  }
+  return { allowed: true };
 }
 
 async function consumeUpload() {
@@ -2042,12 +2313,16 @@ async function consumeUpload() {
 }
 
 /* ------------------------------ PLAN tab -------------------------------- */
+//: Paid plans show both billing periods side by side — a toggle would hide
+//  half the picture, and these cards have room for two short price lines.
 function planPriceHTML(p) {
   if (p.contact) return `<div class="pprice">CUSTOM <small>TAILORED TO YOUR DESK</small></div>`;
-  if (!p.priceInr) return `<div class="pprice">₹0 <small>FOREVER</small></div>`;
-  const strike = p.mrpInr ? `<s>₹${p.mrpInr}</s> ` : "";
-  const save = p.mrpInr ? `<span class="psave">SAVE ₹${p.mrpInr - p.priceInr}</span>` : "";
-  return `<div class="pprice">${strike}₹${p.priceInr} <small>/ MO</small> ${save}</div>`;
+  if (!p.periods) return `<div class="pprice">₹0 <small>FOREVER</small></div>`;
+  const { monthly, annual } = p.periods;
+  return `<div class="pprice">
+    <div class="pp-period">₹${monthly.priceInr} <small>/ MO</small></div>
+    <div class="pp-period">₹${annual.priceInr.toLocaleString("en-IN")} <small>/ YR</small></div>
+  </div>`;
 }
 
 async function renderPlanTab(body) {
@@ -2055,7 +2330,7 @@ async function renderPlanTab(body) {
   const cfg = await getBillingCfg();
   const us = cfg && cfg.billing ? await refreshUsage() : null;
   const u = state.user;
-  const isOtp = u && u.provider === "otp" && u.token;
+  const isOtp = u && !!u.token;   // any server-backed session — email/password, OTP, or Google
   const current = us ? us.plan : "free";
 
   let head = "";
@@ -2063,9 +2338,9 @@ async function renderPlanTab(body) {
     head = `<div class="pnote">BILLING OFFLINE — every feature is currently free and unmetered.
       Paid plans activate when the operator connects Razorpay (see README).</div>`;
   } else if (!isOtp) {
-    head = `<div class="pnote warn">Plans attach to email accounts. You're browsing as
+    head = `<div class="pnote warn">Plans attach to a server-backed account. You're browsing as
       <b>${(u && u.provider ? u.provider : "guest").toUpperCase()}</b> — SIGN OUT and sign back in
-      with <b>EMAIL ME A CODE</b> to use the free tier (5 uploads/mo) or subscribe.</div>`;
+      with email or Google to use the free tier (3 uploads/mo) or subscribe.</div>`;
   } else if (us) {
     const lim = us.limit === null ? "∞" : us.limit;
     const pctUsed = us.limit === null ? 0 : Math.min(100, (us.used / us.limit) * 100);
@@ -2094,14 +2369,31 @@ async function renderPlanTab(body) {
   }
 
   const plans = (cfg && cfg.plans) || [
-    { id: "free", name: "FREE", priceInr: 0, uploads: 5, blurb: "5 company uploads / month · all 10 models · SCEN engine" },
-    { id: "pro", name: "ANALYST PRO", priceInr: 299, uploads: 50, blurb: "50 company uploads / month · everything in FREE" },
-    { id: "unlimited", name: "DESK UNLIMITED", priceInr: 499, mrpInr: 599, uploads: null, blurb: "Unlimited uploads · everything in PRO" },
-    { id: "enterprise", name: "ENTERPRISE", priceInr: 0, uploads: null, contact: true, seats: 20,
+    { id: "free", name: "FREE", periods: null, uploads: 3, blurb: "3 company uploads / month · all 10 models · SCEN engine" },
+    { id: "pro", name: "ANALYST PRO", uploads: 50,
+      periods: { monthly: { priceInr: 299 }, annual: { priceInr: 2499 } },
+      blurb: "50 company uploads / month · Ind AS hidden-debt normalizer & reverse-DCF solver · everything in FREE" },
+    { id: "unlimited", name: "DESK UNLIMITED", uploads: null,
+      periods: { monthly: { priceInr: 599 }, annual: { priceInr: 4999 } },
+      blurb: "Unlimited uploads · everything in PRO" },
+    { id: "enterprise", name: "ENTERPRISE", periods: null, uploads: null, contact: true, seats: 20,
       blurb: "Unrestricted access to the entire platform with unlimited analyses, guaranteed priority compute during peak traffic, provisioning for up to 20 team members, and early access to new capabilities ahead of general release — with dedicated onboarding and priority support." },
   ];
   const salesEmail = (cfg && cfg.contactEmail) || "sales@finmodels.app";
   const canBuy = cfg && cfg.billing && isOtp;
+  //: One buy button per billing period on paid plans, instead of duplicating
+  //  the whole card — keeps a single "current plan" per plan family and a
+  //  single stable .pcard.<id> selector regardless of which period a buyer picks.
+  const buyButtons = (p) => {
+    if (current === p.id) return `<button class="pbuy" disabled>CURRENT PLAN</button>`;
+    if (!cfg || !cfg.billing) return `<button class="pbuy" disabled>OFFLINE</button>`;
+    return `<div class="pbuyrow">
+      <button class="pbuy" data-plan="${p.id}" data-period="monthly" ${canBuy ? "" : "disabled"}>
+        MONTHLY — ₹${p.periods.monthly.priceInr}</button>
+      <button class="pbuy" data-plan="${p.id}" data-period="annual" ${canBuy ? "" : "disabled"}>
+        ANNUAL — ₹${p.periods.annual.priceInr.toLocaleString("en-IN")}</button>
+    </div>`;
+  };
   body.innerHTML = `<h3>PLANS &amp; USAGE</h3>${head}
     <div class="pcards">${plans.map((p) => `
       <div class="pcard ${p.id} ${current === p.id ? "cur" : ""}">
@@ -2116,15 +2408,14 @@ async function renderPlanTab(body) {
           ? `<a class="pbuy contact" href="mailto:${salesEmail}?subject=${encodeURIComponent("Enterprise enquiry — FINMODELS TERMINAL")}">CONTACT SALES</a>`
           : p.id === "free"
             ? `<button class="pbuy" disabled>${current === "free" ? "CURRENT PLAN" : "INCLUDED"}</button>`
-            : `<button class="pbuy" data-plan="${p.id}" ${canBuy && current !== p.id ? "" : "disabled"}>
-               ${current === p.id ? "CURRENT PLAN" : cfg && cfg.billing ? `UPGRADE — ₹${p.priceInr}` : "OFFLINE"}</button>`}
+            : buyButtons(p)}
       </div>`).join("")}</div>
-    <div class="pnote" id="pmsg">Paid plans are 30-day passes — renewing or upgrading early credits your
-      unused days. Payments are processed by Razorpay (UPI · cards · netbanking · wallets); this site
-      never sees card details. An upload = one IB-desk PDF analysis; model runs and the SCEN engine
-      are never metered.</div>`;
+    <div class="pnote" id="pmsg">Paid plans are day-based passes (30 for monthly, 365 for annual) —
+      renewing or upgrading early credits your unused days. Payments are processed by Razorpay
+      (UPI · cards · netbanking · wallets); this site never sees card details. An upload = one
+      IB-desk PDF analysis; model runs and the SCEN engine are never metered.</div>`;
   body.querySelectorAll(".pbuy[data-plan]").forEach((b) => {
-    b.onclick = () => startCheckout(b.dataset.plan);
+    b.onclick = () => startCheckout(b.dataset.plan, b.dataset.period);
   });
 }
 
@@ -2154,7 +2445,7 @@ async function devFakeSignature(msg) {
   return [...new Uint8Array(sig)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-async function startCheckout(plan) {
+async function startCheckout(plan, period) {
   const cfg = await getBillingCfg();
   const u = state.user;
   if (!cfg || !cfg.billing || !u || !u.token) return;
@@ -2164,7 +2455,7 @@ async function startCheckout(plan) {
     const r = await fetch("api/billing-order", {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: "Bearer " + u.token },
-      body: JSON.stringify({ plan }),
+      body: JSON.stringify({ plan, period }),
     });
     order = await r.json();
     if (!r.ok || !order.ok) throw new Error(order.error || `HTTP ${r.status}`);
@@ -2212,7 +2503,7 @@ async function startCheckout(plan) {
     amount: order.amount,
     currency: order.currency,
     name: "FINMODELS TERMINAL",
-    description: `${order.planName} — 30-DAY PASS`,
+    description: `${order.planName} — ${order.days}-DAY PASS`,
     prefill: { email: u.uid, name: u.name || "" },
     theme: { color: "#ffb000" },
     handler: finalize,

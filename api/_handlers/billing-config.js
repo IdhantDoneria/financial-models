@@ -24,13 +24,16 @@ module.exports = async (req, res) => {
     currency: "INR",
     plans: Object.values(B.PLANS).map((p) => ({
       id: p.id, name: p.name, blurb: p.blurb,
-      priceInr: p.amount / 100, mrpInr: p.mrp ? p.mrp / 100 : null,
       uploads: p.uploads,                       // null = unlimited
       contact: !!p.contact,                     // sales-led tier (no self-serve checkout)
       seats: p.seats || null,
+      // One entry per self-serve billing period; FREE/ENTERPRISE have none.
+      periods: p.periods ? {
+        monthly: p.periods.monthly && { priceInr: p.periods.monthly.amount / 100, days: p.periods.monthly.days },
+        annual: p.periods.annual && { priceInr: p.periods.annual.amount / 100, days: p.periods.annual.days },
+      } : null,
     })),
     // where the ENTERPRISE "contact sales" button points; override with SALES_EMAIL.
     contactEmail: process.env.SALES_EMAIL || "sales@finmodels.app",
-    validityDays: B.PLAN_TTL / 86_400,
   });
 };

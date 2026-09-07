@@ -2,9 +2,10 @@
 
 Starts scripts/dev_auth_server.js (real api/*.js handlers; store in memory,
 gateway in dev-fake mode), signs in through the real OTP flow, then drives
-the PLAN tab: verifies the catalogue (PRO ₹299 · UNLIMITED ₹599-struck ₹499),
-the FREE usage meter, and a complete purchase — order → signed payment →
-server verify → plan chip flips to the paid tier.
+the PLAN tab: verifies the catalogue (PRO ₹299/mo · ₹2,499/yr, UNLIMITED
+₹599/mo · ₹4,999/yr), the FREE usage meter (3/mo), and a complete monthly
+purchase — order → signed payment → server verify → plan chip flips to the
+paid tier.
 
     python scripts/e2e_billing.py
 """
@@ -74,22 +75,24 @@ def main() -> int:
             body = page.inner_text("#menu-body")
             for needle, msg in [
                 ("ANALYST PRO", "PRO card missing"),
-                ("₹299", "PRO price missing"),
+                ("₹299", "PRO monthly price missing"),
+                ("₹2,499", "PRO annual price missing"),
                 ("DESK UNLIMITED", "UNLIMITED card missing"),
-                ("₹499", "UNLIMITED offer price missing"),
-                ("SAVE ₹100", "psychological-anchor badge missing"),
-                ("0 / 5", "FREE meter not at 0/5"),
+                ("₹599", "UNLIMITED monthly price missing"),
+                ("₹4,999", "UNLIMITED annual price missing"),
+                ("0 / 3", "FREE meter not at 0/3"),
                 ("BEST VALUE", "best-value flag missing"),
             ]:
                 if needle not in body:
                     failures.append(f"PLAN: {msg}")
-            struck = page.locator(".pcard.unlimited .pprice s").inner_text()
-            print(f"  cards ok · UNLIMITED shows struck {struck} -> ₹499")
-            if struck != "₹599":
-                failures.append(f"PLAN: struck MRP wrong ({struck})")
+            # Two buy buttons per paid plan now (monthly/annual) — one card each,
+            # no duplicated .pcard.<id> elements.
+            pro_buttons = page.locator('.pcard.pro .pbuy[data-plan="pro"]').count()
+            if pro_buttons != 2:
+                failures.append(f"PLAN: expected 2 PRO buy buttons (monthly/annual), found {pro_buttons}")
 
-            print("· buying ANALYST PRO through the dev-fake gateway…")
-            page.click('.pbuy[data-plan="pro"]')
+            print("· buying ANALYST PRO (monthly) through the dev-fake gateway…")
+            page.click('.pbuy[data-plan="pro"][data-period="monthly"]')
             page.wait_for_function(
                 "() => document.querySelector('#pmsg') && "
                 "/ACTIVE — VALID UNTIL/.test(document.querySelector('#pmsg').textContent)",

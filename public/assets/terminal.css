@@ -201,6 +201,48 @@ html, body {
 }
 .prow .tgl button.on { border-color: var(--amber); color: var(--amber); }
 
+/* Reverse DCF — price-source toggle + regulatory disclosures */
+.rdcf-src { padding: 10px 14px; border-bottom: 1px solid var(--border); background: var(--panel-alt); }
+.rdcf-src .tgl { display: flex; gap: 8px; margin-bottom: 8px; }
+.rdcf-src .tgl button {
+  flex: 1; background: transparent; border: 1px solid var(--border);
+  color: var(--text-dim); font: 11px var(--mono); padding: 6px 0; cursor: pointer;
+  letter-spacing: 0.1em;
+}
+.rdcf-src .tgl button.on { border-color: var(--amber); color: var(--amber); }
+.rdcf-src .fetch { display: none; gap: 8px; margin-bottom: 8px; }
+.rdcf-src .fetch input {
+  flex: 1; background: #000; border: 1px solid var(--border); color: var(--amber);
+  font: 12px var(--mono); padding: 5px 8px; text-transform: uppercase;
+}
+.rdcf-src .fetch input:focus { outline: none; border-color: var(--amber-dim); }
+.rdcf-src .fetch button {
+  background: transparent; border: 1px solid var(--amber-dim); color: var(--amber);
+  font: 11px var(--mono); padding: 5px 10px; cursor: pointer; letter-spacing: 0.05em;
+  white-space: nowrap;
+}
+.rdcf-src .fetch button:hover { border-color: var(--amber); background: rgba(255, 176, 0, 0.06); }
+.rdcf-disclosure { font-size: 10px; letter-spacing: 0.03em; line-height: 1.6; padding: 9px 12px; }
+.rdcf-disclosure + .rdcf-disclosure { margin-top: 8px; }
+.rdcf-disclosure.general { border: 1px solid var(--border); color: var(--text-dim); }
+.rdcf-disclosure.general b { color: var(--amber); font-weight: 400; }
+.rdcf-disclosure.live {
+  display: none; border: 1px solid var(--red); color: var(--text);
+  background: rgba(255, 93, 93, 0.06);
+}
+.rdcf-disclosure.live b { color: var(--red); font-weight: 400; }
+.rdcf-disclosure i { color: var(--text-dim); font-style: italic; }
+
+/* Premium-model gate (ANALYST PRO+) — HDEBT, RDCF */
+.plan-lock { margin: 14px; padding: 12px 14px; border: 1px solid var(--red);
+  background: rgba(255, 93, 93, 0.06); color: var(--text); font-size: 12px; line-height: 1.7; }
+.plan-lock b { color: var(--red); font-weight: 400; }
+.plan-lock button {
+  margin-top: 10px; background: transparent; border: 1px solid var(--amber-dim); color: var(--amber);
+  font: 11px var(--mono); padding: 7px 14px; cursor: pointer; letter-spacing: 0.05em;
+}
+.plan-lock button:hover { border-color: var(--amber); background: rgba(255, 176, 0, 0.06); }
+
 /* output */
 #ogrid { width: 100%; border-collapse: collapse; }
 #ogrid td { padding: 6px 14px; border-bottom: 1px solid #11161d; font-size: 12.5px; }
@@ -551,13 +593,12 @@ input.ibov:focus { outline: none; border-color: var(--amber); }
 .pflag { position: absolute; top: -9px; right: 10px; background: var(--amber); color: #000;
   font-size: 9px; letter-spacing: 0.1em; padding: 2px 8px; }
 .pname { color: var(--cyan); font-size: 12px; letter-spacing: 0.1em; }
-.pprice { color: var(--text); font-size: 18px; }
-.pprice s { color: var(--text-dim); font-size: 13px; margin-right: 4px; }
-.pprice small { color: var(--text-dim); font-size: 10px; }
-.psave { display: inline-block; color: var(--green); font-size: 9px; letter-spacing: 0.08em;
-  border: 1px solid var(--green); padding: 1px 6px; margin-left: 4px; vertical-align: middle; }
+.pprice { color: var(--text); font-size: 18px; display: flex; flex-direction: column; gap: 2px; }
+.pp-period { font-size: 15px; }
+.pp-period small { color: var(--text-dim); font-size: 10px; }
 .pquota { color: var(--amber); font-size: 10px; letter-spacing: 0.12em; }
 .pblurb { color: var(--text-dim); font-size: 10px; line-height: 1.6; flex: 1; }
+.pbuyrow { display: flex; flex-direction: column; gap: 6px; }
 .pcard .pbuy { background: none; border: 1px solid var(--amber-dim); color: var(--amber);
   font: 10px var(--mono); letter-spacing: 0.1em; padding: 7px 0; cursor: pointer; }
 .pcard .pbuy:hover:not(:disabled) { border-color: var(--amber); background: rgba(255, 176, 0, 0.08); }

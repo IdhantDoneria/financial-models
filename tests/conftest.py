@@ -14,8 +14,10 @@ from src import (
     FamaFrenchModel,
     GordonGrowthModel,
     HestonModel,
+    IndASHiddenDebtModel,
     ModernPortfolioTheoryModel,
     MonteCarloOptionModel,
+    ReverseDCFModel,
     ValueAtRiskModel,
 )
 
@@ -57,6 +59,17 @@ def make_instance(cls: type) -> object:
                                            maturity=0.5, n_sims=50_000, seed=1),
         HestonModel: lambda: cls(spot=100, strike=100, rate=0.02, maturity=1.0,
                                  v0=0.04, kappa=1.5, theta=0.04, xi=0.3, rho=-0.6),
+        IndASHiddenDebtModel: lambda: cls(
+            net_income=100, reported_net_debt=500, reported_equity_value=2000,
+            shares_outstanding=100, annual_lease_payment=50, lease_term_years=3,
+            lease_discount_rate=0.08, reverse_factoring_exposure=75,
+            cl1_amount=200, cl1_probability=0.25, cl2_amount=100, cl2_probability=0.10,
+            depreciation_amortization=40, rd_capitalized_amortization=15,
+            rd_cash_spend=25, maintenance_capex=30),
+        ReverseDCFModel: lambda: cls(
+            current_price=42.0, shares_outstanding=100, net_debt=200,
+            base_fcf=100, base_revenue=1000, total_addressable_market=10000,
+            years=5, discount_rate=0.10, terminal_growth=0.03),
     }
     return builders[cls]()
 

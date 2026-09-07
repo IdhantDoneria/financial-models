@@ -171,6 +171,27 @@ async function postJson(url, body) {
   return out;
 }
 
+//: Like postJson, but distinguishes "no serverless backend reachable at
+//  all" (fetch itself throws — e.g. a static-file-only preview with no
+//  /api routes) from "the server responded and rejected the token" (a
+//  real HTTP error, which should be surfaced, not swallowed into a
+//  fallback). Only the former returns { unreachable: true }.
+async function googleServerVerify(credential) {
+  let r;
+  try {
+    r = await fetch("api/auth-google", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ credential }), signal: AbortSignal.timeout(15000),
+    });
+  } catch {
+    return { unreachable: true };
+  }
+  let out = {};
+  try { out = await r.json(); } catch { /* non-JSON error body */ }
+  if (!r.ok) throw new Error(out.error || `HTTP ${r.status}`);
+  return out;
+}
+
 let resendTimer = null;
 function startResendCountdown(secs) {
   const btn = $("#otp-resend");
@@ -347,7 +368,7 @@ async function initGoogle(cfg) {
     client_id: cid,
     ux_mode: "popup",  // requires Cross-Origin-Opener-Policy: same-origin-allow-popups
     auto_select: false,
-    callback: (resp) => {
+    callback: async (resp) => {
       try {
         if (!resp || !resp.credential) {
           return showErr(
@@ -357,15 +378,28 @@ async function initGoogle(cfg) {
             "(3) Cross-Origin-Opener-Policy header is 'same-origin-allow-popups'"
           );
         }
-        const p = decodeJwtPayload(resp.credential);
-        const email = (p.email || "").toLowerCase();
-        if (!email) return showErr("GOOGLE DID NOT RETURN AN EMAIL ADDRESS");
-        const all = accounts();
-        all[email] = { ...(all[email] || {}), name: p.name || email,
-                       provider: all[email] && all[email].hash ? "password+google" : "google",
-                       created: (all[email] && all[email].created) || Date.now() };
-        saveAccounts(all);
-        finishLogin({ uid: email, name: p.name || email, provider: "google" }, true);
+        const out = await googleServerVerify(resp.credential);
+        if (out.unreachable) {
+          // No serverless backend at all (e.g. a plain static-file preview
+          // with no /api routes) — fall back to the pre-existing
+          // device-local account exactly as before, rather than blocking
+          // sign-in entirely.
+          console.warn("Google server verification unreachable — using a device-local account instead.");
+          const p = decodeJwtPayload(resp.credential);
+          const email = (p.email || "").toLowerCase();
+          if (!email) return showErr("GOOGLE DID NOT RETURN AN EMAIL ADDRESS");
+          const all = accounts();
+          all[email] = { ...(all[email] || {}), name: p.name || email,
+                         provider: all[email] && all[email].hash ? "password+google" : "google",
+                         created: (all[email] && all[email].created) || Date.now() };
+          saveAccounts(all);
+          finishLogin({ uid: email, name: p.name || email, provider: "google" }, true);
+          return;
+        }
+        // Server verified the Google ID token and issued a real session —
+        // same bearer-token shape the OTP/password paths use.
+        finishLogin({ uid: out.user.email, name: out.user.name || out.user.email,
+                      provider: "google", token: out.token }, true);
       } catch (err) {
         console.error("Google callback error:", err);
         showErr("GOOGLE SIGN-IN FAILED: " + String(err.message || err).slice(0, 100));

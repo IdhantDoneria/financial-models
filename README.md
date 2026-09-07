@@ -7,7 +7,7 @@
 > (the actual `src/*.py` files, running on CPython compiled to WebAssembly — no server).
 > Type a mnemonic (`BSM`, `DCF`, `HES`, …) and press `<GO>`.
 
-Each model is a self-contained class with a common interface (`calculate()` · `explain()` · `visualize()`), literature-sourced numerical benchmarks, and an automated scorer that grades it on three metrics. **All ten models score 10/10 on all three metrics**, and the full suite is covered by 88 passing tests.
+Each model is a self-contained class with a common interface (`calculate()` · `explain()` · `visualize()`), literature-sourced numerical benchmarks, and an automated scorer that grades it on three metrics. **All ten models self-score 10/10 on all three metrics** (an internal quality bar computed by this repo's own `src/scorer.py`, not a third-party audit), and the full suite is covered by 88 passing tests.
 
 ---
 
@@ -57,11 +57,12 @@ Each model exposes a `reference_benchmarks()` classmethod returning literature/i
 parity holds to `4.5e-16`; the binomial tree converges to Black-Scholes; Heston reduces to
 Black-Scholes as ξ→0 with relative error `4e-09`).
 
-## Metric scores
+## Metric scores (self-assessed)
 
-Scores are **computed by `src/scorer.py`**, not asserted — via AST analysis (docstring
-coverage, comment density, type-hint coverage) plus runtime probes (running each model's
-benchmarks, rendering its explanation and figure).
+Scores are **computed by `src/scorer.py`**, this repo's own scorer, not asserted by hand — via
+AST analysis (docstring coverage, comment density, type-hint coverage) plus runtime probes
+(running each model's benchmarks, rendering its explanation and figure). This is an internal,
+self-graded check the code runs on itself, not an independent or third-party audit.
 
 | Model | Pedagogical clarity | Numerical accuracy | Production readiness | Total |
 |-------|:---:|:---:|:---:|:---:|
@@ -320,16 +321,20 @@ The terminal has a built-in monetisation layer. The metered unit is an **upload*
 
 | Plan | Price | Uploads / month |
 |---|---|---|
-| **FREE** | ₹0 | 5 |
-| **ANALYST PRO** | **₹299 / mo** | 50 |
-| **DESK UNLIMITED** | ~~₹599~~ **₹499 / mo** (SAVE ₹100) | Unlimited |
+| **FREE** | ₹0 | 3 |
+| **ANALYST PRO** | **₹299 / mo** or **₹2,499 / yr** | 50 |
+| **DESK UNLIMITED** | **₹599 / mo** or **₹4,999 / yr** | Unlimited |
 
-Paid plans are **30-day passes** bought through Razorpay Checkout (UPI · cards ·
-netbanking · wallets) — renewing or upgrading early credits the unused days. The
-**MENU ▸ PLAN** tab shows the live usage meter, current plan and upgrade cards; the
-status bar carries a plan chip (e.g. `PLAN ANALYST PRO · 12/50`). Plans attach to
-**email-OTP accounts** (the server identity), so uploads require signing in with email
-once billing is live.
+Analyst Pro and above also unlock the Ind AS 116 hidden-debt normalizer and reverse-DCF
+solver (client-side gated — see `PREMIUM_MODELS` in `terminal.js`); the free tier gets
+the original 10 models only.
+
+Paid plans are **day-based passes** — 30 days for monthly, 365 for annual — bought
+through Razorpay Checkout (UPI · cards · netbanking · wallets); renewing or upgrading
+early credits the unused days. The **MENU ▸ PLAN** tab shows the live usage meter,
+current plan and both billing periods per paid plan; the status bar carries a plan chip
+(e.g. `PLAN ANALYST PRO · 12/50`). Plans attach to a server-backed account (email-OTP/
+password, or Google), so uploads require signing in with one of those once billing is live.
 
 **Security model:** amounts are authoritative **server-side only** (`api/_lib/billing.js`)
 — the client never chooses what it pays; every payment is verified with Razorpay's

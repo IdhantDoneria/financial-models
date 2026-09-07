@@ -8,9 +8,14 @@
 // webhook (RAZORPAY_WEBHOOK_SECRET) activates plans even if the buyer's tab
 // dies before the client-side verify.
 //
-// Plans are 30-day passes bought with one-time orders (no dashboard plan
-// objects needed): FREE 5 uploads/mo · ANALYST PRO 50 uploads/mo @ ₹299 ·
-// DESK UNLIMITED @ ₹499 (MRP ₹599). "Upload" = one IB-desk PDF analysis.
+// Paid plans are bought as one-time orders for a MONTHLY or ANNUAL pass (no
+// dashboard plan objects needed): FREE 3 uploads/mo · ANALYST PRO 50
+// uploads/mo @ ₹299/mo or ₹2,499/yr · DESK UNLIMITED (unlimited uploads)
+// @ ₹599/mo or ₹4,999/yr. "Upload" = one IB-desk PDF analysis. Analyst Pro
+// and above also unlock the Ind AS 116 hidden-debt normalizer and reverse
+// DCF solver (gated client-side in terminal.js — see PREMIUM_MODELS there;
+// like every other model's math, there is no server-side computation to
+// gate more strongly than that).
 //
 // Local testing: with AUTH_DEV_MEMORY=1 and no real keys, a fake gateway
 // takes over — orders get dev ids and signatures verify against the fixed
@@ -25,23 +30,33 @@ const WEBHOOK_SECRET = process.env.RAZORPAY_WEBHOOK_SECRET || "";
 const DEV = process.env.AUTH_DEV_MEMORY === "1" && !(KEY_ID && KEY_SECRET);
 const DEV_SECRET = "devsecret";
 
-const PLAN_TTL = 30 * 86_400;      // seconds — every paid plan is a 30-day pass
 const ORDER_TTL = 3600;            // pending order records live 1 hour
+const PERIODS = ["monthly", "annual"];
 
-//: Authoritative catalogue. `amount` is paise (Razorpay's unit); `uploads`
-//  null = unlimited; `mrp` renders as a struck-through anchor price.
+//: Authoritative catalogue. `id`/`name`/`uploads`/`blurb` are billing-period
+//  independent (a monthly and an annual Pro subscriber get the same 50/mo
+//  cap and the same premium-model access). Only price and pass length vary
+//  by period, under `periods.monthly`/`periods.annual` — `amount` is paise
+//  (Razorpay's unit), `days` is how long one purchase of that period grants.
+//  `uploads` null = unlimited.
 const PLANS = {
-  free: { id: "free", name: "FREE", amount: 0, uploads: 5,
-          blurb: "5 company uploads / month · all 10 models · SCEN engine" },
-  pro: { id: "pro", name: "ANALYST PRO", amount: 29_900, uploads: 50,
-         blurb: "50 company uploads / month · everything in FREE" },
-  unlimited: { id: "unlimited", name: "DESK UNLIMITED", amount: 49_900, mrp: 59_900,
-               uploads: null, blurb: "Unlimited uploads · everything in PRO" },
-  //: Sales-led tier — bespoke pricing, so `amount` is 0 and `contact:true`.
-  //  The order handler rejects any plan without an amount, so ENTERPRISE can
-  //  never be self-served through Razorpay; it is provisioned by the operator
-  //  (admin grant) after a commercial agreement.
-  enterprise: { id: "enterprise", name: "ENTERPRISE", amount: 0, uploads: null,
+  free: { id: "free", name: "FREE", uploads: 3,
+          blurb: "3 company uploads / month · all 10 models · SCEN engine" },
+  pro: { id: "pro", name: "ANALYST PRO", uploads: 50,
+         periods: { monthly: { amount: 29_900, days: 30 },
+                    annual: { amount: 249_900, days: 365 } },
+         blurb: "50 company uploads / month · Ind AS hidden-debt normalizer & " +
+                "reverse-DCF solver · everything in FREE" },
+  unlimited: { id: "unlimited", name: "DESK UNLIMITED", uploads: null,
+               periods: { monthly: { amount: 59_900, days: 30 },
+                          annual: { amount: 499_900, days: 365 } },
+               blurb: "Unlimited uploads · everything in PRO" },
+  //: Sales-led tier — bespoke pricing, so there's no self-serve `periods`
+  //  entry and `contact:true`. The order handler rejects any plan without a
+  //  `periods` catalogue, so ENTERPRISE can never be self-served through
+  //  Razorpay; it is provisioned by the operator (admin grant) after a
+  //  commercial agreement.
+  enterprise: { id: "enterprise", name: "ENTERPRISE", uploads: null,
                 contact: true, seats: 20,
                 blurb: "Unrestricted access to the entire platform with unlimited analyses. " +
                        "Guaranteed priority compute during periods of peak market traffic, " +
@@ -50,17 +65,25 @@ const PLANS = {
                        "dedicated onboarding and priority support." },
 };
 
+//: Plans a customer can self-serve buy through Razorpay — the only ones
+//  with a `periods` catalogue. FREE has no purchase path; ENTERPRISE is
+//  operator-provisioned only (see above).
+const PURCHASABLE_PLANS = Object.keys(PLANS).filter((id) => PLANS[id].periods);
+
 const configured = () => DEV || !!(KEY_ID && KEY_SECRET);
 const mode = () => (DEV ? "dev-fake" : KEY_ID && KEY_SECRET ? "razorpay" : "unconfigured");
 const keyId = () => (DEV ? "rzp_test_devfake" : KEY_ID);
 const secret = () => (DEV ? DEV_SECRET : KEY_SECRET);
 
 /* ----------------------------- gateway --------------------------------- */
-async function createOrder(plan, email) {
+//: `period` is "monthly" or "annual" — selects which entry of the plan's
+//  `periods` catalogue sets the order amount and, later, the pass length.
+async function createOrder(plan, period, email) {
   const p = PLANS[plan];
+  const term = p.periods[period];
   if (DEV) {
     return { id: "order_dev" + crypto.randomBytes(8).toString("hex"),
-             amount: p.amount, currency: "INR" };
+             amount: term.amount, currency: "INR" };
   }
   const r = await fetch("https://api.razorpay.com/v1/orders", {
     method: "POST",
@@ -69,9 +92,12 @@ async function createOrder(plan, email) {
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      amount: p.amount, currency: "INR",
-      receipt: `fm-${plan}-${Date.now()}`.slice(0, 40),
-      notes: { plan, email, product: "finmodels-terminal" },
+      amount: term.amount, currency: "INR",
+      receipt: `fm-${plan}-${period}-${Date.now()}`.slice(0, 40),
+      // `period` travels in the order notes too — the webhook's fallback
+      // path (order record expired before delivery) reads plan/period from
+      // here, so it must carry everything activate() needs.
+      notes: { plan, period, email, product: "finmodels-terminal" },
     }),
   });
   const j = await r.json();
@@ -113,17 +139,20 @@ async function effectivePlan(email) {
 
 //: Idempotent activation — the checkout verify and the webhook can both
 //  fire for one payment; the second write is a harmless no-op re-set.
-async function activate(email, plan, paymentId, orderId, via) {
+//  `period` ("monthly"/"annual") picks the pass length from the plan's
+//  `periods` catalogue — a monthly purchase grants 30 days, annual 365.
+async function activate(email, plan, period, paymentId, orderId, via) {
   const existing = await getSub(email);
   if (existing && existing.paymentId === paymentId) return existing;
+  const term = PLANS[plan].periods[period];
   const now = Date.now();
   //: Renewing/upgrading before expiry credits the unused days.
   const carry = existing && PLANS[existing.plan] && Date.parse(existing.expiresAt) > now
     ? Date.parse(existing.expiresAt) - now : 0;
   const sub = {
-    plan, paymentId, orderId, via,
+    plan, period, paymentId, orderId, via,
     activatedAt: new Date(now).toISOString(),
-    expiresAt: new Date(now + PLAN_TTL * 1000 + carry).toISOString(),
+    expiresAt: new Date(now + term.days * 86_400_000 + carry).toISOString(),
   };
   await store.set(`sub:${email}`, JSON.stringify(sub));
   return sub;
@@ -189,7 +218,7 @@ async function getUsed(email) {
 const consumeUpload = (email) => store.incr(`use:${email}:${monthKey()}`, 35 * 86_400);
 
 module.exports = {
-  PLANS, PLAN_TTL, ORDER_TTL, FOUNDER_CAP, FOUNDER_PLAN, FOUNDER_DAYS,
+  PLANS, PERIODS, PURCHASABLE_PLANS, ORDER_TTL, FOUNDER_CAP, FOUNDER_PLAN, FOUNDER_DAYS,
   configured, mode, keyId,
   createOrder, verifyCheckoutSig, verifyWebhookSig,
   getSub, effectivePlan, activate, getUsed, consumeUpload, monthKey,
