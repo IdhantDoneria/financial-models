@@ -28,6 +28,7 @@ from src import (
     FamaFrenchModel,
     GordonGrowthModel,
     HestonModel,
+    IndASHiddenDebtModel,
     ModernPortfolioTheoryModel,
     MonteCarloOptionModel,
     ValueAtRiskModel,
@@ -151,10 +152,28 @@ def _build_hes(p: dict) -> HestonModel:
     )
 
 
+def _build_hdebt(p: dict) -> IndASHiddenDebtModel:
+    return IndASHiddenDebtModel(
+        net_income=p["net_income"], reported_net_debt=p["reported_net_debt"],
+        reported_equity_value=p["reported_equity_value"],
+        shares_outstanding=p["shares_outstanding"],
+        annual_lease_payment=p["annual_lease_payment"],
+        lease_term_years=int(p["lease_term_years"]),
+        lease_discount_rate=p["lease_discount_rate"],
+        reverse_factoring_exposure=p["reverse_factoring_exposure"],
+        cl1_amount=p["cl1_amount"], cl1_probability=p["cl1_probability"],
+        cl2_amount=p["cl2_amount"], cl2_probability=p["cl2_probability"],
+        depreciation_amortization=p["depreciation_amortization"],
+        rd_capitalized_amortization=p["rd_capitalized_amortization"],
+        rd_cash_spend=p["rd_cash_spend"], maintenance_capex=p["maintenance_capex"],
+    )
+
+
 BUILDERS: dict[str, Callable[[dict], Any]] = {
     "DCF": _build_dcf, "GG": _build_gg, "MPT": _build_mpt, "VAR": _build_var,
     "CAPM": _build_capm, "FF3": _build_ff3, "BSM": _build_bsm,
     "CRR": _build_crr, "MC": _build_mc, "HES": _build_hes,
+    "HDEBT": _build_hdebt,
 }
 
 

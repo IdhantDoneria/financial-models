@@ -21,6 +21,7 @@ from .capm import CAPMModel
 from .dcf import DiscountedCashFlowModel
 from .fama_french import FamaFrenchModel
 from .gordon_growth import GordonGrowthModel
+from .ind_as_hidden_debt import IndASHiddenDebtModel
 from .monte_carlo import MonteCarloOptionModel
 from .mpt import ModernPortfolioTheoryModel
 from .scorer import ModelScore, ModelScorer, score_all
@@ -41,6 +42,7 @@ ALL_MODELS: list[type[BaseFinancialModel]] = [
     BinomialTreeModel,
     MonteCarloOptionModel,
     HestonModel,
+    IndASHiddenDebtModel,
 ]
 
 __all__ = [
@@ -48,5 +50,6 @@ __all__ = [
     "BinomialTreeModel", "BlackScholesModel", "CAPMModel",
     "DiscountedCashFlowModel", "FamaFrenchModel", "GordonGrowthModel",
     "MonteCarloOptionModel", "ModernPortfolioTheoryModel", "HestonModel",
-    "ValueAtRiskModel", "ModelScore", "ModelScorer", "score_all", "ALL_MODELS",
+    "ValueAtRiskModel", "IndASHiddenDebtModel",
+    "ModelScore", "ModelScorer", "score_all", "ALL_MODELS",
 ]

@@ -140,6 +140,28 @@ const MODELS = [
       { id: "option_type", label: "TYPE", toggle: ["call", "put"], def: "call" },
     ],
   },
+  {
+    mn: "HDEBT", name: "Ind AS 116 Hidden-Debt Normalizer", cat: "Forensic Accounting",
+    formula: "Adj. Debt = Reported Debt + L + F + Σ Aᵢpᵢ,  L = C·(1−(1+r)⁻ⁿ)/r",
+    params: [
+      { id: "net_income", label: "NET INCOME", money: true, scale: "M", min: -500, max: 1000, step: 5, def: 100 },
+      { id: "reported_net_debt", label: "REPORTED NET DEBT", money: true, scale: "M", min: -500, max: 2000, step: 10, def: 500 },
+      { id: "reported_equity_value", label: "REPORTED EQUITY VAL", money: true, scale: "M", min: -1000, max: 5000, step: 10, def: 2000 },
+      { id: "shares_outstanding", label: "SHARES (M)", min: 10, max: 2000, step: 10, def: 100 },
+      { id: "annual_lease_payment", label: "ANNUAL LEASE PMT", money: true, scale: "M", min: 0, max: 200, step: 5, def: 50 },
+      { id: "lease_term_years", label: "LEASE TERM (Y)", min: 1, max: 15, step: 1, def: 3, int: true },
+      { id: "lease_discount_rate", label: "LEASE IBR", min: 0.02, max: 0.15, step: 0.0025, def: 0.08, pct: true },
+      { id: "reverse_factoring_exposure", label: "REVERSE FACTORING", money: true, scale: "M", min: 0, max: 500, step: 5, def: 75 },
+      { id: "cl1_amount", label: "CONTINGENT LIAB 1", money: true, scale: "M", min: 0, max: 1000, step: 10, def: 200 },
+      { id: "cl1_probability", label: "CL1 PROBABILITY", min: 0, max: 1, step: 0.05, def: 0.25, pct: true },
+      { id: "cl2_amount", label: "CONTINGENT LIAB 2", money: true, scale: "M", min: 0, max: 1000, step: 10, def: 100 },
+      { id: "cl2_probability", label: "CL2 PROBABILITY", min: 0, max: 1, step: 0.05, def: 0.10, pct: true },
+      { id: "depreciation_amortization", label: "D&A ADD-BACK", money: true, scale: "M", min: 0, max: 300, step: 5, def: 40 },
+      { id: "rd_capitalized_amortization", label: "CAP. R&D AMORT.", money: true, scale: "M", min: 0, max: 200, step: 5, def: 15 },
+      { id: "rd_cash_spend", label: "R&D CASH SPEND", money: true, scale: "M", min: 0, max: 300, step: 5, def: 25 },
+      { id: "maintenance_capex", label: "MAINTENANCE CAPEX", money: true, scale: "M", min: 0, max: 300, step: 5, def: 30 },
+    ],
+  },
 ];
 
 /* ------------------------------------------------------------------------ *
@@ -756,6 +778,22 @@ function renderResults(model, payload) {
       nd !== null ? ` (${fmtValue("ev", ev)})` : ""
     } is below net debt${nd !== null ? ` (${fmtValue("net_debt", nd)})` : ""}, so intrinsic
       equity and per-share value are negative. Raise FCF / growth, or lower WACC / net debt.</td>`;
+    grid.appendChild(note);
+  }
+  // HDEBT: plain-language delta explanation — why the adjusted figures differ
+  // from the reported ones, surfaced inline rather than buried in the DOC tab.
+  if (model.mn === "HDEBT") {
+    const r = payload.results;
+    const erosion = typeof r.pct_equity_erosion === "number"
+      ? (r.pct_equity_erosion * 100).toFixed(1) + "%" : "n/a";
+    const note = document.createElement("tr");
+    note.className = "advisory";
+    note.innerHTML = `<td colspan="2">⚠ HIDDEN DEBT ADJUSTMENT — capitalising ${fmtValue("lease_liability", r.lease_liability)}
+      of Ind AS 116 lease liability, ${fmtValue("reverse_factoring_exposure", r.reverse_factoring_exposure)} of reverse-factoring
+      exposure, and ${fmtValue("weighted_contingent_liabilities", r.weighted_contingent_liabilities)} of probability-weighted
+      contingent liabilities lowers adjusted equity value by ${erosion} vs. the reported figure. Owner earnings of
+      ${fmtValue("owner_earnings", r.owner_earnings)} vs. reported net income of ${fmtValue("net_income", state.values.net_income)}
+      reflect reversing capitalised R&D and expensing it as spent instead.</td>`;
     grid.appendChild(note);
   }
   $("#output header .title").textContent = `OUTPUT — ${model.mn}`;

@@ -1,9 +1,9 @@
 {
-  "synced_at_utc": "2026-07-02T20:21:44+00:00",
+  "synced_at_utc": "2026-09-07T12:53:22+00:00",
   "files": [
     {
       "path": "src/__init__.py",
-      "sha256": "43e78e062ba37286e59c12fd0c6e154c8f821ac3fc87e4eead32d99f75896f1b"
+      "sha256": "d64f769f63a274dd06f1a0b1150d2355456d37733081338e492ef87e04256ecc"
     },
     {
       "path": "src/base_model.py",
@@ -32,6 +32,10 @@
     {
       "path": "src/gordon_growth.py",
       "sha256": "35cac1deda1152a7f593bea5743868f04198706fce4bdc73a2006eb6a39a8ba4"
+    },
+    {
+      "path": "src/ind_as_hidden_debt.py",
+      "sha256": "db7e0b1e1ecbacad5f9561c596491ec08914d5237f7954536232b3a53f31beaa"
     },
     {
       "path": "src/monte_carlo.py",
