@@ -201,6 +201,38 @@ html, body {
 }
 .prow .tgl button.on { border-color: var(--amber); color: var(--amber); }
 
+/* Reverse DCF — price-source toggle + regulatory disclosures */
+.rdcf-src { padding: 10px 14px; border-bottom: 1px solid var(--border); background: var(--panel-alt); }
+.rdcf-src .tgl { display: flex; gap: 8px; margin-bottom: 8px; }
+.rdcf-src .tgl button {
+  flex: 1; background: transparent; border: 1px solid var(--border);
+  color: var(--text-dim); font: 11px var(--mono); padding: 6px 0; cursor: pointer;
+  letter-spacing: 0.1em;
+}
+.rdcf-src .tgl button.on { border-color: var(--amber); color: var(--amber); }
+.rdcf-src .fetch { display: none; gap: 8px; margin-bottom: 8px; }
+.rdcf-src .fetch input {
+  flex: 1; background: #000; border: 1px solid var(--border); color: var(--amber);
+  font: 12px var(--mono); padding: 5px 8px; text-transform: uppercase;
+}
+.rdcf-src .fetch input:focus { outline: none; border-color: var(--amber-dim); }
+.rdcf-src .fetch button {
+  background: transparent; border: 1px solid var(--amber-dim); color: var(--amber);
+  font: 11px var(--mono); padding: 5px 10px; cursor: pointer; letter-spacing: 0.05em;
+  white-space: nowrap;
+}
+.rdcf-src .fetch button:hover { border-color: var(--amber); background: rgba(255, 176, 0, 0.06); }
+.rdcf-disclosure { font-size: 10px; letter-spacing: 0.03em; line-height: 1.6; padding: 9px 12px; }
+.rdcf-disclosure + .rdcf-disclosure { margin-top: 8px; }
+.rdcf-disclosure.general { border: 1px solid var(--border); color: var(--text-dim); }
+.rdcf-disclosure.general b { color: var(--amber); font-weight: 400; }
+.rdcf-disclosure.live {
+  display: none; border: 1px solid var(--red); color: var(--text);
+  background: rgba(255, 93, 93, 0.06);
+}
+.rdcf-disclosure.live b { color: var(--red); font-weight: 400; }
+.rdcf-disclosure i { color: var(--text-dim); font-style: italic; }
+
 /* output */
 #ogrid { width: 100%; border-collapse: collapse; }
 #ogrid td { padding: 6px 14px; border-bottom: 1px solid #11161d; font-size: 12.5px; }

@@ -162,6 +162,21 @@ const MODELS = [
       { id: "maintenance_capex", label: "MAINTENANCE CAPEX", money: true, scale: "M", min: 0, max: 300, step: 5, def: 30 },
     ],
   },
+  {
+    mn: "RDCF", name: "Reverse DCF (Market-Implied)", cat: "Market-Implied",
+    formula: "Solve g:  EV(g) = P·shares + net debt",
+    params: [
+      { id: "current_price", label: "PRICE (MANUAL)", money: true, min: 1, max: 2000, step: 1, def: 42 },
+      { id: "shares_outstanding", label: "SHARES (M)", min: 1, max: 5000, step: 10, def: 100 },
+      { id: "net_debt", label: "NET DEBT", money: true, scale: "M", min: -1000, max: 5000, step: 10, def: 200 },
+      { id: "base_fcf", label: "BASE FCF", money: true, scale: "M", min: 1, max: 1000, step: 1, def: 100 },
+      { id: "base_revenue", label: "BASE REVENUE", money: true, scale: "M", min: 1, max: 5000, step: 10, def: 1000 },
+      { id: "total_addressable_market", label: "TAM", money: true, scale: "M", min: 1, max: 100000, step: 100, def: 10000 },
+      { id: "years", label: "HORIZON (Y)", min: 1, max: 10, step: 1, def: 5, int: true },
+      { id: "discount_rate", label: "WACC", min: 0.04, max: 0.20, step: 0.0025, def: 0.10, pct: true },
+      { id: "terminal_growth", label: "TERMINAL G", min: 0.0, max: 0.05, step: 0.0025, def: 0.03, pct: true },
+    ],
+  },
 ];
 
 /* ------------------------------------------------------------------------ *
@@ -226,6 +241,7 @@ const state = {
   ib: { pkgsReady: false, fns: null, extracted: null, report: null,
         liveRf: null, rfSource: null, fx: null, fxDate: null,
         period: "auto", mode: "auto", dirty: {}, selected: null },
+  rdcf: { mode: "manual", ticker: "" },  // Reverse DCF price-source toggle
 };
 
 /* ------------------------------------------------------------------------ *
@@ -614,8 +630,107 @@ function selectModel(mn) {
 
   const body = $("#pform");
   body.innerHTML = "";
+  if (mn === "RDCF") body.appendChild(buildRDCFPriceSource());
   model.params.forEach((p) => body.appendChild(paramRow(p)));
+  if (mn === "RDCF") applyRDCFPriceMode();
   scheduleRun(0);
+}
+
+/* --------------------------- Reverse DCF price source -------------------- *
+ * Two user-selectable price-input modes, not a single hardcoded default:
+ * MANUAL (the user types a price — the ordinary slider param) or LIVE (this
+ * platform fetches a named security's current price via api/quotes?sym=).
+ *
+ * Why the disclosures differ by mode: SEBI's uniform 30-day price-data usage
+ * lag (circular effective 1 Jul 2026) applies to an entity "engaged solely in
+ * education" that uses market price data tied to specific securities. LIVE
+ * mode has this platform itself sourcing and using a live price, so it
+ * carries a disclosure attached to that mode specifically — not buried in a
+ * general Terms page. MANUAL mode doesn't trigger the same rule (the price is
+ * user-supplied), so it only gets the lighter, always-visible disclaimer.
+ * The LIVE-mode copy is drafted here for review, not legal sign-off — see the
+ * Phase 2 summary this shipped with.                                        */
+function buildRDCFPriceSource() {
+  const wrap = document.createElement("div");
+  wrap.className = "rdcf-src";
+  wrap.innerHTML = `
+    <div class="tgl">
+      <button type="button" data-mode="manual">MANUAL ENTRY</button>
+      <button type="button" data-mode="live">LIVE PRICE</button>
+    </div>
+    <div class="fetch">
+      <input type="text" placeholder="TICKER — e.g. AAPL, RELIANCE.NS" maxlength="16">
+      <button type="button">FETCH LIVE PRICE</button>
+    </div>
+    <div class="rdcf-disclosure general">
+      <b>ⓘ NOT INVESTMENT ADVICE.</b> This is a calculator applying a standard DCF identity to
+      numbers you provide (or a security's market price, in LIVE mode). It is not a
+      recommendation to buy or sell, and FINMODELS TERMINAL is not a registered investment
+      adviser or research analyst.
+    </div>
+    <div class="rdcf-disclosure live">
+      <b>⚠ SEBI DISCLOSURE — LIVE PRICE MODE.</b> This mode fetches a live market price tied to a
+      specific security. Per SEBI's price-data usage circular (effective 1 Jul 2026), this
+      output is a mechanical calculator result, not investment education or advice, and this
+      platform is not acting as a "research analyst" under the SEBI (Research Analysts)
+      Regulations. Data shown may be delayed and is provided for illustrative, calculator-only
+      use. <i>Draft disclosure — pending legal review before this mode is used in production.</i>
+    </div>
+  `;
+  wrap.querySelectorAll(".tgl button").forEach((b) => { b.onclick = () => setRDCFMode(b.dataset.mode); });
+  const tickerInput = wrap.querySelector(".fetch input");
+  tickerInput.value = state.rdcf.ticker;
+  const doFetch = () => fetchRDCFPrice(tickerInput.value.trim().toUpperCase());
+  wrap.querySelector(".fetch button").onclick = doFetch;
+  tickerInput.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); doFetch(); } });
+  return wrap;
+}
+
+function setRDCFMode(mode) {
+  state.rdcf.mode = mode;
+  applyRDCFPriceMode();
+}
+
+function applyRDCFPriceMode() {
+  const src = $(".rdcf-src");
+  if (!src) return;
+  const live = state.rdcf.mode === "live";
+  src.querySelectorAll(".tgl button").forEach((b) => b.classList.toggle("on", b.dataset.mode === state.rdcf.mode));
+  src.querySelector(".fetch").style.display = live ? "flex" : "none";
+  src.querySelector(".rdcf-disclosure.live").style.display = live ? "block" : "none";
+  // MANUAL mode's price slider IS the input; LIVE mode's fetch replaces it.
+  const priceRow = document.querySelector('.prow[data-pid="current_price"]');
+  if (priceRow) priceRow.style.display = live ? "none" : "";
+}
+
+async function fetchRDCFPrice(ticker) {
+  if (!ticker) return;
+  state.rdcf.ticker = ticker;
+  const btn = document.querySelector(".rdcf-src .fetch button");
+  if (!btn) return;
+  const original = btn.textContent;
+  btn.disabled = true; btn.textContent = "FETCHING…";
+  try {
+    const r = await fetch(`api/quotes?sym=${encodeURIComponent(ticker)}`,
+      { cache: "no-store", signal: AbortSignal.timeout(9000) });
+    let j = {};
+    try { j = await r.json(); } catch { /* non-JSON error body */ }
+    if (!r.ok || !j.ok) throw new Error(j.error || `HTTP ${r.status}`);
+    state.values.current_price = j.price;
+    const priceParam = state.current.params.find((p) => p.id === "current_price");
+    const priceRow = document.querySelector('.prow[data-pid="current_price"]');
+    if (priceRow && priceParam) {
+      priceRow.querySelector("input[type=range]").value = j.price;
+      priceRow.querySelector(".val").value = fmtParam(priceParam, j.price);
+    }
+    btn.textContent = `${ticker} = ${ccySymbol()}${j.price.toFixed(2)} ✓`;
+    scheduleRun(0);
+  } catch (err) {
+    btn.textContent = "FETCH FAILED";
+    console.error("RDCF live price fetch failed:", err);
+  } finally {
+    setTimeout(() => { if (btn) { btn.disabled = false; btn.textContent = original; } }, 2500);
+  }
 }
 
 function fmtParam(p, v) {
@@ -635,6 +750,7 @@ function moneyLabelHTML(p) {
 function paramRow(p) {
   const row = document.createElement("div");
   row.className = "prow";
+  row.dataset.pid = p.id;
   const label = p.money ? moneyLabelHTML(p) : `<label>${p.label}</label>`;
 
   if (p.select) {
@@ -761,7 +877,10 @@ function renderResults(model, payload) {
     tr.innerHTML = `<td class="k">${k.replace(/_/g, " ").toUpperCase()}</td><td class="v ${cls}">${vs}</td>`;
     grid.appendChild(tr);
   };
-  Object.entries(payload.results).forEach(([k, v]) => addRow(k, v, false));
+  Object.entries(payload.results).forEach(([k, v]) => {
+    if (model.mn === "RDCF" && k === "solver_note") return;  // shown as the advisory row below
+    addRow(k, v, false);
+  });
   Object.entries(payload.extras || {}).forEach(([k, v]) => {
     if (k !== "figure_error") addRow(k, v, true);
   });
@@ -794,6 +913,24 @@ function renderResults(model, payload) {
       contingent liabilities lowers adjusted equity value by ${erosion} vs. the reported figure. Owner earnings of
       ${fmtValue("owner_earnings", r.owner_earnings)} vs. reported net income of ${fmtValue("net_income", state.values.net_income)}
       reflect reversing capitalised R&D and expensing it as spent instead.</td>`;
+    grid.appendChild(note);
+  }
+  // RDCF: what growth the price implies, or why no growth rate in-range
+  // justifies it — the reverse solve's whole point, so it's front and centre.
+  if (model.mn === "RDCF") {
+    const r = payload.results;
+    const note = document.createElement("tr");
+    note.className = "advisory";
+    if (r.implied_fcf_cagr === null) {
+      note.innerHTML = `<td colspan="2">⚠ ${r.solver_note}</td>`;
+    } else {
+      const cagrPct = (r.implied_fcf_cagr * 100).toFixed(2) + "%";
+      const tamPct = typeof r.implied_tam_capture === "number"
+        ? (r.implied_tam_capture * 100).toFixed(2) + "%" : "n/a";
+      note.innerHTML = `<td colspan="2">⚠ MARKET-IMPLIED EXPECTATIONS — this price requires the market to believe
+        FCF grows ${cagrPct}/yr for ${state.values.years} years, reaching ${tamPct} of the assumed TAM by year
+        ${state.values.years}. Judge that against the company's real growth history and TAM before trusting the price.</td>`;
+    }
     grid.appendChild(note);
   }
   $("#output header .title").textContent = `OUTPUT — ${model.mn}`;

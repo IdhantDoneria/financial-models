@@ -24,6 +24,7 @@ from .gordon_growth import GordonGrowthModel
 from .ind_as_hidden_debt import IndASHiddenDebtModel
 from .monte_carlo import MonteCarloOptionModel
 from .mpt import ModernPortfolioTheoryModel
+from .reverse_dcf import ReverseDCFModel
 from .scorer import ModelScore, ModelScorer, score_all
 from .stochastic_volatility import HestonModel
 from .var_cvar import ValueAtRiskModel
@@ -43,6 +44,7 @@ ALL_MODELS: list[type[BaseFinancialModel]] = [
     MonteCarloOptionModel,
     HestonModel,
     IndASHiddenDebtModel,
+    ReverseDCFModel,
 ]
 
 __all__ = [
@@ -50,6 +52,6 @@ __all__ = [
     "BinomialTreeModel", "BlackScholesModel", "CAPMModel",
     "DiscountedCashFlowModel", "FamaFrenchModel", "GordonGrowthModel",
     "MonteCarloOptionModel", "ModernPortfolioTheoryModel", "HestonModel",
-    "ValueAtRiskModel", "IndASHiddenDebtModel",
+    "ValueAtRiskModel", "IndASHiddenDebtModel", "ReverseDCFModel",
     "ModelScore", "ModelScorer", "score_all", "ALL_MODELS",
 ]

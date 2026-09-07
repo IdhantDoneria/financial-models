@@ -57,15 +57,37 @@ async function quote(s) {
   }
 }
 
+//: Ad-hoc single-symbol lookup — used by the Reverse DCF model's optional
+//  "live price" mode (a user-typed ticker, not the fixed tape basket above).
+//  Same Yahoo Finance chart endpoint, same server-side-only fetch (the
+//  browser still can't reach Yahoo directly), just parameterised by
+//  `?sym=` instead of the hardcoded SYMBOLS list.
+const SYM_RE = /^[A-Za-z0-9.\-^=]{1,16}$/;   // conservative allowlist — no path/query injection
+
 module.exports = async (req, res) => {
+  const url = new URL(req.url || "/", "http://internal");
+  const sym = url.searchParams.get("sym");
+
+  res.setHeader("Content-Type", "application/json; charset=utf-8");
+  res.setHeader("Access-Control-Allow-Origin", "*");
+
+  if (sym) {
+    // Single ad-hoc quote: no CDN caching (a user just typed this ticker;
+    // stale-serving a 30s-old *different* symbol's edge-cache entry would
+    // be a correctness bug, not just a freshness one), so no-store instead.
+    res.setHeader("Cache-Control", "no-store");
+    if (!SYM_RE.test(sym)) return res.status(400).json({ ok: false, error: "invalid symbol" });
+    const q = await quote({ sym, label: sym, money: true });
+    if (!q) return res.status(502).json({ ok: false, error: `could not fetch a quote for ${sym}` });
+    return res.status(200).json({ ok: true, symbol: sym, price: q.price, pct: q.pct, ts: Date.now() });
+  }
+
   const settled = await Promise.all(SYMBOLS.map(quote));
   const quotes = settled.filter(Boolean);
-  res.setHeader("Content-Type", "application/json; charset=utf-8");
   // Serve stale instantly while revalidating in the background — the tape is
   // never blocked on a cold Yahoo fetch. Kept short so the shared edge cache
   // can't hold a quote for long even in the worst case (revalidation failing
   // repeatedly); the client itself polls this endpoint every 60s regardless.
   res.setHeader("Cache-Control", "public, s-maxage=30, stale-while-revalidate=90");
-  res.setHeader("Access-Control-Allow-Origin", "*");
   res.status(200).json({ ts: Date.now(), quotes });
 };

@@ -31,6 +31,7 @@ from src import (
     IndASHiddenDebtModel,
     ModernPortfolioTheoryModel,
     MonteCarloOptionModel,
+    ReverseDCFModel,
     ValueAtRiskModel,
 )
 
@@ -169,11 +170,21 @@ def _build_hdebt(p: dict) -> IndASHiddenDebtModel:
     )
 
 
+def _build_rdcf(p: dict) -> ReverseDCFModel:
+    return ReverseDCFModel(
+        current_price=p["current_price"], shares_outstanding=p["shares_outstanding"],
+        net_debt=p["net_debt"], base_fcf=p["base_fcf"], base_revenue=p["base_revenue"],
+        total_addressable_market=p["total_addressable_market"],
+        years=int(p["years"]), discount_rate=p["discount_rate"],
+        terminal_growth=p["terminal_growth"],
+    )
+
+
 BUILDERS: dict[str, Callable[[dict], Any]] = {
     "DCF": _build_dcf, "GG": _build_gg, "MPT": _build_mpt, "VAR": _build_var,
     "CAPM": _build_capm, "FF3": _build_ff3, "BSM": _build_bsm,
     "CRR": _build_crr, "MC": _build_mc, "HES": _build_hes,
-    "HDEBT": _build_hdebt,
+    "HDEBT": _build_hdebt, "RDCF": _build_rdcf,
 }
 
 

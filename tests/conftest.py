@@ -17,6 +17,7 @@ from src import (
     IndASHiddenDebtModel,
     ModernPortfolioTheoryModel,
     MonteCarloOptionModel,
+    ReverseDCFModel,
     ValueAtRiskModel,
 )
 
@@ -65,6 +66,10 @@ def make_instance(cls: type) -> object:
             cl1_amount=200, cl1_probability=0.25, cl2_amount=100, cl2_probability=0.10,
             depreciation_amortization=40, rd_capitalized_amortization=15,
             rd_cash_spend=25, maintenance_capex=30),
+        ReverseDCFModel: lambda: cls(
+            current_price=42.0, shares_outstanding=100, net_debt=200,
+            base_fcf=100, base_revenue=1000, total_addressable_market=10000,
+            years=5, discount_rate=0.10, terminal_growth=0.03),
     }
     return builders[cls]()
 
