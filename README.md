@@ -7,7 +7,7 @@
 > (the actual `src/*.py` files, running on CPython compiled to WebAssembly — no server).
 > Type a mnemonic (`BSM`, `DCF`, `HES`, …) and press `<GO>`.
 
-Each model is a self-contained class with a common interface (`calculate()` · `explain()` · `visualize()`), literature-sourced numerical benchmarks, and an automated scorer that grades it on three metrics. **All ten models score 10/10 on all three metrics**, and the full suite is covered by 88 passing tests.
+Each model is a self-contained class with a common interface (`calculate()` · `explain()` · `visualize()`), literature-sourced numerical benchmarks, and an automated scorer that grades it on three metrics. **All ten models self-score 10/10 on all three metrics** (an internal quality bar computed by this repo's own `src/scorer.py`, not a third-party audit), and the full suite is covered by 88 passing tests.
 
 ---
 
@@ -57,11 +57,12 @@ Each model exposes a `reference_benchmarks()` classmethod returning literature/i
 parity holds to `4.5e-16`; the binomial tree converges to Black-Scholes; Heston reduces to
 Black-Scholes as ξ→0 with relative error `4e-09`).
 
-## Metric scores
+## Metric scores (self-assessed)
 
-Scores are **computed by `src/scorer.py`**, not asserted — via AST analysis (docstring
-coverage, comment density, type-hint coverage) plus runtime probes (running each model's
-benchmarks, rendering its explanation and figure).
+Scores are **computed by `src/scorer.py`**, this repo's own scorer, not asserted by hand — via
+AST analysis (docstring coverage, comment density, type-hint coverage) plus runtime probes
+(running each model's benchmarks, rendering its explanation and figure). This is an internal,
+self-graded check the code runs on itself, not an independent or third-party audit.
 
 | Model | Pedagogical clarity | Numerical accuracy | Production readiness | Total |
 |-------|:---:|:---:|:---:|:---:|
