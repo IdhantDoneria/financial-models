@@ -1,19 +1,19 @@
 # 📈 Financial Models
 
-**Ten canonical models of quantitative finance — mathematically validated, pedagogically documented, and production-hardened — in one integrated Python + Jupyter codebase.**
+**Twelve canonical models of quantitative finance — mathematically validated, pedagogically documented, and production-hardened — in one integrated Python + Jupyter codebase.**
 
 > **▶ Run them live: [financial-models-six.vercel.app](https://financial-models-six.vercel.app)** — a
-> Bloomberg-terminal-style interface where all ten models execute **in your browser**
+> Bloomberg-terminal-style interface where all twelve models execute **in your browser**
 > (the actual `src/*.py` files, running on CPython compiled to WebAssembly — no server).
 > Type a mnemonic (`BSM`, `DCF`, `HES`, …) and press `<GO>`.
 
-Each model is a self-contained class with a common interface (`calculate()` · `explain()` · `visualize()`), literature-sourced numerical benchmarks, and an automated scorer that grades it on three metrics. **All ten models self-score 10/10 on all three metrics** (an internal quality bar computed by this repo's own `src/scorer.py`, not a third-party audit), and the full suite is covered by 88 passing tests.
+Each model is a self-contained class with a common interface (`calculate()` · `explain()` · `visualize()`), literature-sourced numerical benchmarks, and an automated scorer that grades it on three metrics. **All twelve models self-score 10/10 on all three metrics** (an internal quality bar computed by this repo's own `src/scorer.py`, not a third-party audit), and the full suite is covered by 112 passing tests.
 
 ---
 
 ## Table of contents
 - [Overview](#overview)
-- [The ten models](#the-ten-models)
+- [The twelve models](#the-twelve-models)
 - [Metric scores](#metric-scores)
 - [Installation](#installation)
 - [Quick start](#quick-start)
@@ -36,8 +36,11 @@ implementations that are simultaneously:
 - **Robust** — strict input validation, structured logging, full type hints, custom exceptions,
   and an extensible base-class architecture (add a model by subclassing and implementing three
   methods).
+- **Defensible** — two premium-only models (see [the moat](#-the-moat-two-models-most-tools-dont-attempt)
+  below) that require real forensic-accounting logic and numerical root-finding, not a
+  spreadsheet template a competitor can clone in an afternoon.
 
-## The ten models
+## The twelve models
 
 | # | Model | Category | Core formula | Reference |
 |---|-------|----------|--------------|-----------|
@@ -51,11 +54,22 @@ implementations that are simultaneously:
 | 8 | **Binomial Tree (CRR)** | Derivatives | p = (e^{(r−q)Δt}−d)/(u−d) | Cox, Ross & Rubinstein (1979) |
 | 9 | **Monte Carlo (GBM)** | Derivatives | Ĉ = e⁻ʳᵀ·E[max(Sₜ−K,0)] | Boyle (1977) |
 | 10 | **Heston Stochastic Volatility** | Derivatives | dvₜ = κ(θ−vₜ)dt + ξ√vₜ dWₜ | Heston (1993) |
+| 11 | **Ind AS 116 Hidden-Debt Normalizer** | Forensic Accounting | L = C·(1−(1+r)⁻ⁿ)/r; adj. debt = net_debt + L + RF + Σ(CLᵢ·pᵢ) | Ind AS 116 / IFRS 16 (2016); Buffett (1986) |
+| 12 | **Reverse DCF (Market-Implied)** | Market-Implied | solve g\*: EV(g\*) = price·shares + net_debt | Rappaport & Mauboussin (2001) |
 
 Each model exposes a `reference_benchmarks()` classmethod returning literature/identity checks
 (e.g. Black-Scholes reproduces Hull Example 15.6 to a relative error of `8.9e-05`; put-call
 parity holds to `4.5e-16`; the binomial tree converges to Black-Scholes; Heston reduces to
 Black-Scholes as ξ→0 with relative error `4e-09`).
+
+### 🛡️ The moat: two models most tools don't attempt
+
+Models 11 and 12 are the terminal's premium tier ([Analyst Pro and above](#-plans--payments--razorpay)) — not the same ten models behind a paywall, but two genuinely harder problems most retail-facing valuation tools skip entirely:
+
+- **Ind AS 116 Hidden-Debt Normalizer (`HDEBT`)** — most tools take reported net debt at face value. This one pulls three categories of leverage that sit in footnotes, not the balance sheet — capitalised operating leases (present-valued at the incremental borrowing rate), disclosed reverse-factoring/supply-chain-finance exposure, and probability-weighted contingent liabilities — and moves them onto it. It also recomputes Buffett-style *owner earnings*, reversing the smoothing effect of capitalised R&D. This is the kind of adjustment a sell-side analyst does by hand; here it's a formula run against a real filing.
+- **Reverse DCF (`RDCF`)** — inverts the standard DCF: instead of a growth assumption producing a price, it takes the market's actual price and numerically root-finds (`scipy.optimize.brentq`) the constant FCF growth rate the price already implies, then translates that into an implied share of a disclosed TAM. It's the "expectations investing" method (Rappaport & Mauboussin, 2001) — few cheap or free tools implement it because it needs a real bracketed solver over a monotonic value function, not a lookup table.
+
+Both self-score 10/10 on the same scorer as the original ten (see [Metric scores](#metric-scores-self-assessed)) and are covered by the same benchmark/interface/scoring test battery — the moat is the domain logic, not looser quality bars.
 
 ## Metric scores (self-assessed)
 
@@ -76,6 +90,8 @@ self-graded check the code runs on itself, not an independent or third-party aud
 | Binomial Tree (CRR) | 10 | 10 | 10 | **10.0** |
 | Monte Carlo (GBM) | 10 | 10 | 10 | **10.0** |
 | Heston Stochastic Volatility | 10 | 10 | 10 | **10.0** |
+| Ind AS 116 Hidden-Debt Normalizer | 10 | 10 | 10 | **10.0** |
+| Reverse DCF (Market-Implied) | 10 | 10 | 10 | **10.0** |
 
 > **Refinement cycles used: 0 of 3.** The design-for-quality approach (shared validated base
 > class, benchmark-driven development) reached 10/10 on the first scoring pass, so no refactor
@@ -130,12 +146,14 @@ financial-models/
 │   ├── dcf.py  mpt.py  capm.py  monte_carlo.py  black_scholes.py
 │   ├── gordon_growth.py  fama_french.py  var_cvar.py
 │   ├── stochastic_volatility.py  binomial.py
+│   ├── ind_as_hidden_debt.py      # Ind AS 116 hidden-debt & owner-earnings normalizer
+│   ├── reverse_dcf.py             # reverse DCF / market-implied expectations solver
 │   └── scorer.py                  # automated 3-metric scoring engine
 ├── tests/
 │   ├── conftest.py                # representative instance factory
-│   ├── test_models.py             # 75 tests: accuracy · interface · robustness · scoring
+│   ├── test_models.py             # 87 tests: accuracy · interface · robustness · scoring
 │   ├── test_web_assets.py         # guard: browser terminal runs the tested sources
-│   └── pipeline/test_pipeline.py  # 8 tests: PDF analyzer end-to-end
+│   └── pipeline/test_pipeline.py  # 20 tests: PDF analyzer end-to-end
 ├── scripts/build_notebook.py      # regenerates the notebook from source
 ├── scripts/sync_web_assets.py     # syncs src/ + FF data into public/ for the terminal
 ├── scripts/e2e_terminal.py        # headless-Chromium check: all 10 models in-browser
@@ -177,13 +195,13 @@ Tested end-to-end: synthetic 10-K → extract → run all 10 models → export P
 ## Testing & scoring
 
 ```bash
-pytest tests/ -q          # 88 tests
+pytest tests/ -q          # 112 tests
 ```
 
 The suite validates: every model's benchmarks (numerical accuracy), the
 `calculate`/`explain`/`visualize` interface contract, edge-case rejection
 (`ValidationError` on negative spot, zero volatility, discount rate ≤ growth, etc.), and
-asserts the full 10/10 scorecard. Tests also run in CI via GitHub Actions
+asserts the full 10/10 scorecard across all twelve models. Tests also run in CI via GitHub Actions
 (`.github/workflows/tests.yml`).
 
 ## Live data
@@ -201,7 +219,7 @@ network failure, and raises a clear `ModelError` if neither source is available.
 
 ## 🖥️ FINMODELS Terminal (the deployed site)
 
-The Vercel deployment is not a static showcase — it is the product. All ten models run
+The Vercel deployment is not a static showcase — it is the product. All twelve models run
 **live in the browser**:
 
 | | |
@@ -213,9 +231,10 @@ The Vercel deployment is not a static showcase — it is the product. All ten mo
 | **Live ticker** | A top marquee streaming real prices — WTI crude · Brent · gold · silver · Bitcoin · Ethereum + **15 of the world's most valued indices** (S&P 500, Nasdaq, Dow, FTSE 100, DAX, CAC 40, Euro Stoxx 50, Nikkei, Hang Seng, Shanghai, Nifty 50, TSX, ASX 200, KOSPI, Taiwan) with signed intraday % change. Fed by a same-origin serverless function (`api/quotes.js`, Yahoo server-side, keyless, CDN-cached ~1×/min), with a CoinGecko crypto/gold fallback so it never blanks |
 | **Server** | One tiny keyless serverless function for the ticker feed; everything else is plain static hosting with zero build step |
 
-Mnemonics: `DCF` · `GG` · `MPT` · `VAR` · `CAPM` · `FF3` · `BSM` · `CRR` · `MC` · `HES`
-(also `HELP`, and `IB` for the PDF analyzer below). Every slider change re-runs the real
-Python model in ~0–15 ms once booted.
+Mnemonics: `DCF` · `GG` · `MPT` · `VAR` · `CAPM` · `FF3` · `BSM` · `CRR` · `MC` · `HES` ·
+`HDEBT` · `RDCF` (the last two gated to Analyst Pro and above — also `HELP`, and `IB` for
+the PDF analyzer below). Every slider change re-runs the real Python model in ~0–15 ms
+once booted.
 
 ### 📊 Scenario & sensitivity engine (SCEN tab)
 
@@ -462,6 +481,11 @@ The static about page lives at [`/about`](https://financial-models-six.vercel.ap
 - Gordon, M. (1959). *Dividends, Earnings, and Stock Prices.* RES.
 - Hull, J. (2018). *Options, Futures, and Other Derivatives*, 10th ed.
 - Damodaran, A. *Investment Valuation.* Wiley. · Jorion, P. *Value at Risk.* McGraw-Hill.
+- IASB / ICAI. *Ind AS 116 / IFRS 16, Leases* (2016). · IASB. *Amendments to IAS 7 and
+  IFRS 7: Supply Chain Financing Arrangements* (2023).
+- Buffett, W. E. (1986). *Berkshire Hathaway Shareholder Letter* — owner earnings.
+- Rappaport, A. & Mauboussin, M. J. (2001). *Expectations Investing: Reading Stock Prices
+  for Better Returns.* Harvard Business School Press.
 
 ## License
 
