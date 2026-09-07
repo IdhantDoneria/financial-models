@@ -8,6 +8,7 @@
   },
   "scripts": {
     "test:auth": "node scripts/test_auth_api.js",
+    "test:auth-google": "node scripts/test_auth_google.js",
     "test:otp-stress": "node scripts/stress_otp.js",
     "dev:auth": "node scripts/dev_auth_server.js"
   },

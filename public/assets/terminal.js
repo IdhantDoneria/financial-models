@@ -241,12 +241,14 @@ function signOut() {
   location.replace("login.html");
 }
 
-//: Server (OTP) sessions are validated against the backend after boot; a
-//  revoked/expired token signs the visitor out instead of trusting local
-//  state forever. Device-local and guest sessions have no server to ask.
+//: Server-backed sessions (email-OTP/password, or Google now that it's
+//  verified server-side too) are validated against the backend after boot;
+//  a revoked/expired token signs the visitor out instead of trusting local
+//  state forever. Device-local and guest sessions carry no token, so they
+//  have no server to ask and this is a no-op for them.
 async function validateServerSession() {
   const u = state.user;
-  if (!u || u.provider !== "otp" || !u.token) return;
+  if (!u || !u.token) return;
   try {
     const r = await fetch("api/auth-me",
       { headers: { Authorization: "Bearer " + u.token }, signal: AbortSignal.timeout(10000) });

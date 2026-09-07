@@ -12,6 +12,7 @@ const HANDLERS = {
   "request-otp": require("./_handlers/auth-request-otp.js"),
   "verify-otp": require("./_handlers/auth-verify-otp.js"),
   "login": require("./_handlers/auth-login.js"),
+  "google": require("./_handlers/auth-google.js"),
   "me": require("./_handlers/auth-me.js"),
   "logout": require("./_handlers/auth-logout.js"),
 };
