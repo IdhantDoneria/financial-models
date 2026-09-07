@@ -630,10 +630,46 @@ function selectModel(mn) {
 
   const body = $("#pform");
   body.innerHTML = "";
+
+  if (PREMIUM_MODELS.has(mn)) {
+    body.innerHTML = `<div class="plan-lock">CHECKING PLAN…</div>`;
+    premiumModelGate().then((gate) => {
+      if (state.current !== model) return;   // user navigated away while checking
+      if (!gate.allowed) { renderPremiumLocked(gate.reason); return; }
+      buildModelForm(model, mn);
+    });
+    return;
+  }
+  buildModelForm(model, mn);
+}
+
+function buildModelForm(model, mn) {
+  const body = $("#pform");
+  body.innerHTML = "";
   if (mn === "RDCF") body.appendChild(buildRDCFPriceSource());
   model.params.forEach((p) => body.appendChild(paramRow(p)));
   if (mn === "RDCF") applyRDCFPriceMode();
   scheduleRun(0);
+}
+
+//: Blocks entry to a premium model for a free-tier (or signed-out) visitor —
+//  clears the output/chart/doc panels too, so nothing from the previously
+//  selected model lingers behind the lock notice.
+function renderPremiumLocked(reason) {
+  const body = $("#pform");
+  body.innerHTML = `<div class="plan-lock"><b>🔒 ANALYST PRO REQUIRED.</b> ${reason}</div>`;
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.textContent = "VIEW PLANS";
+  btn.onclick = () => openMenuTab("plan");
+  body.querySelector(".plan-lock").appendChild(document.createElement("br"));
+  body.querySelector(".plan-lock").appendChild(btn);
+  $("#ogrid").innerHTML = "";
+  $("#oerr").style.display = "none";
+  $("#ostat").textContent = "LOCKED";
+  $("#ostat").className = "meta";
+  $("#doc").innerHTML = "";
+  if (window.Plotly) Plotly.purge("chart");
 }
 
 /* --------------------------- Reverse DCF price source -------------------- *
@@ -2135,12 +2171,20 @@ async function runSensitivityGrid() {
 
 /* ======================================================================== *
  * BILLING — Razorpay plans, upload metering, PLAN tab.
- * FREE: 5 uploads/mo · ANALYST PRO ₹299/mo: 50 uploads · DESK UNLIMITED
- * ₹499/mo (MRP ₹599): unlimited. "Upload" = one IB-desk PDF analysis.
- * Amounts are authoritative server-side (api/_lib/billing.js); checkout is
- * Razorpay's hosted modal; payment proof is verified server-side. Until
- * RAZORPAY_* env vars exist, billing reports offline and nothing is gated.
+ * FREE: 3 uploads/mo · ANALYST PRO ₹299/mo or ₹2,499/yr: 50 uploads, plus
+ * the Ind AS hidden-debt normalizer and reverse-DCF solver · DESK UNLIMITED
+ * ₹599/mo or ₹4,999/yr: unlimited uploads. "Upload" = one IB-desk PDF
+ * analysis. Amounts are authoritative server-side (api/_lib/billing.js);
+ * checkout is Razorpay's hosted modal; payment proof is verified
+ * server-side. Until RAZORPAY_* env vars exist, billing reports offline
+ * and nothing is gated.
  * ======================================================================== */
+
+//: The two new models this pass shipped — available from ANALYST PRO up.
+//  Purely a client-side UX gate (see premiumModelGate()): like every other
+//  model's math, there is no server round-trip to enforce this more
+//  strongly, the same trust model the other 10 models already have.
+const PREMIUM_MODELS = new Set(["HDEBT", "RDCF"]);
 
 async function getBillingCfg() {
   if (state.billing.cfg) return state.billing.cfg;
@@ -2153,7 +2197,10 @@ async function getBillingCfg() {
 
 async function refreshUsage() {
   const u = state.user;
-  if (!u || u.provider !== "otp" || !u.token) return null;
+  // Any server-backed session (email-OTP/password, or Google since it was
+  // wired to a real server-side account) carries a bearer token — guest and
+  // device-local-only sessions don't, and have nothing for /api/usage to look up.
+  if (!u || !u.token) return null;
   try {
     const r = await fetch("api/usage",
       { headers: { Authorization: "Bearer " + u.token }, signal: AbortSignal.timeout(8000) });
@@ -2194,9 +2241,9 @@ async function uploadGate() {
   const cfg = await getBillingCfg();
   if (!cfg || !cfg.billing) return { allowed: true, metered: false };
   const u = state.user;
-  if (!u || u.provider !== "otp" || !u.token) {
+  if (!u || !u.token) {
     return { allowed: false, upgrade: true,
-      reason: "UPLOADS NEED AN EMAIL ACCOUNT — SIGN OUT & SIGN IN WITH EMAIL (FREE PLAN: 5/MO)" };
+      reason: "UPLOADS NEED A SERVER-BACKED ACCOUNT — SIGN OUT & SIGN IN WITH EMAIL OR GOOGLE (FREE PLAN: 3/MO)" };
   }
   const us = await refreshUsage();
   if (!us) return { allowed: true, metered: false };   // fail-open on hiccup
@@ -2205,6 +2252,26 @@ async function uploadGate() {
       reason: `MONTHLY UPLOAD LIMIT REACHED (${us.used}/${us.limit}) — UPGRADE IN MENU ▸ PLAN` };
   }
   return { allowed: true, metered: true };
+}
+
+/* ------------------------- premium model gate --------------------------- *
+ * HDEBT and RDCF (Ind AS hidden-debt normalizer, reverse-DCF solver) need
+ * ANALYST PRO or higher. Mirrors uploadGate()'s shape/fail-open behaviour.  */
+async function premiumModelGate() {
+  const cfg = await getBillingCfg();
+  if (!cfg || !cfg.billing) return { allowed: true };   // billing offline -> open
+  const u = state.user;
+  if (!u || !u.token) {
+    return { allowed: false,
+      reason: "This tool needs a server-backed account on ANALYST PRO or higher — sign out and sign in with email or Google, then upgrade." };
+  }
+  const us = await refreshUsage();
+  if (!us) return { allowed: true };   // fail-open on a network hiccup
+  if (us.plan === "free") {
+    return { allowed: false,
+      reason: "This tool requires ANALYST PRO or higher — upgrade to unlock the Ind AS hidden-debt normalizer and reverse-DCF solver." };
+  }
+  return { allowed: true };
 }
 
 async function consumeUpload() {
@@ -2219,12 +2286,16 @@ async function consumeUpload() {
 }
 
 /* ------------------------------ PLAN tab -------------------------------- */
+//: Paid plans show both billing periods side by side — a toggle would hide
+//  half the picture, and these cards have room for two short price lines.
 function planPriceHTML(p) {
   if (p.contact) return `<div class="pprice">CUSTOM <small>TAILORED TO YOUR DESK</small></div>`;
-  if (!p.priceInr) return `<div class="pprice">₹0 <small>FOREVER</small></div>`;
-  const strike = p.mrpInr ? `<s>₹${p.mrpInr}</s> ` : "";
-  const save = p.mrpInr ? `<span class="psave">SAVE ₹${p.mrpInr - p.priceInr}</span>` : "";
-  return `<div class="pprice">${strike}₹${p.priceInr} <small>/ MO</small> ${save}</div>`;
+  if (!p.periods) return `<div class="pprice">₹0 <small>FOREVER</small></div>`;
+  const { monthly, annual } = p.periods;
+  return `<div class="pprice">
+    <div class="pp-period">₹${monthly.priceInr} <small>/ MO</small></div>
+    <div class="pp-period">₹${annual.priceInr.toLocaleString("en-IN")} <small>/ YR</small></div>
+  </div>`;
 }
 
 async function renderPlanTab(body) {
@@ -2232,7 +2303,7 @@ async function renderPlanTab(body) {
   const cfg = await getBillingCfg();
   const us = cfg && cfg.billing ? await refreshUsage() : null;
   const u = state.user;
-  const isOtp = u && u.provider === "otp" && u.token;
+  const isOtp = u && !!u.token;   // any server-backed session — email/password, OTP, or Google
   const current = us ? us.plan : "free";
 
   let head = "";
@@ -2240,9 +2311,9 @@ async function renderPlanTab(body) {
     head = `<div class="pnote">BILLING OFFLINE — every feature is currently free and unmetered.
       Paid plans activate when the operator connects Razorpay (see README).</div>`;
   } else if (!isOtp) {
-    head = `<div class="pnote warn">Plans attach to email accounts. You're browsing as
+    head = `<div class="pnote warn">Plans attach to a server-backed account. You're browsing as
       <b>${(u && u.provider ? u.provider : "guest").toUpperCase()}</b> — SIGN OUT and sign back in
-      with <b>EMAIL ME A CODE</b> to use the free tier (5 uploads/mo) or subscribe.</div>`;
+      with email or Google to use the free tier (3 uploads/mo) or subscribe.</div>`;
   } else if (us) {
     const lim = us.limit === null ? "∞" : us.limit;
     const pctUsed = us.limit === null ? 0 : Math.min(100, (us.used / us.limit) * 100);
@@ -2271,14 +2342,31 @@ async function renderPlanTab(body) {
   }
 
   const plans = (cfg && cfg.plans) || [
-    { id: "free", name: "FREE", priceInr: 0, uploads: 5, blurb: "5 company uploads / month · all 10 models · SCEN engine" },
-    { id: "pro", name: "ANALYST PRO", priceInr: 299, uploads: 50, blurb: "50 company uploads / month · everything in FREE" },
-    { id: "unlimited", name: "DESK UNLIMITED", priceInr: 499, mrpInr: 599, uploads: null, blurb: "Unlimited uploads · everything in PRO" },
-    { id: "enterprise", name: "ENTERPRISE", priceInr: 0, uploads: null, contact: true, seats: 20,
+    { id: "free", name: "FREE", periods: null, uploads: 3, blurb: "3 company uploads / month · all 10 models · SCEN engine" },
+    { id: "pro", name: "ANALYST PRO", uploads: 50,
+      periods: { monthly: { priceInr: 299 }, annual: { priceInr: 2499 } },
+      blurb: "50 company uploads / month · Ind AS hidden-debt normalizer & reverse-DCF solver · everything in FREE" },
+    { id: "unlimited", name: "DESK UNLIMITED", uploads: null,
+      periods: { monthly: { priceInr: 599 }, annual: { priceInr: 4999 } },
+      blurb: "Unlimited uploads · everything in PRO" },
+    { id: "enterprise", name: "ENTERPRISE", periods: null, uploads: null, contact: true, seats: 20,
       blurb: "Unrestricted access to the entire platform with unlimited analyses, guaranteed priority compute during peak traffic, provisioning for up to 20 team members, and early access to new capabilities ahead of general release — with dedicated onboarding and priority support." },
   ];
   const salesEmail = (cfg && cfg.contactEmail) || "sales@finmodels.app";
   const canBuy = cfg && cfg.billing && isOtp;
+  //: One buy button per billing period on paid plans, instead of duplicating
+  //  the whole card — keeps a single "current plan" per plan family and a
+  //  single stable .pcard.<id> selector regardless of which period a buyer picks.
+  const buyButtons = (p) => {
+    if (current === p.id) return `<button class="pbuy" disabled>CURRENT PLAN</button>`;
+    if (!cfg || !cfg.billing) return `<button class="pbuy" disabled>OFFLINE</button>`;
+    return `<div class="pbuyrow">
+      <button class="pbuy" data-plan="${p.id}" data-period="monthly" ${canBuy ? "" : "disabled"}>
+        MONTHLY — ₹${p.periods.monthly.priceInr}</button>
+      <button class="pbuy" data-plan="${p.id}" data-period="annual" ${canBuy ? "" : "disabled"}>
+        ANNUAL — ₹${p.periods.annual.priceInr.toLocaleString("en-IN")}</button>
+    </div>`;
+  };
   body.innerHTML = `<h3>PLANS &amp; USAGE</h3>${head}
     <div class="pcards">${plans.map((p) => `
       <div class="pcard ${p.id} ${current === p.id ? "cur" : ""}">
@@ -2293,15 +2381,14 @@ async function renderPlanTab(body) {
           ? `<a class="pbuy contact" href="mailto:${salesEmail}?subject=${encodeURIComponent("Enterprise enquiry — FINMODELS TERMINAL")}">CONTACT SALES</a>`
           : p.id === "free"
             ? `<button class="pbuy" disabled>${current === "free" ? "CURRENT PLAN" : "INCLUDED"}</button>`
-            : `<button class="pbuy" data-plan="${p.id}" ${canBuy && current !== p.id ? "" : "disabled"}>
-               ${current === p.id ? "CURRENT PLAN" : cfg && cfg.billing ? `UPGRADE — ₹${p.priceInr}` : "OFFLINE"}</button>`}
+            : buyButtons(p)}
       </div>`).join("")}</div>
-    <div class="pnote" id="pmsg">Paid plans are 30-day passes — renewing or upgrading early credits your
-      unused days. Payments are processed by Razorpay (UPI · cards · netbanking · wallets); this site
-      never sees card details. An upload = one IB-desk PDF analysis; model runs and the SCEN engine
-      are never metered.</div>`;
+    <div class="pnote" id="pmsg">Paid plans are day-based passes (30 for monthly, 365 for annual) —
+      renewing or upgrading early credits your unused days. Payments are processed by Razorpay
+      (UPI · cards · netbanking · wallets); this site never sees card details. An upload = one
+      IB-desk PDF analysis; model runs and the SCEN engine are never metered.</div>`;
   body.querySelectorAll(".pbuy[data-plan]").forEach((b) => {
-    b.onclick = () => startCheckout(b.dataset.plan);
+    b.onclick = () => startCheckout(b.dataset.plan, b.dataset.period);
   });
 }
 
@@ -2331,7 +2418,7 @@ async function devFakeSignature(msg) {
   return [...new Uint8Array(sig)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-async function startCheckout(plan) {
+async function startCheckout(plan, period) {
   const cfg = await getBillingCfg();
   const u = state.user;
   if (!cfg || !cfg.billing || !u || !u.token) return;
@@ -2341,7 +2428,7 @@ async function startCheckout(plan) {
     const r = await fetch("api/billing-order", {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: "Bearer " + u.token },
-      body: JSON.stringify({ plan }),
+      body: JSON.stringify({ plan, period }),
     });
     order = await r.json();
     if (!r.ok || !order.ok) throw new Error(order.error || `HTTP ${r.status}`);
@@ -2389,7 +2476,7 @@ async function startCheckout(plan) {
     amount: order.amount,
     currency: order.currency,
     name: "FINMODELS TERMINAL",
-    description: `${order.planName} — 30-DAY PASS`,
+    description: `${order.planName} — ${order.days}-DAY PASS`,
     prefill: { email: u.uid, name: u.name || "" },
     theme: { color: "#ffb000" },
     handler: finalize,

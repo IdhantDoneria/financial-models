@@ -321,16 +321,20 @@ The terminal has a built-in monetisation layer. The metered unit is an **upload*
 
 | Plan | Price | Uploads / month |
 |---|---|---|
-| **FREE** | ₹0 | 5 |
-| **ANALYST PRO** | **₹299 / mo** | 50 |
-| **DESK UNLIMITED** | ~~₹599~~ **₹499 / mo** (SAVE ₹100) | Unlimited |
+| **FREE** | ₹0 | 3 |
+| **ANALYST PRO** | **₹299 / mo** or **₹2,499 / yr** | 50 |
+| **DESK UNLIMITED** | **₹599 / mo** or **₹4,999 / yr** | Unlimited |
 
-Paid plans are **30-day passes** bought through Razorpay Checkout (UPI · cards ·
-netbanking · wallets) — renewing or upgrading early credits the unused days. The
-**MENU ▸ PLAN** tab shows the live usage meter, current plan and upgrade cards; the
-status bar carries a plan chip (e.g. `PLAN ANALYST PRO · 12/50`). Plans attach to
-**email-OTP accounts** (the server identity), so uploads require signing in with email
-once billing is live.
+Analyst Pro and above also unlock the Ind AS 116 hidden-debt normalizer and reverse-DCF
+solver (client-side gated — see `PREMIUM_MODELS` in `terminal.js`); the free tier gets
+the original 10 models only.
+
+Paid plans are **day-based passes** — 30 days for monthly, 365 for annual — bought
+through Razorpay Checkout (UPI · cards · netbanking · wallets); renewing or upgrading
+early credits the unused days. The **MENU ▸ PLAN** tab shows the live usage meter,
+current plan and both billing periods per paid plan; the status bar carries a plan chip
+(e.g. `PLAN ANALYST PRO · 12/50`). Plans attach to a server-backed account (email-OTP/
+password, or Google), so uploads require signing in with one of those once billing is live.
 
 **Security model:** amounts are authoritative **server-side only** (`api/_lib/billing.js`)
 — the client never chooses what it pays; every payment is verified with Razorpay's

@@ -3,8 +3,9 @@
 //
 // Redeems a paid checkout: timing-safe HMAC-SHA256(order|payment, secret)
 // per Razorpay's docs, order must exist, be unexpired, and belong to the
-// calling account. On success the 30-day plan pass is written (idempotent
-// with the webhook path) and the order record is consumed.
+// calling account. On success the plan pass (30 or 365 days, per the
+// order's period) is written (idempotent with the webhook path) and the
+// order record is consumed.
 
 const store = require("../_lib/store");
 const A = require("../_lib/auth");
@@ -35,9 +36,11 @@ module.exports = async (req, res) => {
     if (order.email !== sess.email)
       return A.json(res, 403, { error: "ORDER BELONGS TO A DIFFERENT ACCOUNT" });
 
-    const sub = await B.activate(sess.email, order.plan, paymentId, orderId, "checkout");
+    // `order.period || "monthly"` defends against an in-flight pre-deploy
+    // order record written before this field existed (1hr TTL — self-heals).
+    const sub = await B.activate(sess.email, order.plan, order.period || "monthly", paymentId, orderId, "checkout");
     await store.del(`order:${orderId}`);
-    return A.json(res, 200, { ok: true, subscription: sub, plan: order.plan });
+    return A.json(res, 200, { ok: true, subscription: sub, plan: order.plan, period: order.period });
   } catch (err) {
     return A.json(res, 502, { error: String(err.message || err).slice(0, 180) });
   }

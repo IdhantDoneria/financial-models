@@ -42,14 +42,15 @@ module.exports = async (req, res) => {
     const orderId = pay.order_id;
     // Prefer our own pending-order record; fall back to the order notes we
     // attached at creation (the record may have expired before delivery).
-    let email = null, plan = null;
+    let email = null, plan = null, period = null;
     const rec = await store.get(`order:${orderId}`);
-    if (rec) ({ email, plan } = JSON.parse(rec));
-    if ((!email || !plan) && pay.notes) ({ email, plan } = pay.notes);
-    if (!email || !B.PLANS[plan] || !B.PLANS[plan].amount)
+    if (rec) ({ email, plan, period } = JSON.parse(rec));
+    if ((!email || !plan) && pay.notes) ({ email, plan, period } = pay.notes);
+    period = period || "monthly";   // defends against a pre-period-field order record
+    if (!email || !B.PLANS[plan] || !B.PLANS[plan].periods || !B.PLANS[plan].periods[period])
       return json(200, { ok: true, ignored: "no matching order/plan" });
 
-    const sub = await B.activate(email, plan, pay.id, orderId, "webhook");
+    const sub = await B.activate(email, plan, period, pay.id, orderId, "webhook");
     if (rec) await store.del(`order:${orderId}`);
     return json(200, { ok: true, activated: plan, expiresAt: sub.expiresAt });
   } catch (err) {

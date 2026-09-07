@@ -108,7 +108,7 @@ module.exports = async (req, res) => {
 
     if (body.action === "grant") {
       const plan = String(body.plan || "unlimited");
-      if (!B.PLANS[plan] || !B.PLANS[plan].amount)
+      if (!["pro", "unlimited"].includes(plan))
         return A.json(res, 400, { error: "PLAN MUST BE pro OR unlimited" });
       const days = Math.round(Number(body.days));
       if (!Number.isFinite(days) || days < 1 || days > 365)
