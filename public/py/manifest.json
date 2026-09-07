@@ -1,5 +1,5 @@
 {
-  "synced_at_utc": "2026-09-07T13:06:26+00:00",
+  "synced_at_utc": "2026-09-07T14:49:59+00:00",
   "files": [
     {
       "path": "src/__init__.py",
@@ -59,7 +59,7 @@
     },
     {
       "path": "src/pipeline/pdf_extractor.py",
-      "sha256": "1b676d8b607a4c3a716e294568d0107769c2ec927fcf99361ad5babac71c902a"
+      "sha256": "869e401bcde3a2eb5ab436172014d08bdbefc1ee03708a63bdbcfeee49316d28"
     },
     {
       "path": "src/pipeline/runner.py",

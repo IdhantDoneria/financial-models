@@ -1481,6 +1481,32 @@ async function runIBReport() {
   syncIBButtons();
 }
 
+//: Mirrors web_bridge.py's `_KEY_FIELDS` tuple length — the fields the
+//  extractor reports as FOUND/MISSING (see analyze_pdf()'s `missing` list).
+const IB_KEY_FIELD_COUNT = 15;
+
+//: A report built mostly from auto-assumed generic defaults (a placeholder
+//  price, a 5% growth default, etc.) can still show every model as "OK" —
+//  arithmetically valid numbers with no relationship to the real company.
+//  Unlike a validation-error failure (loud, obvious), that reads as a
+//  complete, confident analysis with nothing to flag it as mostly
+//  fabricated. This banner makes that visible in the one place a user
+//  actually reads the results, not just as per-field badges in the
+//  EXTRACTED DATA panel above (which a user can easily not scroll to).
+function confidenceBannerHTML() {
+  const missing = state.ib.extracted?.missing;
+  if (!missing || !missing.length) return "";
+  const pct = Math.round((missing.length / IB_KEY_FIELD_COUNT) * 100);
+  if (missing.length < IB_KEY_FIELD_COUNT / 2) return "";
+  return `<div class="pnote warn">⚠ LOW-CONFIDENCE EXTRACTION — ${missing.length} of
+    ${IB_KEY_FIELD_COUNT} fields (${pct}%) could not be found in this filing and were
+    filled with generic auto-assumed defaults, not real figures from the document.
+    Every model below still runs and reports "OK" — that only means the arithmetic is
+    valid, not that the inputs describe this company. Check the EXTRACTED DATA panel's
+    AUTO-ASSUMED badges before trusting these numbers, or switch to MANUAL mode to set
+    them yourself.</div>`;
+}
+
 function renderIBReport() {
   const el = $("#report");
   const out = state.ib.report;
@@ -1492,8 +1518,9 @@ function renderIBReport() {
     return;
   }
   const company = state.ib.extracted?.fields?.company_name || "UPLOADED COMPANY";
-  let html = `<h2>REPORT — ${company.toUpperCase()} · ${out.mode.toUpperCase()} MODE</h2>
-    <table><tr><th>MODEL</th><th>HEADLINE RESULT</th><th>STATUS</th></tr>`;
+  let html = `<h2>REPORT — ${company.toUpperCase()} · ${out.mode.toUpperCase()} MODE</h2>`;
+  html += confidenceBannerHTML();
+  html += `<table><tr><th>MODEL</th><th>HEADLINE RESULT</th><th>STATUS</th></tr>`;
   out.summary.forEach((row) => {
     const ok = !String(row.Status).toLowerCase().includes("error");
     html += `<tr class="${ok ? "" : "err"}"><td>${row.Model}</td>

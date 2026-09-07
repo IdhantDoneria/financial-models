@@ -85,6 +85,160 @@ def test_extractor_rejects_missing_file():
 
 
 # --------------------------------------------------------------------------- #
+# 1b. Extraction robustness — regression tests for real-world extraction bugs
+#     found by uploading actual filings (Tesla's FY2025 10-K, BLS
+#     International's Q1 FY26-27 results) to production. Each test reproduces
+#     the exact real snippet that broke, trimmed to just the sentence that
+#     caused it — see GitHub issues #21 and #22 for the full write-ups.
+# --------------------------------------------------------------------------- #
+def test_parenthesis_only_negates_the_matched_number_not_the_whole_window():
+    """An unrelated parenthesised phrase before/after the real number must
+    not flip its sign — this exact snippet (from Tesla's 10-K) previously
+    turned a genuine 27% tax rate into -27%."""
+    text = "Effective tax rate 27 % 20 % (50)% Our provision for income taxes"
+    ex = PDFExtractor()
+    assert ex._first_after(text, [r"effective\s+tax\s+rate"], window=40) == 27.0
+
+
+def test_parenthesis_before_the_number_does_not_negate_it():
+    """(BLS International's snippet) — an unrelated qualifying phrase in
+    parens ahead of the number must not negate it either."""
+    text = "total revenues (before consolidation adjustment) of Rs. 38,753.24 lakhs"
+    ex = PDFExtractor()
+    val = ex._first_after(text, [r"total\s+revenue"], apply_scale=True)
+    assert val == pytest.approx(38_753.24 * 1e5)   # positive, and lakh-scaled
+
+
+def test_genuinely_parenthesised_number_is_still_negative():
+    """The fix must not break the legitimate case — a number actually
+    wrapped in its own parentheses is still an accounting negative."""
+    ex = PDFExtractor()
+    assert ex._parse_number("Net loss $(1,234)") == -1234.0
+
+
+def test_scale_header_far_from_document_start_is_still_found():
+    """A full 10-K's "(in millions)" table headers routinely sit 100+ pages
+    past the document's opening boilerplate — far past a fixed first-6000-
+    character scan window. The scale must be picked up locally, near the
+    actual match, not just from the top of the document."""
+    ex = PDFExtractor()
+    text = (
+        "UNITED STATES\nSECURITIES AND EXCHANGE COMMISSION\n"
+        + ("Forward-looking statements boilerplate. " * 2000)  # >> 6000 chars
+        + "\nConsolidated Balance Sheets\n(in millions, except per share data)\n"
+        "Total debt 1,569 6,584 $ 8,177 $ 6,429\n"
+    )
+    assert len(text) > 20_000
+    val = ex._first_after(text, [r"total\s+debt"], apply_scale=True)
+    assert val == pytest.approx(1_569 * 1e6)
+
+
+def test_lakh_and_crore_scale_recognised():
+    """Indian filings use lakh (1e5) / crore (1e7), not million/billion —
+    previously not recognised at all, silently understating every figure
+    by 100,000x or more."""
+    ex = PDFExtractor()
+    lakh_text = "Amount in (Rs.) in lakhs\nTotal revenue 38,753.24"
+    assert ex._first_after(lakh_text, [r"total\s+revenue"], apply_scale=True) \
+        == pytest.approx(38_753.24 * 1e5)
+    crore_text = "(Rs. in Crores)\nTotal revenue 387.53"
+    assert ex._first_after(crore_text, [r"total\s+revenue"], apply_scale=True) \
+        == pytest.approx(387.53 * 1e7)
+
+
+def test_shares_outstanding_rejects_implausibly_small_footnote_number():
+    """(Tesla's snippet) — "shares outstanding" appearing in an unrelated
+    stock-compensation footnote must not be accepted as the real share
+    count; a real public company never has under 1,000 shares outstanding."""
+    text = (
+        "ic weighted average shares outstanding until vested. 61 The following table "
+        "presents the reconciliation. Diluted shares outstanding were 3,210,875,752."
+    )
+    ex = PDFExtractor()
+    val = ex._first_after(
+        text, [r"shares\s+outstanding"], apply_scale=True,
+        plausible=PDFExtractor._plausible_share_count,
+    )
+    assert val == pytest.approx(3_210_875_752)
+
+
+def test_revenue_growth_rejects_bare_calendar_year():
+    """(Tesla's snippet) — "revenue growth" followed by a narrative mention
+    of the fiscal year, with no percentage nearby, must not be read as a
+    2025% growth rate."""
+    text = "profits for further revenue growth. We ended 2025 with $44.06 billion in cash."
+    ex = PDFExtractor()
+    val = ex._first_after(
+        text, [r"revenue\s+growth"], window=40,
+        plausible=PDFExtractor._not_year_like,
+    )
+    assert val is None   # no plausible candidate — correctly abstains
+
+
+def test_current_price_ignores_option_pricing_volatility_assumption():
+    """(Tesla's snippet) — "share price volatility" in a stock-comp footnote
+    must not be read as the market price."""
+    text = "Expected share price volatility 60 %\nDividend yield — %"
+    ex = PDFExtractor()
+    val = ex._first_after(
+        text, [r"share\s+price(?!\s+volatility)"],
+        plausible=lambda v: 0 < v < 1_000_000,
+    )
+    assert val is None
+
+
+def test_number_immediately_before_a_year_is_treated_as_a_date_not_a_figure():
+    """(Tesla's snippet) — "...on June 30, 2025)" must not read "30" as the
+    figure being searched for. The year itself ("2025", not immediately
+    followed by another date-tail) passes the date-fragment check alone —
+    real callers combine it with a plausibility bound (as current_price's
+    actual extraction does) to also reject bare years; this test uses that
+    same combination rather than the date check in isolation."""
+    text = "based on the closing price for shares as reported on June 30, 2025."
+    ex = PDFExtractor()
+    val = ex._first_after(
+        text, [r"closing\s+price"],
+        plausible=lambda v: 0 < v < 1_000_000 and PDFExtractor._not_year_like(v),
+    )
+    assert val is None   # "30" (date fragment) and "2025" (bare year) both rejected
+
+
+def test_company_name_prefers_sec_cover_page_registrant_line():
+    """(Tesla's snippet) — every SEC 10-K cover page opens with "UNITED
+    STATES" / "SECURITIES AND EXCHANGE COMMISSION" before the real company
+    name; the actual name sits right before the "(Exact name of
+    registrant...)" boilerplate."""
+    text = (
+        "UNITED STATES\nSECURITIES AND EXCHANGE COMMISSION\nFORM 10-K\n"
+        "Tesla, Inc.(Exact name of registrant as specified in its charter)\n"
+    )
+    assert PDFExtractor._extract_company_name(text) == "Tesla, Inc"
+
+
+def test_company_name_prefers_indian_filing_signoff_line():
+    """(BLS International's snippet) — BSE/NSE regulatory letters open with
+    the filing date, not the company name; the name reliably appears in the
+    closing "For and on behalf of" signoff instead."""
+    text = (
+        "August 07, 2026\nTo,\nBSE Limited\n...\n"
+        "For and on behalf of,\nBLS International Services Limited\n"
+    )
+    assert PDFExtractor._extract_company_name(text) == "BLS International Services Limited"
+
+
+def test_nse_symbol_recognised_as_ticker():
+    """(BLS International's snippet) — NYSE/NASDAQ/LSE cover-page tickers
+    were recognised; the "NSE Symbol: X" wording Indian filings use instead
+    was not."""
+    ex = PDFExtractor()
+    data = ex.scrape_figures(
+        "For and on behalf of,\nBLS International Services Limited\n"
+        "NSE Symbol: BLS\nBSE Scrip Code: 540073\n"
+    )
+    assert data.ticker == "BLS"
+
+
+# --------------------------------------------------------------------------- #
 # 2. Auto assumer — every model gets kwargs
 # --------------------------------------------------------------------------- #
 def test_auto_assumer_covers_every_model(synthetic_pdf):
