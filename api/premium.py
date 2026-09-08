@@ -12,32 +12,38 @@ sends — authorization is re-derived from the session cookie against Redis
 directly (the same store api/usage.js already reads), never trusted from
 the request body.
 
-Two request shapes route to two different code paths:
+Two request shapes route to two different code paths, both using the
+model classes straight from src/ (imported unchanged — same logic the
+browser's WASM build runs) with no other module in between:
 
   - IB desk (extracted PDF financials + auto/manual assumptions):
     { model, extracted: {...ExtractedFinancials fields}, mode, overrides,
       live_rf, rf_source, erp } -> builds an AssumptionSet with the real
-    AutoAssumer/ManualAssumer (src/pipeline/assumptions.py, imported
-    unchanged — same logic the browser's WASM build uses) and runs the one
-    requested model directly.
+    AutoAssumer/ManualAssumer (src/pipeline/assumptions.py) and runs the
+    one requested model directly.
 
   - Mnemonic terminal (raw model params, no filing/assumptions involved):
-    { model, params: {...raw slider values, same shape as BUILDERS[mn]
-      expects} } -> reuses public/py/web_bridge.py's run_model() unchanged.
+    { model, params: {...raw slider values} } -> builds the model's
+    constructor kwargs directly (mirrors public/py/web_bridge.py's
+    _build_hdebt/_build_rdcf, which the browser's WASM build calls — kept
+    in sync by hand since duplicating a ~15-line dict literal is lower-risk
+    here than depending on that file: see below) and calls .calculate().
 
-Deliberately does NOT reuse web_bridge.py's restore_extraction()+run_report()
-for the IB desk path, and does NOT import AnalysisRunner: both pull in
-pandas (AnalysisReport.summary_frame()), which alone pushed this function's
-Vercel bundle over the 500MB Python limit (confirmed by two failed preview
-builds) once combined with numpy+scipy. requirements.txt therefore excludes
-pandas entirely — this file only ever touches the pandas-free half of
-src/pipeline (ExtractedFinancials, AutoAssumer, ManualAssumer,
-ManualOverrides) and the model classes' own .calculate(), replicating just
-the few lines of src/pipeline/runner.py's dispatch/headline logic this
-needs. See src/fama_french.py and src/pipeline/runner.py for the matching
-lazy-pandas-import changes that make `from src import ...` and
-`from src.pipeline.assumptions import ...` safe to do without pandas
-installed at all.
+Neither path imports AnalysisRunner or public/py/web_bridge.py:
+  - AnalysisRunner pulls in pandas (AnalysisReport.summary_frame()), which
+    alone pushed this function's Vercel bundle over its 500MB Python limit
+    once combined with numpy+scipy (confirmed by two failed preview
+    builds) — this file instead replicates the ~15 lines of
+    src/pipeline/runner.py's dispatch/headline logic it actually needs.
+    requirements.txt excludes pandas entirely; see src/fama_french.py and
+    src/pipeline/runner.py for the matching lazy-pandas-import changes
+    that make `from src import ...` safe without it installed.
+  - web_bridge.py lives under public/py/, outside api/'s own file tree —
+    Vercel's Python bundler doesn't reliably include files reached only via
+    a runtime sys.path insert rather than a static import it can trace
+    (confirmed by a third failed preview build: ModuleNotFoundError at
+    runtime despite building successfully). Everything this file needs from
+    it is inlined below instead.
 
 Response: 200 { ok:true, model, headline, status, results, errors,
 rationale } | 401/403/503 { ok:false, error } for auth/plan/config
@@ -49,25 +55,17 @@ from __future__ import annotations
 import json
 import math
 import os
-import sys
+import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler
-from pathlib import Path
-
-_ROOT = Path(__file__).resolve().parent.parent
-for _p in (str(_ROOT), str(_ROOT / "public" / "py")):
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
 
 import numpy as np
 
 from src import IndASHiddenDebtModel, ReverseDCFModel
 from src.pipeline.assumptions import AutoAssumer, ManualAssumer, ManualOverrides
 from src.pipeline.pdf_extractor import ExtractedFinancials
-
-import web_bridge  # noqa: E402 - needs the sys.path setup above; mnemonic path only
 
 PREMIUM_MODELS = {
     "HDEBT": "Ind AS 116 Hidden-Debt Normalizer",
@@ -216,21 +214,72 @@ def _run_extracted(mnemonic: str, model_name: str, body: dict) -> dict:
     }
 
 
+#: Mirrors public/py/web_bridge.py's _build_hdebt/_build_rdcf — the raw
+#: slider-param -> constructor-kwarg mapping for the mnemonic terminal.
+#: Keep in sync by hand if either model's constructor signature changes
+#: (see the module docstring for why this isn't imported from there).
+def _hdebt_kwargs(p: dict) -> dict:
+    return dict(
+        net_income=p["net_income"], reported_net_debt=p["reported_net_debt"],
+        reported_equity_value=p["reported_equity_value"],
+        shares_outstanding=p["shares_outstanding"],
+        annual_lease_payment=p["annual_lease_payment"],
+        lease_term_years=int(p["lease_term_years"]),
+        lease_discount_rate=p["lease_discount_rate"],
+        reverse_factoring_exposure=p["reverse_factoring_exposure"],
+        cl1_amount=p["cl1_amount"], cl1_probability=p["cl1_probability"],
+        cl2_amount=p["cl2_amount"], cl2_probability=p["cl2_probability"],
+        depreciation_amortization=p["depreciation_amortization"],
+        rd_capitalized_amortization=p["rd_capitalized_amortization"],
+        rd_cash_spend=p["rd_cash_spend"], maintenance_capex=p["maintenance_capex"],
+    )
+
+
+def _rdcf_kwargs(p: dict) -> dict:
+    return dict(
+        current_price=p["current_price"], shares_outstanding=p["shares_outstanding"],
+        net_debt=p["net_debt"], base_fcf=p["base_fcf"], base_revenue=p["base_revenue"],
+        total_addressable_market=p["total_addressable_market"],
+        years=int(p["years"]), discount_rate=p["discount_rate"],
+        terminal_growth=p["terminal_growth"],
+    )
+
+
+_RAW_KWARGS_BUILDER = {"HDEBT": _hdebt_kwargs, "RDCF": _rdcf_kwargs}
+
+
 def _run_raw(mnemonic: str, model_name: str, body: dict) -> dict:
     """Mnemonic-terminal path: raw slider params straight into the model,
-    no filing/assumption step — same call web_bridge.run_model() makes
-    client-side for every other model."""
+    no filing/assumption step."""
     params = body.get("params") or {}
-    out = json.loads(web_bridge.run_model(mnemonic, json.dumps(params)))
-    if not out.get("ok"):
-        err = out.get("error", "run failed")
+    try:
+        kwargs = _RAW_KWARGS_BUILDER[mnemonic](params)
+        model = PREMIUM_CLASSES[mnemonic](**kwargs)
+        t0 = time.perf_counter()
+        results = _clean(model.calculate())
+        calc_ms = round((time.perf_counter() - t0) * 1000.0, 2)
+        explain = model.explain()
+    except Exception as exc:
+        err = f"{type(exc).__name__}: {exc}"
         return {"ok": True, "model": model_name, "headline": "-", "status": err,
                 "results": None, "errors": err, "rationale": {}}
+
+    # Chart rendering is a nice-to-have, not needed for the numbers — and
+    # plotly isn't part of this function's dependency budget (see the
+    # module docstring). Degrade the same way web_bridge.run_model() does
+    # client-side when a chart fails: numbers still return, figure is null.
+    figure = None
+    try:
+        import plotly  # noqa: F401 - presence check only; not in requirements.txt
+
+        figure = model.visualize().to_json()
+    except Exception:
+        pass
+
     return {
-        "ok": True, "model": model_name, "headline": "-", "status": "OK",
-        "results": out.get("results"), "figure": out.get("figure"),
-        "explain": out.get("explain"), "calc_ms": out.get("calc_ms"),
-        "extras": out.get("extras"), "rationale": {},
+        "ok": True, "model": model_name, "headline": _headline(mnemonic, results),
+        "status": "OK", "results": results, "figure": figure, "explain": explain,
+        "calc_ms": calc_ms, "errors": None, "rationale": {},
     }
 
 
