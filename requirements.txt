@@ -1,28 +1,16 @@
 # Financial Models — pinned dependencies (Python 3.10+)
 #
-# This file is used by three consumers that all need it to stay small:
-# `pip install -r requirements.txt` for core dev/testing, the CI pytest job,
-# and Vercel's Python function build for api/premium.py (which has a 500MB
-# bundle-size limit — the full notebook/PDF-backend/Google-export stack this
-# repo also uses does NOT fit alongside numpy/scipy/pandas under that limit).
-# Extras needed only for the interactive notebook and the full local PDF
-# analyzer/export experience live in requirements-notebook.txt instead — see
-# the README's Installation section.
+# This is the CORE tier: everything needed to import and run the twelve
+# models (`from src import ...`), and the true minimum api/premium.py
+# needs on Vercel. Kept as small as possible on purpose — Python functions
+# have a 500MB uncompressed bundle limit, and pandas+scipy+numpy alone are
+# already a meaningful fraction of that on Linux.
 #
-# Core numerics
+# Testing needs one more file (pytest + the two libraries the pipeline
+# tests exercise): pip install -r requirements.txt -r requirements-test.txt
+# The interactive notebook and full local PDF/export workflow need a third:
+# requirements-notebook.txt. See the README's Installation section.
 numpy==2.4.6
 scipy==1.17.1
 pandas==3.0.3
-# Interactive visualization
-plotly==6.8.0
-# Live data fetching
 requests==2.34.2
-# PDF ingestion — the one backend the test suite and api/premium.py need;
-# the browser terminal installs its own richer cascade via micropip at
-# runtime (see public/py/web_bridge.py), independent of this file.
-pypdf==6.14.2
-# Report export — reportlab/openpyxl are exercised by tests/pipeline/test_pipeline.py
-reportlab==5.0.0
-openpyxl==3.1.5
-# Testing
-pytest==9.1.1
