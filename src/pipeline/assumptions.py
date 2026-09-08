@@ -69,6 +69,17 @@ class ManualOverrides:
     heston_theta: float | None = None
     heston_xi: float | None = None
     heston_rho: float | None = None
+    # Ind AS 116 hidden-debt normalizer — the footnote-only figures the
+    # auto-assumer can't reliably extract (see AutoAssumer.build).
+    annual_lease_payment: float | None = None
+    lease_term_years: int | None = None
+    reverse_factoring_exposure: float | None = None
+    cl1_amount: float | None = None
+    cl1_probability: float | None = None
+    cl2_amount: float | None = None
+    cl2_probability: float | None = None
+    # Reverse DCF — total addressable market, almost never a labelled figure.
+    total_addressable_market: float | None = None
 
 
 # --------------------------------------------------------------------------- #
@@ -144,6 +155,15 @@ class AutoAssumer:
         # Dividend for Gordon: use scraped DPS or 2% of price as a default.
         dividend = data.dividend_per_share or 0.02 * spot
         g_div = o.dividend_growth if o.dividend_growth is not None else 0.03
+        shares = data.shares_outstanding or 1_000_000.0
+        net_debt = data.net_debt if data.net_debt is not None else 0.0
+        # Same margin fallback _synth_fcfs uses, so a synthesised base_revenue
+        # is internally consistent with a synthesised FCF path (base_fcf =
+        # base_revenue * margin) instead of picking an unrelated placeholder.
+        margin = data.operating_margin or 0.15
+        base_revenue = data.revenue if data.revenue is not None else fcfs[0] / margin
+        reported_equity_value = spot * shares
+        lease_discount_rate = rf + 0.015   # same cost-of-debt spread as _wacc
 
         kwargs: dict[str, dict[str, Any]] = {
             "Discounted Cash Flow": {
@@ -207,6 +227,52 @@ class AutoAssumer:
                 "rho": o.heston_rho if o.heston_rho is not None else -0.6,
                 "option_type": "call",
             },
+            "Ind AS 116 Hidden-Debt Normalizer": {
+                "net_income": data.net_income or 0.0,
+                "reported_net_debt": net_debt,
+                "reported_equity_value": reported_equity_value,
+                "shares_outstanding": shares,
+                # Lease payment, reverse-factoring exposure and contingent
+                # liabilities are almost never stated as a single clean
+                # figure a regex can trust (lease footnotes disclose a
+                # multi-year maturity schedule, not one "annual payment";
+                # reverse-factoring and contingent-liability amounts are
+                # prose, not tabulated) — default to $0 / 0% rather than
+                # guess, so an unadjusted company reports truthfully as
+                # unadjusted. MANUAL mode overrides these from the filing.
+                "annual_lease_payment": o.annual_lease_payment if o.annual_lease_payment is not None else 0.0,
+                "lease_term_years": o.lease_term_years if o.lease_term_years is not None else 5,
+                "lease_discount_rate": lease_discount_rate,
+                "reverse_factoring_exposure": (
+                    o.reverse_factoring_exposure if o.reverse_factoring_exposure is not None else 0.0),
+                "cl1_amount": o.cl1_amount if o.cl1_amount is not None else 0.0,
+                "cl1_probability": o.cl1_probability if o.cl1_probability is not None else 0.0,
+                "cl2_amount": o.cl2_amount if o.cl2_amount is not None else 0.0,
+                "cl2_probability": o.cl2_probability if o.cl2_probability is not None else 0.0,
+                "depreciation_amortization": data.depreciation_amortization or 0.0,
+                "rd_capitalized_amortization": 0.0,
+                "rd_cash_spend": data.rd_expense or 0.0,
+                "maintenance_capex": data.capital_expenditures or 0.0,
+            },
+            "Reverse DCF / Market-Implied Expectations": {
+                "current_price": spot,
+                "shares_outstanding": shares,
+                "net_debt": net_debt,
+                "base_fcf": fcfs[0],
+                "base_revenue": base_revenue,
+                # No filing states its own TAM in a form a regex can trust
+                # (when disclosed at all, it's prose in the MD&A, not a
+                # labelled figure) — default to 10x current revenue, a
+                # generic "large addressable market" placeholder in the same
+                # order of magnitude as a real mid-cap's TAM. Override in
+                # MANUAL mode with the company's actual addressable market.
+                "total_addressable_market": (
+                    o.total_addressable_market if o.total_addressable_market is not None
+                    else 10.0 * base_revenue),
+                "years": 5,
+                "discount_rate": wacc,
+                "terminal_growth": g_terminal,
+            },
         }
 
         rationale: dict[tuple[str, str], str] = {}
@@ -219,6 +285,26 @@ class AutoAssumer:
         )
         rationale[("CAPM", "beta")] = (
             "Scraped from PDF." if data.beta else f"Sector-neutral default = {beta}."
+        )
+        rationale[("HDEBT", "annual_lease_payment / reverse_factoring / contingent liabilities")] = (
+            "No filing reliably states these as one clean, tabulated figure a "
+            "regex can trust — defaulted to $0 / 0% (an unadjusted company "
+            "reports truthfully as unadjusted) rather than guess a number. "
+            "Set the real figures from the filing's lease and contingency "
+            "footnotes in MANUAL mode."
+        )
+        rationale[("HDEBT", "depreciation_amortization / rd_cash_spend / maintenance_capex")] = (
+            "Scraped from PDF." if (data.depreciation_amortization and data.rd_expense
+                                     and data.capital_expenditures)
+            else "Partially or fully defaulted to $0 where the filing's D&A, R&D "
+                 "expense or capex line wasn't confidently found."
+        )
+        rationale[("RDCF", "total_addressable_market")] = (
+            f"No disclosed TAM found — defaulted to 10x current revenue "
+            f"({10 * base_revenue:,.0f}) as a generic placeholder order of "
+            f"magnitude. Set the company's actual addressable market in "
+            f"MANUAL mode; the implied-capture output is only as meaningful "
+            f"as this input."
         )
         return AssumptionSet(
             kwargs_by_model=kwargs,

@@ -16,8 +16,9 @@ import pandas as pd
 
 from .. import (
     BinomialTreeModel, BlackScholesModel, CAPMModel, DiscountedCashFlowModel,
-    FamaFrenchModel, GordonGrowthModel, HestonModel,
-    ModernPortfolioTheoryModel, MonteCarloOptionModel, ValueAtRiskModel,
+    FamaFrenchModel, GordonGrowthModel, HestonModel, IndASHiddenDebtModel,
+    ModernPortfolioTheoryModel, MonteCarloOptionModel, ReverseDCFModel,
+    ValueAtRiskModel,
 )
 from ..base_model import BaseFinancialModel
 from .assumptions import AssumptionSet
@@ -37,6 +38,8 @@ AVAILABLE_MODELS: dict[str, type[BaseFinancialModel]] = {
     "Binomial Tree (CRR)": BinomialTreeModel,
     "Monte Carlo (GBM)": MonteCarloOptionModel,
     "Heston Stochastic Volatility": HestonModel,
+    "Ind AS 116 Hidden-Debt Normalizer": IndASHiddenDebtModel,
+    "Reverse DCF / Market-Implied Expectations": ReverseDCFModel,
 }
 
 
@@ -83,6 +86,8 @@ class AnalysisReport:
             "Binomial Tree (CRR)": ("price", "$"),
             "Monte Carlo (GBM)": ("price", "$"),
             "Heston Stochastic Volatility": ("price", "$"),
+            "Ind AS 116 Hidden-Debt Normalizer": ("adjusted_net_debt", "$"),
+            "Reverse DCF / Market-Implied Expectations": ("implied_fcf_cagr", "%"),
         }
         key, unit = picks.get(name, (None, ""))
         if key and key in res:

@@ -1038,6 +1038,14 @@ const IB_MODELS = [
   "Heston Stochastic Volatility",
 ];
 
+//: The two premium models, gated the same way the mnemonic-driven direct
+//  run is (see premiumModelGate()) — included in the checkbox grid but
+//  excluded from the default "select all" / disabled until the gate
+//  resolves, so a free-tier report can't silently include them.
+const IB_PREMIUM_MODELS = [
+  "Ind AS 116 Hidden-Debt Normalizer", "Reverse DCF / Market-Implied Expectations",
+];
+
 /* Manual-mode overrides: every knob ManualOverrides supports. Only sliders
  * the user actually moves are sent, so untouched inputs keep the IB-bot
  * (auto) values. */
@@ -1058,6 +1066,22 @@ const IB_OVERRIDES = [
   { id: "heston_theta", label: "HESTON θ", min: 0.005, max: 0.5, step: 0.005, def: 0.0625 },
   { id: "heston_xi", label: "HESTON ξ", min: 0.05, max: 1.5, step: 0.05, def: 0.3 },
   { id: "heston_rho", label: "HESTON ρ", min: -0.95, max: 0.5, step: 0.05, def: -0.6 },
+  // HDEBT/RDCF: the footnote-only figures the auto-assumer defaults to $0 /
+  // 10x-revenue precisely because no regex can trust extracting them (see
+  // AutoAssumer.build's rationale) — this is how a user supplies the real
+  // number from the filing instead. Unlike the standalone mnemonic-driven
+  // HDEBT/RDCF sliders (which run on small illustrative "millions" units),
+  // the IB desk's whole pipeline is raw dollars throughout — same
+  // convention as the EXTRACTED DATA panel's field editor — so these are
+  // raw-dollar (int, comma-formatted) rather than a cosmetic "M" scale.
+  { id: "annual_lease_payment", label: "LEASE PAYMENT/YR", money: true, min: 0, max: 500_000_000, step: 1_000_000, def: 0, int: true },
+  { id: "lease_term_years", label: "LEASE TERM (Y)", min: 1, max: 15, step: 1, def: 5, int: true },
+  { id: "reverse_factoring_exposure", label: "REVERSE FACTORING", money: true, min: 0, max: 500_000_000, step: 1_000_000, def: 0, int: true },
+  { id: "cl1_amount", label: "CONTINGENT LIAB 1", money: true, min: 0, max: 1_000_000_000, step: 1_000_000, def: 0, int: true },
+  { id: "cl1_probability", label: "CL1 PROBABILITY", min: 0, max: 1, step: 0.05, def: 0, pct: true },
+  { id: "cl2_amount", label: "CONTINGENT LIAB 2", money: true, min: 0, max: 1_000_000_000, step: 1_000_000, def: 0, int: true },
+  { id: "cl2_probability", label: "CL2 PROBABILITY", min: 0, max: 1, step: 0.05, def: 0, pct: true },
+  { id: "total_addressable_market", label: "TAM (RDCF)", money: true, min: 0, max: 1_000_000_000_000, step: 10_000_000, def: 10_000_000_000, int: true },
 ];
 
 const IB_FIELD_LABELS = {
@@ -1067,7 +1091,8 @@ const IB_FIELD_LABELS = {
   net_debt: "NET DEBT", shares_outstanding: "SHARES OUT",
   current_price: "SHARE PRICE", dividend_per_share: "DIVIDEND / SH",
   beta: "BETA", revenue_growth: "REV GROWTH", operating_margin: "OP MARGIN",
-  tax_rate: "TAX RATE",
+  tax_rate: "TAX RATE", depreciation_amortization: "D&A",
+  rd_expense: "R&D EXPENSE", capital_expenditures: "CAPEX",
 };
 
 /* ------------------------- live market data ---------------------------- */
@@ -1189,16 +1214,44 @@ function buildIBForm() {
     <div class="ckall"><button id="iball">ALL</button><button id="ibnone">NONE</button></div>
     <div class="ckgrid" id="ibck"></div>`);
   const grid = $("#ibck");
-  IB_MODELS.forEach((name) => {
+  // Premium gate is fetched once per IB session and cached; optimistic
+  // (enabled) on the very first render, then this whole section re-renders
+  // once the real answer is known — same fail-open shape as every other
+  // gate in the app, just non-blocking here since section 4 isn't the only
+  // thing on screen.
+  if (state.ib.premiumGate === undefined) {
+    state.ib.premiumGate = null;   // pending
+    premiumModelGate().then((gate) => {
+      state.ib.premiumGate = gate;
+      if (!gate.allowed) IB_PREMIUM_MODELS.forEach((n) => state.ib.selected.delete(n));
+      if (state.view === "ib") buildIBForm();
+    });
+  }
+  const premiumGate = state.ib.premiumGate || { allowed: true };
+  IB_MODELS.concat(IB_PREMIUM_MODELS).forEach((name) => {
+    const isPremium = IB_PREMIUM_MODELS.includes(name);
+    const locked = isPremium && !premiumGate.allowed;
     const lab = document.createElement("label");
-    lab.className = "ck";
+    lab.className = "ck" + (locked ? " ck-locked" : "");
+    if (locked) lab.title = premiumGate.reason || "Requires Analyst Pro or above.";
     const cb = document.createElement("input");
-    cb.type = "checkbox"; cb.checked = state.ib.selected.has(name); cb.dataset.model = name;
+    cb.type = "checkbox"; cb.checked = !locked && state.ib.selected.has(name);
+    cb.disabled = locked; cb.dataset.model = name;
     cb.onchange = () => { cb.checked ? state.ib.selected.add(name) : state.ib.selected.delete(name); };
-    lab.appendChild(cb); lab.appendChild(document.createTextNode(name));
+    lab.appendChild(cb);
+    lab.appendChild(document.createTextNode(name));
+    if (isPremium) {
+      const badge = document.createElement("span");
+      badge.className = "ckpro"; badge.textContent = locked ? "PRO+ 🔒" : "PRO+";
+      lab.appendChild(badge);
+    }
     grid.appendChild(lab);
   });
-  $("#iball").onclick = () => { state.ib.selected = new Set(IB_MODELS); grid.querySelectorAll("input").forEach((c) => (c.checked = true)); };
+  $("#iball").onclick = () => {
+    const allowedNames = IB_MODELS.concat(premiumGate.allowed ? IB_PREMIUM_MODELS : []);
+    state.ib.selected = new Set(allowedNames);
+    grid.querySelectorAll("input").forEach((c) => { if (!c.disabled) c.checked = true; });
+  };
   $("#ibnone").onclick = () => { state.ib.selected.clear(); grid.querySelectorAll("input").forEach((c) => (c.checked = false)); };
 
   // 5 · run + export
@@ -1483,7 +1536,7 @@ async function runIBReport() {
 
 //: Mirrors web_bridge.py's `_KEY_FIELDS` tuple length — the fields the
 //  extractor reports as FOUND/MISSING (see analyze_pdf()'s `missing` list).
-const IB_KEY_FIELD_COUNT = 15;
+const IB_KEY_FIELD_COUNT = 18;
 
 //: A report built mostly from auto-assumed generic defaults (a placeholder
 //  price, a 5% growth default, etc.) can still show every model as "OK" —
