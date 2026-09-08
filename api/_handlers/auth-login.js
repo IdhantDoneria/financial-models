@@ -51,6 +51,7 @@ module.exports = async (req, res) => {
     const token = A.newToken();
     await store.setex(`sess:${token}`, A.SESSION_TTL,
       JSON.stringify({ email: addr, createdAt: now }));
+    A.setSessionCookie(res, token, A.SESSION_TTL);
 
     return A.json(res, 200, {
       ok: true, token, expiresInSec: A.SESSION_TTL, passwordSet: true,

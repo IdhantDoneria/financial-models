@@ -108,6 +108,21 @@ python -m venv venv && source venv/bin/activate   # optional but recommended
 pip install -r requirements.txt
 ```
 
+`requirements.txt` is deliberately just the numeric core (numpy/scipy/pandas/requests) —
+it's also what Vercel's Python function build uses for the deployed app's server-side
+premium-model computation (`api/premium.py`), which has a 500MB bundle limit, so it's kept
+as small as possible. Two more files layer on top:
+
+```bash
+# running the test suite (pytest + plotly + the PDF/xlsx libs the tests exercise)
+pip install -r requirements.txt -r requirements-test.txt
+pytest tests/ -q
+
+# the interactive notebook + full local PDF-analyzer/export experience
+# (richer PDF-backend cascade, .docx export, Google Docs export)
+pip install -r requirements.txt -r requirements-test.txt -r requirements-notebook.txt
+```
+
 ## Quick start
 
 **Use a model directly:**
@@ -118,7 +133,7 @@ from src import BlackScholesModel
 option = BlackScholesModel(spot=42, strike=40, rate=0.10, sigma=0.20,
                            maturity=0.5, option_type="call")
 print(option.calculate()["price"])   # 4.759422  (matches Hull Example 15.6)
-option.visualize().show()            # interactive Plotly value-vs-spot chart
+option.visualize().show()            # interactive Plotly chart — needs requirements-test.txt
 print(option.explain())              # Markdown derivation + worked example
 ```
 
@@ -164,7 +179,7 @@ financial-models/
 │   └── about.html                 # static project overview page
 ├── docs/design/terminal-spec.md   # terminal design specification
 ├── docs/design/mockup.html        # design-first UI wireframe
-├── requirements.txt · vercel.json · .gitignore · LICENSE
+├── requirements.txt · requirements-test.txt · requirements-notebook.txt · vercel.json · .gitignore · LICENSE
 ```
 
 Every model inherits `BaseFinancialModel`, which supplies the logger and a family of

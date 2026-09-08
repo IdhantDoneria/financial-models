@@ -13,6 +13,6 @@
     "dev:auth": "node scripts/dev_auth_server.js"
   },
   "dependencies": {
-    "nodemailer": "^6.9.14"
+    "nodemailer": "^10.0.1"
   }
 }

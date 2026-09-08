@@ -25,11 +25,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 import numpy as np
-import pandas as pd
 
 from .base_model import BaseFinancialModel, Benchmark, ModelError, ValidationError
 
 if TYPE_CHECKING:  # pragma: no cover
+    import pandas as pd
     import plotly.graph_objects as go
 
 #: Canonical download URL for the monthly Fama-French 3-factor CSV.
@@ -84,6 +84,8 @@ class FamaFrenchModel(BaseFinancialModel):
             ValidationError: If returns/factors are misaligned or a factor column
                 is missing.
         """
+        import pandas as pd
+
         super().__init__(logger=logger)
         self.asset_returns = self._as_float_array(asset_returns, "asset_returns")
         frame = pd.DataFrame(factors)
@@ -128,6 +130,8 @@ class FamaFrenchModel(BaseFinancialModel):
         Raises:
             ModelError: If the data cannot be obtained from the network or cache.
         """
+        import pandas as pd
+
         cache = Path(cache_dir) / "ff_factors.csv" if cache_dir else _DEFAULT_CACHE
         if cache.exists() and not force_refresh:
             return pd.read_csv(cache, index_col=0)
@@ -158,6 +162,8 @@ class FamaFrenchModel(BaseFinancialModel):
         ``YYYYMM, Mkt-RF, SMB, HML, RF`` rows (values in percent), followed by an
         annual block. Only the monthly block is retained and converted to decimals.
         """
+        import pandas as pd
+
         rows: list[list[float]] = []
         index: list[int] = []
         for line in raw.splitlines():
@@ -269,6 +275,8 @@ class FamaFrenchModel(BaseFinancialModel):
     @classmethod
     def reference_benchmarks(cls) -> list[Benchmark]:
         """Return an exact OLS-recovery benchmark (no network dependency)."""
+        import pandas as pd
+
         rng = np.random.default_rng(0)
         n = 240
         # Construct factors and a NOISELESS asset so OLS must recover coefficients.

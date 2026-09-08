@@ -35,11 +35,11 @@ function extractEsc(source, label) {
   return eval(`(function () { ${m[0]} return esc; })()`);
 }
 
-const adminSrc = fs.readFileSync(path.join(__dirname, "../public/admin.html"), "utf8");
+const adminSrc = fs.readFileSync(path.join(__dirname, "../public/assets/admin.js"), "utf8");
 const termSrc = fs.readFileSync(path.join(__dirname, "../public/assets/terminal.js"), "utf8");
 
 console.log("· esc() helper neutralises real payloads");
-for (const [label, src] of [["admin.html", adminSrc], ["terminal.js", termSrc]]) {
+for (const [label, src] of [["admin.js", adminSrc], ["terminal.js", termSrc]]) {
   const esc = extractEsc(src, label);
   const tagPayload = "<img src=x onerror=alert(1)>";
   const escapedTag = esc(tagPayload);
@@ -76,7 +76,7 @@ const adminSinks = [
   /data-grant="\$\{esc\(r\.email\)\}"/,
   /<td>\$\{esc\(c\.code\)\}<\/td>/,
 ];
-adminSinks.forEach((re, i) => check(`admin.html sink ${i + 1}/${adminSinks.length} still escaped`,
+adminSinks.forEach((re, i) => check(`admin.js sink ${i + 1}/${adminSinks.length} still escaped`,
   re.test(adminSrc), `pattern not found: ${re}`));
 
 const terminalSinks = [
@@ -88,6 +88,14 @@ const terminalSinks = [
   /esc\(\(h\.company \|\| "UNTITLED"\)\.toUpperCase\(\)\)/,
   /REPORT — \$\{esc\(company\.toUpperCase\(\)\)\}/,
   /if \(typeof v === "string"\) return esc\(v\.toUpperCase\(\)\);/,
+  // IB report table + audit-trail doc — the sinks the local pentest proved
+  // exploitable (row.Status could execute injected HTML via a validation
+  // error's echoed input) before this fix.
+  /<td>\$\{esc\(row\.Model\)\}<\/td>/,
+  /<td class="num">\$\{esc\(String\(row\["Headline result"\]\)\)\}<\/td>/,
+  /\$\{ok \? "stat-ok" : "stat-err"\}">\$\{esc\(String\(row\.Status\)\)\}<\/td>/,
+  /md \+= `\| \$\{esc\(key\)\} \| \$\{esc\(text\)\} \|\\n`/,
+  /md \+= `- \*\*\$\{esc\(name\)\}\*\*: \$\{esc\(err\)\}\\n`/,
 ];
 terminalSinks.forEach((re, i) => check(`terminal.js sink ${i + 1}/${terminalSinks.length} still escaped`,
   re.test(termSrc), `pattern not found: ${re}`));

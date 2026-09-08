@@ -9,8 +9,9 @@ const A = require("../_lib/auth");
 module.exports = async (req, res) => {
   if (req.method !== "POST") return A.json(res, 405, { error: "POST only" });
   try {
-    const token = A.bearer(req);
+    const token = A.cookieToken(req) || A.bearer(req);
     if (token && store.configured()) await store.del(`sess:${token}`);
   } catch { /* revocation is best-effort */ }
+  A.clearSessionCookie(res);
   return A.json(res, 200, { ok: true });
 };
