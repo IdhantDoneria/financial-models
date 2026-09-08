@@ -376,7 +376,7 @@ async function boot() {
       "import web_bridge\n" +
       "web_bridge.run_model"
     );
-    bootLog("10 models online — src/ imported unmodified", "ok"); bootPct(100);
+    bootLog("12 models online — src/ imported unmodified", "ok"); bootPct(100);
 
     const savedCc = (() => { try { return localStorage.getItem(LS_COUNTRY); } catch { return null; } })();
     state.country = COUNTRIES.find((c) => c.code === savedCc) || COUNTRIES[0];
@@ -1683,6 +1683,12 @@ const MODEL_BRIEFS = [
   { mn: "HES", nm: "Heston Stochastic Vol", cat: "Derivatives",
     desc: "Prices options with volatility that is itself random and mean-reverting, capturing the volatility smile/skew real markets show.",
     use: "Best when constant-volatility models misprice — deep in/out-of-the-money options and markets with a pronounced skew." },
+  { mn: "HDEBT", nm: "Ind AS 116 Hidden-Debt Normalizer", cat: "Forensic Accounting",
+    desc: "Capitalises operating leases, disclosed reverse-factoring exposure and probability-weighted contingent liabilities onto reported net debt, and recomputes Buffett-style owner earnings by reversing capitalised R&D.",
+    use: "Best when reported net debt understates real leverage — lease-heavy or trade-finance-heavy businesses (retail, logistics, airlines) where footnotes hide as much debt as the balance sheet shows." },
+  { mn: "RDCF", nm: "Reverse DCF (Market-Implied)", cat: "Market-Implied",
+    desc: "Inverts the standard DCF: takes today's market price and numerically solves for the constant FCF growth rate — and TAM capture — the price already implies.",
+    use: "Best for sanity-checking a stock's current price against your own growth beliefs, instead of assuming a growth rate to produce a price." },
 ];
 
 function initMenu() {
@@ -1747,10 +1753,11 @@ function renderGuide(body) {
 }
 
 function renderBriefs(body) {
-  body.innerHTML = `<h3>THE 10 MODELS — WHAT EACH IS BEST FOR</h3>` +
+  body.innerHTML = `<h3>THE 12 MODELS — WHAT EACH IS BEST FOR</h3>` +
     MODEL_BRIEFS.map((b) => `
       <div class="brief">
-        <div class="bh"><span class="bmn">${b.mn}</span><span class="bnm">${b.nm}</span><span class="bcat">${b.cat}</span></div>
+        <div class="bh"><span class="bmn">${b.mn}</span><span class="bnm">${b.nm}</span><span class="bcat">${b.cat}</span>${
+          PREMIUM_MODELS.has(b.mn) ? '<span class="bcat" style="color:var(--amber)">PRO+</span>' : ""}</div>
         <div class="bdesc">${b.desc}</div>
         <div class="buse"><b>Best for:</b> ${b.use}</div>
         <button class="bopen" data-mn="${b.mn}">OPEN ${b.mn} →</button>

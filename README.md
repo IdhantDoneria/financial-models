@@ -438,7 +438,7 @@ tracking.
 Two persistent controls frame every view:
 
 - **Hamburger menu** (top-left) — a **GUIDE** tab with a step-by-step walk-through of the
-  whole terminal, a **MODELS** tab briefing each of the ten techniques in plain English
+  whole terminal, a **MODELS** tab briefing each of the twelve techniques in plain English
   with a *Best for* line so you can match the tool to your need (and jump straight in), and
   a **HISTORY** tab that auto-saves every company you analyse on the IB desk (reopen or
   delete any past analysis; persists in `localStorage`).
