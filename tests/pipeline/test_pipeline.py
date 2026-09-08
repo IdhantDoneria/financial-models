@@ -6,7 +6,7 @@ Validates every stage:
     2. **AutoAssumer** — every model receives well-formed kwargs; missing
        inputs get sensible defaults.
     3. **ManualAssumer** — every override propagates.
-    4. **Runner** — runs all ten models on synthetic data without exceptions.
+    4. **Runner** — runs all twelve models on synthetic data without exceptions.
     5. **Exporters** — PDF and XLSX outputs are created and non-empty.
 """
 

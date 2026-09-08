@@ -411,11 +411,18 @@ function buildUI() {
     row.onclick = () => selectModel(m.mn);
     rail.appendChild(row);
 
-    const btn = document.createElement("button");
-    btn.dataset.mn = m.mn;
-    btn.innerHTML = `<b>F${i + 1}</b>${m.mn}`;
-    btn.onclick = () => selectModel(m.mn);
-    fk.appendChild(btn);
+    // The keydown handler below only recognises F1-F10 (F11/F12 are also
+    // browser-reserved for fullscreen in most browsers, unreliable to
+    // preventDefault) — don't label a strip button "F11"/"F12" implying a
+    // shortcut that doesn't exist. The rail row above and the mnemonic
+    // command bar still reach every model regardless.
+    if (i < 10) {
+      const btn = document.createElement("button");
+      btn.dataset.mn = m.mn;
+      btn.innerHTML = `<b>F${i + 1}</b>${m.mn}`;
+      btn.onclick = () => selectModel(m.mn);
+      fk.appendChild(btn);
+    }
   });
 
   // IB desk — the PDF analyzer view (mnemonic IB / PDF / REPORT).

@@ -136,7 +136,7 @@ class AutoAssumer:
             overrides: Optional per-parameter overrides from the manual UI.
 
         Returns:
-            A populated :class:`AssumptionSet` covering all ten models.
+            A populated :class:`AssumptionSet` covering all twelve models.
         """
         o = overrides or ManualOverrides()
         rf = o.risk_free_rate if o.risk_free_rate is not None else self.rf
