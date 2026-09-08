@@ -1,16 +1,22 @@
 # Financial Models — pinned dependencies (Python 3.10+)
 #
-# This is the CORE tier: everything needed to import and run the twelve
-# models (`from src import ...`), and the true minimum api/premium.py
-# needs on Vercel. Kept as small as possible on purpose — Python functions
-# have a 500MB uncompressed bundle limit, and pandas+scipy+numpy alone are
-# already a meaningful fraction of that on Linux.
+# This is the CORE tier: the true minimum api/premium.py needs on Vercel
+# (numpy + scipy — src/reverse_dcf.py's solver needs scipy.optimize.brentq —
+# + requests for FamaFrenchModel.load_factors()'s live fetch). Kept as
+# small as possible on purpose: Python functions have a 500MB uncompressed
+# bundle limit, and this exact set already measured ~259MB on Vercel's Linux
+# build once pandas was added back in testing — pandas alone was enough to
+# push a related combination over budget in an earlier attempt (see
+# api/premium.py's module docstring and src/fama_french.py /
+# src/pipeline/runner.py's lazy-pandas-import comments). pandas is NOT
+# needed to import or run any model directly — only AnalysisReport.
+# summary_frame() and FamaFrenchModel's DataFrame-shaped inputs need it,
+# and api/premium.py deliberately avoids both.
 #
-# Testing needs one more file (pytest + the two libraries the pipeline
-# tests exercise): pip install -r requirements.txt -r requirements-test.txt
+# Testing needs one more file (pytest + pandas + the libraries the model
+# and pipeline tests exercise): pip install -r requirements.txt -r requirements-test.txt
 # The interactive notebook and full local PDF/export workflow need a third:
 # requirements-notebook.txt. See the README's Installation section.
 numpy==2.4.6
 scipy==1.17.1
-pandas==3.0.3
 requests==2.34.2

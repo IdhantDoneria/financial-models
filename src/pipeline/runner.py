@@ -9,10 +9,12 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
-import pandas as pd
+
+if TYPE_CHECKING:  # pragma: no cover
+    import pandas as pd
 
 from .. import (
     BinomialTreeModel, BlackScholesModel, CAPMModel, DiscountedCashFlowModel,
@@ -63,6 +65,8 @@ class AnalysisReport:
 
     def summary_frame(self) -> "pd.DataFrame":
         """Return a tidy DataFrame — one row per model with headline outputs."""
+        import pandas as pd
+
         rows = []
         for name, res in self.results.items():
             headline = self._headline(name, res)

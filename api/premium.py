@@ -12,20 +12,32 @@ sends — authorization is re-derived from the session cookie against Redis
 directly (the same store api/usage.js already reads), never trusted from
 the request body.
 
-Reuses public/py/web_bridge.py UNCHANGED (the exact module Pyodide runs in
-the browser) rather than re-implementing the model-building/assumption
-logic here — a given filing/params produce identical numbers either way,
-and there's one place to fix bugs, not two. Two request shapes route to
-web_bridge's two entrypoints:
+Two request shapes route to two different code paths:
 
   - IB desk (extracted PDF financials + auto/manual assumptions):
     { model, extracted: {...ExtractedFinancials fields}, mode, overrides,
-      live_rf, rf_source, erp, country, currency, currency_symbol,
-      fx_per_usd } -> web_bridge.restore_extraction() + .run_report()
+      live_rf, rf_source, erp } -> builds an AssumptionSet with the real
+    AutoAssumer/ManualAssumer (src/pipeline/assumptions.py, imported
+    unchanged — same logic the browser's WASM build uses) and runs the one
+    requested model directly.
 
   - Mnemonic terminal (raw model params, no filing/assumptions involved):
     { model, params: {...raw slider values, same shape as BUILDERS[mn]
-      expects} } -> web_bridge.run_model()
+      expects} } -> reuses public/py/web_bridge.py's run_model() unchanged.
+
+Deliberately does NOT reuse web_bridge.py's restore_extraction()+run_report()
+for the IB desk path, and does NOT import AnalysisRunner: both pull in
+pandas (AnalysisReport.summary_frame()), which alone pushed this function's
+Vercel bundle over the 500MB Python limit (confirmed by two failed preview
+builds) once combined with numpy+scipy. requirements.txt therefore excludes
+pandas entirely — this file only ever touches the pandas-free half of
+src/pipeline (ExtractedFinancials, AutoAssumer, ManualAssumer,
+ManualOverrides) and the model classes' own .calculate(), replicating just
+the few lines of src/pipeline/runner.py's dispatch/headline logic this
+needs. See src/fama_french.py and src/pipeline/runner.py for the matching
+lazy-pandas-import changes that make `from src import ...` and
+`from src.pipeline.assumptions import ...` safe to do without pandas
+installed at all.
 
 Response: 200 { ok:true, model, headline, status, results, errors,
 rationale } | 401/403/503 { ok:false, error } for auth/plan/config
@@ -35,6 +47,7 @@ failures.
 from __future__ import annotations
 
 import json
+import math
 import os
 import sys
 import urllib.error
@@ -48,12 +61,56 @@ for _p in (str(_ROOT), str(_ROOT / "public" / "py")):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-import web_bridge  # noqa: E402 - needs the sys.path setup above
+import numpy as np
+
+from src import IndASHiddenDebtModel, ReverseDCFModel
+from src.pipeline.assumptions import AutoAssumer, ManualAssumer, ManualOverrides
+from src.pipeline.pdf_extractor import ExtractedFinancials
+
+import web_bridge  # noqa: E402 - needs the sys.path setup above; mnemonic path only
 
 PREMIUM_MODELS = {
     "HDEBT": "Ind AS 116 Hidden-Debt Normalizer",
     "RDCF": "Reverse DCF / Market-Implied Expectations",
 }
+PREMIUM_CLASSES = {
+    "HDEBT": IndASHiddenDebtModel,
+    "RDCF": ReverseDCFModel,
+}
+#: Mirrors AnalysisReport._headline() in src/pipeline/runner.py, for just
+#: these two models (that method itself needs pandas-free replicating).
+_HEADLINE_PICK = {
+    "HDEBT": ("adjusted_net_debt", "$"),
+    "RDCF": ("implied_fcf_cagr", "%"),
+}
+
+
+def _clean(value):
+    """numpy scalars/arrays and non-finite floats -> JSON-safe."""
+    if isinstance(value, dict):
+        return {str(k): _clean(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_clean(v) for v in value]
+    if isinstance(value, np.ndarray):
+        return [_clean(v) for v in value.tolist()]
+    if isinstance(value, (np.floating, float)):
+        f = float(value)
+        return f if math.isfinite(f) else None
+    if isinstance(value, (np.integer, int, bool)) or value is None:
+        return value
+    return str(value)
+
+
+def _headline(mnemonic: str, results: dict) -> str:
+    key, unit = _HEADLINE_PICK[mnemonic]
+    value = results.get(key)
+    if isinstance(value, (int, float)):
+        if unit == "%":
+            return f"{value * 100:.2f}%"
+        if unit == "$":
+            return f"${value:,.2f}"
+        return f"{value:.4f}"
+    return str(next(iter(results.values()), "-"))
 
 REDIS_URL = os.environ.get("KV_REST_API_URL") or os.environ.get("UPSTASH_REDIS_REST_URL")
 REDIS_TOKEN = os.environ.get("KV_REST_API_TOKEN") or os.environ.get("UPSTASH_REDIS_REST_TOKEN")
@@ -112,40 +169,50 @@ def _effective_plan(email: str) -> str:
 
 
 def _run_extracted(mnemonic: str, model_name: str, body: dict) -> dict:
-    """IB desk path: rehydrate the client's own earlier PDF extraction into
-    web_bridge's analyzer state, then run just this one model through the
-    real auto/manual assumption pipeline."""
-    extracted = body.get("extracted") or {}
-    restored = json.loads(web_bridge.restore_extraction(
-        json.dumps(extracted), body.get("period") or "annual"))
-    if not restored.get("ok"):
-        err = restored.get("error", "could not load the extracted filing")
+    """IB desk path: build an ExtractedFinancials from the client's own
+    earlier PDF extraction, run it through the real auto/manual assumption
+    pipeline, then instantiate + calculate() just this one model directly
+    (deliberately not AnalysisRunner — see the module docstring: that pulls
+    in pandas, which this function's dependency budget can't afford)."""
+    try:
+        fields = body.get("extracted") or {}
+        allowed = set(ExtractedFinancials.__dataclass_fields__)
+        kwargs = {k: v for k, v in fields.items() if k in allowed}
+        if not kwargs.get("free_cash_flows"):
+            kwargs["free_cash_flows"] = []
+        data = ExtractedFinancials(**kwargs)
+
+        auto_kwargs = {}
+        if body.get("live_rf") is not None:
+            auto_kwargs["risk_free_rate"] = float(body["live_rf"])
+        if body.get("erp") is not None:
+            auto_kwargs["equity_risk_premium"] = float(body["erp"])
+        auto = AutoAssumer(**auto_kwargs)
+
+        if body.get("mode") == "manual":
+            allowed_o = set(ManualOverrides.__dataclass_fields__)
+            raw_overrides = {k: v for k, v in (body.get("overrides") or {}).items()
+                             if k in allowed_o and v is not None}
+            if "lease_term_years" in raw_overrides:
+                raw_overrides["lease_term_years"] = int(raw_overrides["lease_term_years"])
+            assumptions = ManualAssumer(auto).build(data, ManualOverrides(**raw_overrides))
+        else:
+            assumptions = auto.build(data)
+
+        model_kwargs = dict(assumptions.kwargs_by_model.get(model_name, {}))
+        model = PREMIUM_CLASSES[mnemonic](**model_kwargs)
+        results = _clean(model.calculate())
+    except Exception as exc:
+        err = f"{type(exc).__name__}: {exc}"
         return {"ok": True, "model": model_name, "headline": "-", "status": err,
                 "results": None, "errors": err, "rationale": {}}
 
-    run_params = {
-        "mode": body.get("mode"), "selected": [model_name],
-        "live_rf": body.get("live_rf"), "rf_source": body.get("rf_source"),
-        "erp": body.get("erp"), "country": body.get("country"),
-        "currency": body.get("currency"), "currency_symbol": body.get("currency_symbol"),
-        "fx_per_usd": body.get("fx_per_usd"), "overrides": body.get("overrides") or {},
-    }
-    out = json.loads(web_bridge.run_report(json.dumps(run_params)))
-    if not out.get("ok"):
-        err = out.get("error", "run failed")
-        return {"ok": True, "model": model_name, "headline": "-", "status": err,
-                "results": None, "errors": err, "rationale": {}}
-
-    summary = out.get("summary") or []
-    row = summary[0] if summary else {"Headline result": "-", "Status": "ERROR"}
-    rationale = {k: v for k, v in (out.get("rationale") or {}).items()
-                 if k.startswith(mnemonic + " ")}
+    rationale = {f"{m} · {p}": text for (m, p), text in assumptions.rationale.items()
+                 if m == mnemonic}
     return {
         "ok": True, "model": model_name,
-        "headline": row.get("Headline result", "-"), "status": row.get("Status", "OK"),
-        "results": (out.get("results") or {}).get(model_name),
-        "errors": (out.get("errors") or {}).get(model_name),
-        "rationale": rationale,
+        "headline": _headline(mnemonic, results), "status": "OK",
+        "results": results, "errors": None, "rationale": rationale,
     }
 
 

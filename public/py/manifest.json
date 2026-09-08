@@ -1,5 +1,5 @@
 {
-  "synced_at_utc": "2026-09-08T07:20:45+00:00",
+  "synced_at_utc": "2026-09-08T15:38:37+00:00",
   "files": [
     {
       "path": "src/__init__.py",
@@ -27,7 +27,7 @@
     },
     {
       "path": "src/fama_french.py",
-      "sha256": "511a963a85969caca25b282cdca02df61559db18ae61a016cb85e25000117823"
+      "sha256": "e95f6dd7eae0326fb3df26052c0c972730f6b6ec949766875200bb93812a6085"
     },
     {
       "path": "src/gordon_growth.py",
@@ -63,7 +63,7 @@
     },
     {
       "path": "src/pipeline/runner.py",
-      "sha256": "417caef21c83fd8196b94f36f959cf2f58590948ec83b143e28c82be107b2676"
+      "sha256": "788f6ae01d0e278ce875b5807372ea5bb2137e0bbb037638ffd2e7cd507b08f7"
     },
     {
       "path": "src/reverse_dcf.py",
