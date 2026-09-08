@@ -174,7 +174,7 @@ widgets only call the public interface.
 ## 📄 Company PDF Analyzer
 
 Upload a company financial PDF (10-K, 10-Q, annual report, investor deck) and the
-pipeline scrapes the numbers, applies assumptions, runs any subset of the ten
+pipeline scrapes the numbers, applies assumptions, runs any subset of the twelve
 models, and hands you a downloadable report.
 
 **Pipeline** — `src/pipeline/`:
@@ -189,7 +189,7 @@ models, and hands you a downloadable report.
 **Notebook UI** (in `notebooks/financial_models.ipynb` → section 5):
 ① `FileUpload` widget → ② extracted-data preview → ③ model checkboxes with select-all/clear-all → ④ **Auto** / **Manual** toggle (sliders for `r_f`, β, WACC, terminal *g*, σ, option T, VaR confidence/horizon, MC paths, strike/spot ratio, dividend growth) → ⑤ **Run** → ⑥ **⬇ PDF / ⬇ Excel / ⬇ Google Doc** buttons.
 
-Tested end-to-end: synthetic 10-K → extract → run all 10 models → export PDF+XLSX
+Tested end-to-end: synthetic 10-K → extract → run all twelve models → export PDF+XLSX
 (see `tests/pipeline/test_pipeline.py`).
 
 ## Testing & scoring
@@ -275,8 +275,11 @@ the full analysis pipeline *client-side*:
    **AUTO** (IB bot): CAPM WACC (80/20 equity-debt + 150 bp credit spread), terminal
    g ≤ r_f, sector-neutral β, Damodaran 5% ERP — with the **risk-free rate scraped live
    from the free US Treasury FiscalData API** (keyless, CORS-open) and a documented
-   offline fallback. **MANUAL**: 16 override sliders; untouched sliders keep bot values.
-3. **Run** — checkboxes select which of the ten models enter the report (ALL/NONE).
+   offline fallback. **MANUAL**: 24 override sliders (16 general + 8 for the two
+   Pro+ models' footnote-only figures — lease payment, reverse-factoring exposure,
+   contingent liabilities, TAM); untouched sliders keep bot values.
+3. **Run** — checkboxes select which of the twelve models enter the report (ALL/NONE);
+   the two Ind AS hidden-debt/reverse-DCF checkboxes are gated to Analyst Pro and above.
 4. **Export** — download the report as **PDF** (reportlab), **Google Docs** (a .docx built
    with python-docx that Google Docs opens natively), or **Excel** (openpyxl) — all
    rendered inside the browser, nothing uploaded anywhere.

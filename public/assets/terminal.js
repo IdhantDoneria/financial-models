@@ -1027,8 +1027,8 @@ window.addEventListener("DOMContentLoaded", () => {
  * IB DESK — company PDF analyzer
  * Upload a 10-K/10-Q -> pure-Python extraction (pypdf + pdfminer.six in
  * WASM) -> auto assumptions (live US-Treasury risk-free + IB heuristics) or
- * manual overrides -> run any subset of the 10 models -> download the
- * report as PDF / Google-Docs (.docx) / Excel.
+ * manual overrides -> run any subset of the twelve models (two Pro+-gated)
+ * -> download the report as PDF / Google-Docs (.docx) / Excel.
  * ======================================================================== */
 
 const IB_MODELS = [
