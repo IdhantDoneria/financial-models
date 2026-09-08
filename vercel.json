@@ -14,7 +14,7 @@
       "headers": [
         { "key": "X-Content-Type-Options", "value": "nosniff" },
         { "key": "X-Frame-Options", "value": "SAMEORIGIN" },
-        { "key": "Content-Security-Policy", "value": "frame-ancestors 'self'" },
+        { "key": "Content-Security-Policy", "value": "frame-ancestors 'self'; base-uri 'self'; object-src 'none'; script-src 'self' 'wasm-unsafe-eval' https://cdn.jsdelivr.net https://cdn.plot.ly https://accounts.google.com https://checkout.razorpay.com" },
         { "key": "Referrer-Policy", "value": "strict-origin-when-cross-origin" },
         { "key": "Permissions-Policy", "value": "geolocation=(), microphone=(), camera=(), browsing-topics=()" },
         { "key": "Cross-Origin-Opener-Policy", "value": "same-origin-allow-popups" },

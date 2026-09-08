@@ -46,9 +46,13 @@ function session() {
 }
 
 function finishLogin(user, remember) {
+  // Server-backed logins (otp/google) issue a session as an httpOnly cookie
+  // now — the browser attaches it automatically on every same-origin
+  // request, so this blob is display metadata only (name/provider for the
+  // UI) and deliberately never carries the session token itself. Even a
+  // successful XSS reading localStorage gets nothing usable out of it.
   localStorage.setItem(LS_SESSION, JSON.stringify({
     uid: user.uid, name: user.name, provider: user.provider,
-    token: user.token || null,   // server-issued bearer token (OTP mode)
     ts: Date.now(), exp: Date.now() + (remember ? SESSION_LONG : SESSION_SHORT),
   }));
   location.replace("./");
@@ -162,7 +166,7 @@ async function fetchConfig() {
 
 async function postJson(url, body) {
   const r = await fetch(url, {
-    method: "POST", headers: { "Content-Type": "application/json" },
+    method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body), signal: AbortSignal.timeout(15000),
   });
   let out = {};
@@ -180,7 +184,7 @@ async function googleServerVerify(credential) {
   let r;
   try {
     r = await fetch("api/auth-google", {
-      method: "POST", headers: { "Content-Type": "application/json" },
+      method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ credential }), signal: AbortSignal.timeout(15000),
     });
   } catch {
@@ -246,7 +250,7 @@ async function onOtpVerify() {
     }
     rememberServerEmail(email);
     finishLogin({ uid: email, name: (out.user && out.user.name) || email,
-                  provider: "otp", token: out.token }, true);
+                  provider: "otp" }, true);
     return;
   } catch (err) {
     showErr(String(err.message || err));
@@ -270,7 +274,7 @@ async function onPwLogin(e) {
     const out = await postJson("api/auth-login", { email, password: pass });
     rememberServerEmail(email);
     finishLogin({ uid: email, name: (out.user && out.user.name) || email,
-                  provider: "otp", token: out.token }, true);
+                  provider: "otp" }, true);
     return;
   } catch (err) {
     showErr(String(err.message || err));
@@ -399,7 +403,7 @@ async function initGoogle(cfg) {
         // Server verified the Google ID token and issued a real session —
         // same bearer-token shape the OTP/password paths use.
         finishLogin({ uid: out.user.email, name: out.user.name || out.user.email,
-                      provider: "google", token: out.token }, true);
+                      provider: "google" }, true);
       } catch (err) {
         console.error("Google callback error:", err);
         showErr("GOOGLE SIGN-IN FAILED: " + String(err.message || err).slice(0, 100));

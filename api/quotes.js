@@ -64,6 +64,8 @@ async function quote(s) {
 //  `?sym=` instead of the hardcoded SYMBOLS list.
 const SYM_RE = /^[A-Za-z0-9.\-^=]{1,16}$/;   // conservative allowlist — no path/query injection
 
+const { clientIp, withinLimit } = require("./_lib/net");
+
 module.exports = async (req, res) => {
   const url = new URL(req.url || "/", "http://internal");
   const sym = url.searchParams.get("sym");
@@ -77,6 +79,11 @@ module.exports = async (req, res) => {
     // be a correctness bug, not just a freshness one), so no-store instead.
     res.setHeader("Cache-Control", "no-store");
     if (!SYM_RE.test(sym)) return res.status(400).json({ ok: false, error: "invalid symbol" });
+    // Uncached path only — the fixed-basket tape below is already CDN-cached
+    // and shared across every visitor, so it needs no per-caller limit.
+    if (!(await withinLimit(`quotes:rl:${clientIp(req)}`, 30, 60))) {
+      return res.status(429).json({ ok: false, error: "rate limited" });
+    }
     const q = await quote({ sym, label: sym, money: true });
     if (!q) return res.status(502).json({ ok: false, error: `could not fetch a quote for ${sym}` });
     return res.status(200).json({ ok: true, symbol: sym, price: q.price, pct: q.pct, ts: Date.now() });
