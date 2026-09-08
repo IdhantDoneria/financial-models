@@ -129,6 +129,14 @@
 <script>
 "use strict";
 const $ = (s) => document.querySelector(s);
+//: user-controlled fields (email, display name) are rendered via innerHTML
+//  below — EMAIL_RE only forbids whitespace/@, so an attacker can register
+//  an address/name carrying HTML metacharacters. Escape everything that
+//  isn't a server-derived enum/number/timestamp before it reaches the DOM,
+//  in both text and quoted-attribute (data-*) contexts.
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({
+  "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+}[c]));
 const LSK = "finmodels.adminkey";
 let KEY = null;
 
@@ -156,21 +164,21 @@ function render(data) {
   const tb = $("#users tbody");
   tb.innerHTML = data.rows.map((r) => `
     <tr>
-      <td><b>${r.email}</b>${r.founder ? ` <span class="tag founder">FOUNDER #${r.founder}</span>` : ""}</td>
-      <td>${r.signedUp ? (r.name || "—") : `<span class="ghosted">not signed up yet</span>`}</td>
-      <td class="plan-${r.plan}">${r.planName}</td>
-      <td>${r.via ? `<span class="tag ${r.via}">${r.via.toUpperCase()}</span>` : "—"}</td>
+      <td><b>${esc(r.email)}</b>${r.founder ? ` <span class="tag founder">FOUNDER #${r.founder}</span>` : ""}</td>
+      <td>${r.signedUp ? esc(r.name || "—") : `<span class="ghosted">not signed up yet</span>`}</td>
+      <td class="plan-${r.plan}">${esc(r.planName)}</td>
+      <td>${r.via ? `<span class="tag ${r.via}">${esc(r.via.toUpperCase())}</span>` : "—"}</td>
       <td>${r.expiresAt ? new Date(r.expiresAt).toLocaleDateString() : "—"}</td>
       <td class="num">${r.usedThisMonth}</td>
       <td class="num">${r.loginCount}</td>
       <td>${fdate(r.lastLoginAt)}</td>
       <td>${fdate(r.createdAt)}</td>
       <td>${r.passwordSet
-        ? `SET ${fdate(r.pwSetAt)} <button class="ghost" data-resetpw="${r.email}">RESET</button>`
+        ? `SET ${fdate(r.pwSetAt)} <button class="ghost" data-resetpw="${esc(r.email)}">RESET</button>`
         : `<span class="ghosted">not set</span>`}</td>
       <td>${r.plan !== "free"
-        ? `<button class="danger" data-revoke="${r.email}">REVOKE</button>`
-        : `<button data-grant="${r.email}">GIFT 30D</button>`}</td>
+        ? `<button class="danger" data-revoke="${esc(r.email)}">REVOKE</button>`
+        : `<button data-grant="${esc(r.email)}">GIFT 30D</button>`}</td>
     </tr>`).join("") || `<tr><td colspan="11" class="ghosted">No users yet — accounts appear
       here the moment someone verifies their email on the login page.</td></tr>`;
   tb.querySelectorAll("[data-resetpw]").forEach((b) => b.onclick = async () => {
@@ -189,7 +197,7 @@ function render(data) {
   const geo = data.geo || { total: 0, countries: [] };
   const gtb = $("#geo tbody");
   gtb.innerHTML = geo.countries.map((c) => `
-    <tr><td>${c.code}</td><td class="num">${c.count}</td>
+    <tr><td>${esc(c.code)}</td><td class="num">${c.count}</td>
       <td class="num">${geo.total ? ((c.count / geo.total) * 100).toFixed(1) : "0.0"}%</td></tr>`
   ).join("") || `<tr><td colspan="3" class="ghosted">No tracked visits yet.</td></tr>`;
 }
