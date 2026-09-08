@@ -1,31 +1,28 @@
 # Financial Models — pinned dependencies (Python 3.10+)
+#
+# This file is used by three consumers that all need it to stay small:
+# `pip install -r requirements.txt` for core dev/testing, the CI pytest job,
+# and Vercel's Python function build for api/premium.py (which has a 500MB
+# bundle-size limit — the full notebook/PDF-backend/Google-export stack this
+# repo also uses does NOT fit alongside numpy/scipy/pandas under that limit).
+# Extras needed only for the interactive notebook and the full local PDF
+# analyzer/export experience live in requirements-notebook.txt instead — see
+# the README's Installation section.
+#
 # Core numerics
 numpy==2.4.6
 scipy==1.17.1
 pandas==3.0.3
 # Interactive visualization
 plotly==6.8.0
-# Notebook UI
-ipywidgets==8.1.8
-ipykernel==7.3.0
-notebook==7.6.0
-nbformat==5.10.4
-nbconvert==7.17.1
-# Live data fetching (Fama-French)
+# Live data fetching
 requests==2.34.2
-# PDF ingestion — cascade of complementary backends
+# PDF ingestion — the one backend the test suite and api/premium.py need;
+# the browser terminal installs its own richer cascade via micropip at
+# runtime (see public/py/web_bridge.py), independent of this file.
 pypdf==6.14.2
-pdfplumber==0.11.10
-pymupdf==1.28.0
-pdfminer.six==20260107
-# Report export
+# Report export — reportlab/openpyxl are exercised by tests/pipeline/test_pipeline.py
 reportlab==5.0.0
 openpyxl==3.1.5
-python-docx==1.2.0
-# Google Docs export (optional; requires user-supplied OAuth credentials)
-google-api-python-client==2.198.0
-google-auth==2.55.1
-google-auth-oauthlib==1.4.0
-google-auth-httplib2==0.4.0
 # Testing
 pytest==9.1.1

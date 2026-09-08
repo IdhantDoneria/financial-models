@@ -108,6 +108,15 @@ python -m venv venv && source venv/bin/activate   # optional but recommended
 pip install -r requirements.txt
 ```
 
+`requirements.txt` covers the models, tests, and the deployed app (kept small — it also
+bounds Vercel's Python function bundle). The interactive notebook and the full local PDF
+analyzer/export experience (richer PDF-backend cascade, `.docx`/Google Docs export) need
+one more file:
+
+```bash
+pip install -r requirements-notebook.txt
+```
+
 ## Quick start
 
 **Use a model directly:**
@@ -164,7 +173,7 @@ financial-models/
 │   └── about.html                 # static project overview page
 ├── docs/design/terminal-spec.md   # terminal design specification
 ├── docs/design/mockup.html        # design-first UI wireframe
-├── requirements.txt · vercel.json · .gitignore · LICENSE
+├── requirements.txt · requirements-notebook.txt · vercel.json · .gitignore · LICENSE
 ```
 
 Every model inherits `BaseFinancialModel`, which supplies the logger and a family of

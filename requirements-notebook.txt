@@ -1,0 +1,31 @@
+# Extras for the interactive notebook UI (jupyter notebook
+# notebooks/financial_models.ipynb) and the full local PDF-analyzer/export
+# experience (richer PDF-backend cascade, .docx export, Google Docs export).
+#
+# Install in ADDITION to requirements.txt:
+#   pip install -r requirements.txt -r requirements-notebook.txt
+#
+# Not needed for pytest, for the deployed app, or for Vercel's serverless
+# functions — kept out of requirements.txt specifically so those stay well
+# under Vercel's 500MB Python function bundle limit. The browser terminal's
+# PDF analyzer is unaffected either way: it installs its own backend cascade
+# via micropip at runtime (see public/py/web_bridge.py), independent of both
+# of these files.
+
+# Notebook UI
+ipywidgets==8.1.8
+ipykernel==7.3.0
+notebook==7.6.0
+nbformat==5.10.4
+nbconvert==7.17.1
+# Richer local PDF ingestion cascade (requirements.txt already has pypdf)
+pdfplumber==0.11.10
+pymupdf==1.28.0
+pdfminer.six==20260107
+# .docx export
+python-docx==1.2.0
+# Google Docs export (optional; requires user-supplied OAuth credentials)
+google-api-python-client==2.198.0
+google-auth==2.55.1
+google-auth-oauthlib==1.4.0
+google-auth-httplib2==0.4.0

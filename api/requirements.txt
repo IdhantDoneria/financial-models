@@ -1,8 +1,0 @@
-# Scoped to api/premium.py only — the root requirements.txt pulls in
-# jupyter/notebook/reportlab/pdf-backends/google-api-client/pytest that this
-# one small serverless function has no use for. Pinned to match the root
-# file so local `pytest` and this function run the exact same model code.
-numpy==2.4.6
-scipy==1.17.1
-pandas==3.0.3
-plotly==6.8.0
