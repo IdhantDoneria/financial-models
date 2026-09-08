@@ -249,7 +249,8 @@ _KEY_FIELDS = (
     "company_name", "ticker", "fiscal_year", "revenue", "free_cash_flows",
     "net_income", "total_debt", "cash_and_equivalents", "shares_outstanding",
     "current_price", "dividend_per_share", "beta", "revenue_growth",
-    "operating_margin", "tax_rate",
+    "operating_margin", "tax_rate", "depreciation_amortization", "rd_expense",
+    "capital_expenditures",
 )
 
 _QUARTERLY_RE = _re.compile(
@@ -292,6 +293,7 @@ _OVERRIDABLE_FIELDS = (
     "revenue", "net_income", "total_debt", "cash_and_equivalents",
     "shares_outstanding", "current_price", "dividend_per_share", "beta",
     "revenue_growth", "operating_margin", "tax_rate",
+    "depreciation_amortization", "rd_expense", "capital_expenditures",
 )
 
 
@@ -331,6 +333,12 @@ def _assumed_preview(data: Any) -> dict:
         preview["shares_outstanding"] = 1_000_000   # VaR notional proxy
     if data.net_income is None:
         preview["net_income"] = None                # not consumed by any model
+    if data.depreciation_amortization is None:
+        preview["depreciation_amortization"] = 0.0   # HDEBT owner-earnings add-back
+    if data.rd_expense is None:
+        preview["rd_expense"] = 0.0                  # HDEBT owner-earnings R&D spend
+    if data.capital_expenditures is None:
+        preview["capital_expenditures"] = 0.0        # HDEBT maintenance-capex proxy
     if not data.free_cash_flows:
         preview["free_cash_flows"] = [round(f, 2) for f in auto._synth_fcfs(data, 0.09)]
     return _clean(preview)
@@ -431,7 +439,7 @@ def run_report(params_json: str) -> str:
         allowed = set(ManualOverrides.__dataclass_fields__)
         raw_overrides = {k: v for k, v in (p.get("overrides") or {}).items()
                          if k in allowed and v is not None}
-        for int_field in ("var_horizon_days", "monte_carlo_paths"):
+        for int_field in ("var_horizon_days", "monte_carlo_paths", "lease_term_years"):
             if int_field in raw_overrides:
                 raw_overrides[int_field] = int(raw_overrides[int_field])
         assumptions = ManualAssumer(auto).build(data, ManualOverrides(**raw_overrides))
