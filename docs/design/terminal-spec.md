@@ -1,6 +1,6 @@
 # FINMODELS TERMINAL — Design Specification
 
-**Goal.** The deployed Vercel URL is not a brochure — it is the product. All ten
+**Goal.** The deployed Vercel URL is not a brochure — it is the product. All twelve
 models execute live in the visitor's browser (Pyodide/WebAssembly runs the
 *actual* `src/*.py` files, unmodified). The interface borrows its language from
 the two most recognizable professional surfaces in finance:
@@ -53,7 +53,7 @@ Desktop (≥1100px): fixed viewport app, no page scroll — panels scroll intern
 ├──────────┬──────────────────────────┬────────────────────────┤
 │ MODELS   │ INPUTS                   │ OUTPUT                 │
 │ (rail,   │ label · slider · value   │ key ······· value      │
-│ 10 rows) │ …                        │ (signed coloring)      │
+│ 12 rows) │ …                        │ (signed coloring)      │
 │          ├──────────────────────────┴────────────────────────┤
 │          │ CHART ▏DOC   (tabbed; Plotly dark / KaTeX md)     │
 ├──────────┴───────────────────────────────────────────────────┤
@@ -69,7 +69,9 @@ same components, page scrolls.
 - **Command line** is the primary navigation: type a mnemonic, press Enter
   (`<GO>`). Unknown mnemonic → amber error line, Bloomberg-style
   (`%INVALID MNEMONIC — F1..F10 or HELP`).
-- **Function keys** F1–F10 (real keydown + clickable strip) map to the ten models.
+- **Function keys** F1–F10 (real keydown + clickable strip) map to the first ten
+  models rail rows — F-keys top out at F10, so the two Pro+ models (HDEBT, RDCF)
+  are reachable by mnemonic or click only, not a function key.
 - **Sliders + numeric twins**: every parameter is a slider *and* an editable
   number field, always in sync; changes debounce-recalculate (200 ms) — the
   terminal feels live, no Run button needed (a `RECALC <GO>` action exists for
@@ -94,6 +96,8 @@ same components, page scrolls.
 | F8 | `CRR` | Binomial Tree | BSM inputs + steps 10–2000 + european/american |
 | F9 | `MC` | Monte Carlo (GBM) | BSM inputs + paths 10k–500k + antithetic toggle |
 | F10 | `HES` | Heston | S, K, r, T + v₀ 0.005–0.5, κ 0.1–10, θ 0.005–0.5, ξ 0.05–1.5, ρ −0.95–0.5 |
+| — | `HDEBT` | Ind AS 116 Hidden-Debt Normalizer (Pro+) | net income, reported net debt/equity, shares, lease payment/term/rate, reverse-factoring exposure, 2 contingent liabilities (amount + probability), D&A, capitalised-R&D amortisation, R&D cash spend, maintenance capex |
+| — | `RDCF` | Reverse DCF / Market-Implied (Pro+) | current price, shares, net debt, base FCF, base revenue, TAM, horizon 1–10y, WACC 4–25%, terminal g 0–5% |
 
 Series-input models (MPT/VAR/FF3) get scalar slider front-ends; the Python
 bridge synthesizes the series (covariance assembly, seeded return draws,
@@ -140,9 +144,10 @@ public/
 The analyzer view reuses the panel grid: INPUTS hosts a 5-step form
 (① upload 10-K/10-Q · ② period basis AUTO/ANNUAL/QUARTERLY with ×4 flow
 annualisation · ③ assumption engine AUTO/MANUAL — auto scrapes the live
-risk-free from the US Treasury FiscalData API, manual exposes all 16
-`ManualOverrides` sliders with dirty-tracking so untouched knobs keep bot
-values · ④ model checkboxes · ⑤ run + export). EXTRACTED DATA replaces
+risk-free from the US Treasury FiscalData API, manual exposes all 24
+`ManualOverrides` sliders (16 general + 8 for the two Pro+ models' footnote-only
+figures) with dirty-tracking so untouched knobs keep bot values · ④ model
+checkboxes, the two Pro+ ones gated by `premiumModelGate()` · ⑤ run + export). EXTRACTED DATA replaces
 OUTPUT, with per-field `PDF` / `AUTO-ASSUMED` / `LIVE` badges. The CHART tab
 becomes the report summary; DOC shows the assumption-rationale audit trail.
 Exports (PDF / Google-Docs .docx / Excel) are rendered by the same
@@ -222,7 +227,7 @@ Two persistent controls sit in the command bar, framing every view.
 - **GUIDE** — a numbered, step-by-step walk-through of the whole terminal
   (pick market → choose model → drive inputs → read output → IB desk → history),
   written for a first-time visitor.
-- **MODELS** — a plain-English brief for each of the ten techniques: one line
+- **MODELS** — a plain-English brief for each of the twelve techniques: one line
   on *what it does* and a green **Best for** line on *which need it fits*, so a
   user can match tool to question (value a company, size risk, price an option,
   allocate). Each brief has an **OPEN →** button that jumps straight into that
@@ -245,7 +250,7 @@ and is shown in the status bar.
 
 ## 12 · Scenario & sensitivity engine (`SCEN` tab)
 
-A third analytics tab (CHART · **SCEN** · DOC), shown for the ten model views and
+A third analytics tab (CHART · **SCEN** · DOC), shown for all twelve model views and
 hidden on the IB desk. Everything it displays comes from re-running the actual
 Python model in Pyodide with perturbed inputs — no closed-form deltas.
 

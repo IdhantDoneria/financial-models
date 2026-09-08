@@ -166,7 +166,7 @@ md(
     "## 5 · 📄 Company PDF Analyzer\n\n"
     "Upload a company's financial PDF (10-K, 10-Q, annual report, investor deck) "
     "and let the pipeline scrape financial figures, apply IB-style assumptions "
-    "(Auto) or your own overrides (Manual), run any subset of the ten models, "
+    "(Auto) or your own overrides (Manual), run any subset of the twelve models, "
     "and export a report as PDF / Excel / Google Docs.\n\n"
     "**Stages:** ① Upload → ② Review extracted data → ③ Pick mode + models → "
     "④ Run → ⑤ Download report."

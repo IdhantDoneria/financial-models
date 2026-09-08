@@ -1,6 +1,6 @@
-"""Financial Models — 10 canonical models with a shared, tested interface.
+"""Financial Models — 12 canonical models with a shared, tested interface.
 
-This package exposes ten financial models, each a subclass of
+This package exposes twelve financial models, each a subclass of
 :class:`~src.base_model.BaseFinancialModel` implementing ``calculate``,
 ``explain`` and ``visualize``, plus a :class:`~src.scorer.ModelScorer` that grades
 them on pedagogical clarity, numerical accuracy and production readiness.
