@@ -231,6 +231,12 @@ const TAPE_FALLBACK = [
 
 /* ------------------------------------------------------------------------ */
 const $ = (sel) => document.querySelector(sel);
+//: User-controlled text (account display name, email, a company name pulled
+//  from an uploaded PDF) reaches several innerHTML sinks below. Escape it
+//  before interpolation — same helper/behavior as admin.html.
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({
+  "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+}[c]));
 const state = {
   pyodide: null, runPy: null, micropip: null, current: null, values: {},
   timer: null, seq: 0, view: "model",
@@ -297,7 +303,7 @@ async function validateServerSession() {
         u.name = j.user.name;
         localStorage.setItem(LS_SESSION, JSON.stringify(u));
         const who = $("#who");
-        if (who) who.innerHTML = `◉ USER <b>${String(u.name).toUpperCase().slice(0, 24)}</b>`;
+        if (who) who.innerHTML = `◉ USER <b>${esc(String(u.name).toUpperCase().slice(0, 24))}</b>`;
       }
     }
   } catch { /* offline — keep the local session */ }
@@ -456,9 +462,9 @@ function buildUI() {
   // signed-in identity chip (SIGN OUT now lives inside the hamburger menu)
   const u = state.user;
   $("#who").innerHTML = `${["google", "otp"].includes(u.provider) ? "◉" : "●"} USER <b>${
-    String(u.name || u.uid).toUpperCase().slice(0, 24)}</b>`;
+    esc(String(u.name || u.uid).toUpperCase().slice(0, 24))}</b>`;
   const mw = $("#menu-who");
-  if (mw) mw.innerHTML = `SIGNED IN · <b>${String(u.name || u.uid).toUpperCase().slice(0, 22)}</b>`;
+  if (mw) mw.innerHTML = `SIGNED IN · <b>${esc(String(u.name || u.uid).toUpperCase().slice(0, 22))}</b>`;
 
   renderClock();
   setInterval(renderClock, 1000);
@@ -892,7 +898,11 @@ const PCT_KEY = /rate|return|growth|yield|alpha|confidence|premium|weight|margin
 function fmtValue(key, v) {
   if (v === null || v === undefined) return "—";
   if (typeof v === "boolean") return v ? "TRUE" : "FALSE";
-  if (typeof v === "string") return v.toUpperCase();
+  // Escaped here (not just at the call site) because this formatter is the
+  // single choke point several sinks share for extracted-PDF string fields
+  // (company_name, ticker) — genuinely attacker-controlled via a crafted
+  // upload, unlike the model-computed values also passed through here.
+  if (typeof v === "string") return esc(v.toUpperCase());
   if (Array.isArray(v)) {
     if (v.length <= 6 && v.every((x) => typeof x === "number"))
       return v.map((x) => +x.toFixed(3)).join("  ");
@@ -1578,7 +1588,7 @@ function renderIBReport() {
     return;
   }
   const company = state.ib.extracted?.fields?.company_name || "UPLOADED COMPANY";
-  let html = `<h2>REPORT — ${company.toUpperCase()} · ${out.mode.toUpperCase()} MODE</h2>`;
+  let html = `<h2>REPORT — ${esc(company.toUpperCase())} · ${out.mode.toUpperCase()} MODE</h2>`;
   html += confidenceBannerHTML();
   html += `<table><tr><th>MODEL</th><th>HEADLINE RESULT</th><th>STATUS</th></tr>`;
   out.summary.forEach((row) => {
@@ -1838,12 +1848,12 @@ function renderHistoryTab(body) {
     return;
   }
   const who = state.user ? String(state.user.name || state.user.uid).toUpperCase() : "GUEST";
-  body.innerHTML = `<h3>SAVED COMPANY ANALYSES · ${list.length} — ${who}</h3>
+  body.innerHTML = `<h3>SAVED COMPANY ANALYSES · ${list.length} — ${esc(who)}</h3>
     <div class="hist-actions"><button id="histclear">CLEAR ALL</button></div>` +
     list.map((h, i) => `
       <div class="hist-item">
         <div class="hmeta">
-          <div class="hco">${(h.company || "UNTITLED").toUpperCase()}</div>
+          <div class="hco">${esc((h.company || "UNTITLED").toUpperCase())}</div>
           <div class="hsub">${h.mode ? h.mode.toUpperCase() + " · " : ""}${h.nModels} MODELS · ${h.country || ""} · ${new Date(h.ts).toLocaleString()}</div>
         </div>
         <button class="hload" data-i="${i}">OPEN</button>
@@ -2423,7 +2433,7 @@ async function renderPlanTab(body) {
         free of charge, active until ${us.expiresAt ? new Date(us.expiresAt).toLocaleDateString() : "—"}.</div>`;
     }
     head = gift + `<div class="pusage">
-      <div class="purow"><span>SIGNED IN AS</span><b>${String(u.name || u.uid).toUpperCase().slice(0, 28)}</b></div>
+      <div class="purow"><span>SIGNED IN AS</span><b>${esc(String(u.name || u.uid).toUpperCase().slice(0, 28))}</b></div>
       <div class="purow"><span>CURRENT PLAN</span><b class="${current !== "free" ? "paid" : ""}">${us.planName}</b></div>
       <div class="purow"><span>UPLOADS THIS MONTH (${us.month || ""})</span><b>${us.used} / ${lim}</b></div>
       ${us.limit !== null ? `<div class="pmeterbar"><div style="width:${pctUsed}%"></div></div>` : ""}
