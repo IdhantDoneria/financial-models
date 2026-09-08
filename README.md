@@ -1,19 +1,19 @@
 # 📈 Financial Models
 
-**Ten canonical models of quantitative finance — mathematically validated, pedagogically documented, and production-hardened — in one integrated Python + Jupyter codebase.**
+**Twelve canonical models of quantitative finance — mathematically validated, pedagogically documented, and production-hardened — in one integrated Python + Jupyter codebase.**
 
 > **▶ Run them live: [financial-models-six.vercel.app](https://financial-models-six.vercel.app)** — a
-> Bloomberg-terminal-style interface where all ten models execute **in your browser**
+> Bloomberg-terminal-style interface where all twelve models execute **in your browser**
 > (the actual `src/*.py` files, running on CPython compiled to WebAssembly — no server).
 > Type a mnemonic (`BSM`, `DCF`, `HES`, …) and press `<GO>`.
 
-Each model is a self-contained class with a common interface (`calculate()` · `explain()` · `visualize()`), literature-sourced numerical benchmarks, and an automated scorer that grades it on three metrics. **All ten models self-score 10/10 on all three metrics** (an internal quality bar computed by this repo's own `src/scorer.py`, not a third-party audit), and the full suite is covered by 88 passing tests.
+Each model is a self-contained class with a common interface (`calculate()` · `explain()` · `visualize()`), literature-sourced numerical benchmarks, and an automated scorer that grades it on three metrics. **All twelve models self-score 10/10 on all three metrics** (an internal quality bar computed by this repo's own `src/scorer.py`, not a third-party audit), and the full suite is covered by 112 passing tests.
 
 ---
 
 ## Table of contents
 - [Overview](#overview)
-- [The ten models](#the-ten-models)
+- [The twelve models](#the-twelve-models)
 - [Metric scores](#metric-scores)
 - [Installation](#installation)
 - [Quick start](#quick-start)
@@ -36,8 +36,11 @@ implementations that are simultaneously:
 - **Robust** — strict input validation, structured logging, full type hints, custom exceptions,
   and an extensible base-class architecture (add a model by subclassing and implementing three
   methods).
+- **Defensible** — two premium-only models (see [the moat](#-the-moat-two-models-most-tools-dont-attempt)
+  below) that require real forensic-accounting logic and numerical root-finding, not a
+  spreadsheet template a competitor can clone in an afternoon.
 
-## The ten models
+## The twelve models
 
 | # | Model | Category | Core formula | Reference |
 |---|-------|----------|--------------|-----------|
@@ -51,11 +54,22 @@ implementations that are simultaneously:
 | 8 | **Binomial Tree (CRR)** | Derivatives | p = (e^{(r−q)Δt}−d)/(u−d) | Cox, Ross & Rubinstein (1979) |
 | 9 | **Monte Carlo (GBM)** | Derivatives | Ĉ = e⁻ʳᵀ·E[max(Sₜ−K,0)] | Boyle (1977) |
 | 10 | **Heston Stochastic Volatility** | Derivatives | dvₜ = κ(θ−vₜ)dt + ξ√vₜ dWₜ | Heston (1993) |
+| 11 | **Ind AS 116 Hidden-Debt Normalizer** | Forensic Accounting | L = C·(1−(1+r)⁻ⁿ)/r; adj. debt = net_debt + L + RF + Σ(CLᵢ·pᵢ) | Ind AS 116 / IFRS 16 (2016); Buffett (1986) |
+| 12 | **Reverse DCF (Market-Implied)** | Market-Implied | solve g\*: EV(g\*) = price·shares + net_debt | Rappaport & Mauboussin (2001) |
 
 Each model exposes a `reference_benchmarks()` classmethod returning literature/identity checks
 (e.g. Black-Scholes reproduces Hull Example 15.6 to a relative error of `8.9e-05`; put-call
 parity holds to `4.5e-16`; the binomial tree converges to Black-Scholes; Heston reduces to
 Black-Scholes as ξ→0 with relative error `4e-09`).
+
+### 🛡️ The moat: two models most tools don't attempt
+
+Models 11 and 12 are the terminal's premium tier ([Analyst Pro and above](#-plans--payments--razorpay)) — not the same ten models behind a paywall, but two genuinely harder problems most retail-facing valuation tools skip entirely:
+
+- **Ind AS 116 Hidden-Debt Normalizer (`HDEBT`)** — most tools take reported net debt at face value. This one pulls three categories of leverage that sit in footnotes, not the balance sheet — capitalised operating leases (present-valued at the incremental borrowing rate), disclosed reverse-factoring/supply-chain-finance exposure, and probability-weighted contingent liabilities — and moves them onto it. It also recomputes Buffett-style *owner earnings*, reversing the smoothing effect of capitalised R&D. This is the kind of adjustment a sell-side analyst does by hand; here it's a formula run against a real filing.
+- **Reverse DCF (`RDCF`)** — inverts the standard DCF: instead of a growth assumption producing a price, it takes the market's actual price and numerically root-finds (`scipy.optimize.brentq`) the constant FCF growth rate the price already implies, then translates that into an implied share of a disclosed TAM. It's the "expectations investing" method (Rappaport & Mauboussin, 2001) — few cheap or free tools implement it because it needs a real bracketed solver over a monotonic value function, not a lookup table.
+
+Both self-score 10/10 on the same scorer as the original ten (see [Metric scores](#metric-scores-self-assessed)) and are covered by the same benchmark/interface/scoring test battery — the moat is the domain logic, not looser quality bars.
 
 ## Metric scores (self-assessed)
 
@@ -76,6 +90,8 @@ self-graded check the code runs on itself, not an independent or third-party aud
 | Binomial Tree (CRR) | 10 | 10 | 10 | **10.0** |
 | Monte Carlo (GBM) | 10 | 10 | 10 | **10.0** |
 | Heston Stochastic Volatility | 10 | 10 | 10 | **10.0** |
+| Ind AS 116 Hidden-Debt Normalizer | 10 | 10 | 10 | **10.0** |
+| Reverse DCF (Market-Implied) | 10 | 10 | 10 | **10.0** |
 
 > **Refinement cycles used: 0 of 3.** The design-for-quality approach (shared validated base
 > class, benchmark-driven development) reached 10/10 on the first scoring pass, so no refactor
@@ -92,6 +108,21 @@ python -m venv venv && source venv/bin/activate   # optional but recommended
 pip install -r requirements.txt
 ```
 
+`requirements.txt` is deliberately just the numeric core (numpy/scipy/pandas/requests) —
+it's also what Vercel's Python function build uses for the deployed app's server-side
+premium-model computation (`api/premium.py`), which has a 500MB bundle limit, so it's kept
+as small as possible. Two more files layer on top:
+
+```bash
+# running the test suite (pytest + plotly + the PDF/xlsx libs the tests exercise)
+pip install -r requirements.txt -r requirements-test.txt
+pytest tests/ -q
+
+# the interactive notebook + full local PDF-analyzer/export experience
+# (richer PDF-backend cascade, .docx export, Google Docs export)
+pip install -r requirements.txt -r requirements-test.txt -r requirements-notebook.txt
+```
+
 ## Quick start
 
 **Use a model directly:**
@@ -102,7 +133,7 @@ from src import BlackScholesModel
 option = BlackScholesModel(spot=42, strike=40, rate=0.10, sigma=0.20,
                            maturity=0.5, option_type="call")
 print(option.calculate()["price"])   # 4.759422  (matches Hull Example 15.6)
-option.visualize().show()            # interactive Plotly value-vs-spot chart
+option.visualize().show()            # interactive Plotly chart — needs requirements-test.txt
 print(option.explain())              # Markdown derivation + worked example
 ```
 
@@ -130,12 +161,14 @@ financial-models/
 │   ├── dcf.py  mpt.py  capm.py  monte_carlo.py  black_scholes.py
 │   ├── gordon_growth.py  fama_french.py  var_cvar.py
 │   ├── stochastic_volatility.py  binomial.py
+│   ├── ind_as_hidden_debt.py      # Ind AS 116 hidden-debt & owner-earnings normalizer
+│   ├── reverse_dcf.py             # reverse DCF / market-implied expectations solver
 │   └── scorer.py                  # automated 3-metric scoring engine
 ├── tests/
 │   ├── conftest.py                # representative instance factory
-│   ├── test_models.py             # 75 tests: accuracy · interface · robustness · scoring
+│   ├── test_models.py             # 87 tests: accuracy · interface · robustness · scoring
 │   ├── test_web_assets.py         # guard: browser terminal runs the tested sources
-│   └── pipeline/test_pipeline.py  # 8 tests: PDF analyzer end-to-end
+│   └── pipeline/test_pipeline.py  # 20 tests: PDF analyzer end-to-end
 ├── scripts/build_notebook.py      # regenerates the notebook from source
 ├── scripts/sync_web_assets.py     # syncs src/ + FF data into public/ for the terminal
 ├── scripts/e2e_terminal.py        # headless-Chromium check: all 10 models in-browser
@@ -146,7 +179,7 @@ financial-models/
 │   └── about.html                 # static project overview page
 ├── docs/design/terminal-spec.md   # terminal design specification
 ├── docs/design/mockup.html        # design-first UI wireframe
-├── requirements.txt · vercel.json · .gitignore · LICENSE
+├── requirements.txt · requirements-test.txt · requirements-notebook.txt · vercel.json · .gitignore · LICENSE
 ```
 
 Every model inherits `BaseFinancialModel`, which supplies the logger and a family of
@@ -156,7 +189,7 @@ widgets only call the public interface.
 ## 📄 Company PDF Analyzer
 
 Upload a company financial PDF (10-K, 10-Q, annual report, investor deck) and the
-pipeline scrapes the numbers, applies assumptions, runs any subset of the ten
+pipeline scrapes the numbers, applies assumptions, runs any subset of the twelve
 models, and hands you a downloadable report.
 
 **Pipeline** — `src/pipeline/`:
@@ -171,19 +204,19 @@ models, and hands you a downloadable report.
 **Notebook UI** (in `notebooks/financial_models.ipynb` → section 5):
 ① `FileUpload` widget → ② extracted-data preview → ③ model checkboxes with select-all/clear-all → ④ **Auto** / **Manual** toggle (sliders for `r_f`, β, WACC, terminal *g*, σ, option T, VaR confidence/horizon, MC paths, strike/spot ratio, dividend growth) → ⑤ **Run** → ⑥ **⬇ PDF / ⬇ Excel / ⬇ Google Doc** buttons.
 
-Tested end-to-end: synthetic 10-K → extract → run all 10 models → export PDF+XLSX
+Tested end-to-end: synthetic 10-K → extract → run all twelve models → export PDF+XLSX
 (see `tests/pipeline/test_pipeline.py`).
 
 ## Testing & scoring
 
 ```bash
-pytest tests/ -q          # 88 tests
+pytest tests/ -q          # 112 tests
 ```
 
 The suite validates: every model's benchmarks (numerical accuracy), the
 `calculate`/`explain`/`visualize` interface contract, edge-case rejection
 (`ValidationError` on negative spot, zero volatility, discount rate ≤ growth, etc.), and
-asserts the full 10/10 scorecard. Tests also run in CI via GitHub Actions
+asserts the full 10/10 scorecard across all twelve models. Tests also run in CI via GitHub Actions
 (`.github/workflows/tests.yml`).
 
 ## Live data
@@ -201,7 +234,7 @@ network failure, and raises a clear `ModelError` if neither source is available.
 
 ## 🖥️ FINMODELS Terminal (the deployed site)
 
-The Vercel deployment is not a static showcase — it is the product. All ten models run
+The Vercel deployment is not a static showcase — it is the product. All twelve models run
 **live in the browser**:
 
 | | |
@@ -213,9 +246,10 @@ The Vercel deployment is not a static showcase — it is the product. All ten mo
 | **Live ticker** | A top marquee streaming real prices — WTI crude · Brent · gold · silver · Bitcoin · Ethereum + **15 of the world's most valued indices** (S&P 500, Nasdaq, Dow, FTSE 100, DAX, CAC 40, Euro Stoxx 50, Nikkei, Hang Seng, Shanghai, Nifty 50, TSX, ASX 200, KOSPI, Taiwan) with signed intraday % change. Fed by a same-origin serverless function (`api/quotes.js`, Yahoo server-side, keyless, CDN-cached ~1×/min), with a CoinGecko crypto/gold fallback so it never blanks |
 | **Server** | One tiny keyless serverless function for the ticker feed; everything else is plain static hosting with zero build step |
 
-Mnemonics: `DCF` · `GG` · `MPT` · `VAR` · `CAPM` · `FF3` · `BSM` · `CRR` · `MC` · `HES`
-(also `HELP`, and `IB` for the PDF analyzer below). Every slider change re-runs the real
-Python model in ~0–15 ms once booted.
+Mnemonics: `DCF` · `GG` · `MPT` · `VAR` · `CAPM` · `FF3` · `BSM` · `CRR` · `MC` · `HES` ·
+`HDEBT` · `RDCF` (the last two gated to Analyst Pro and above — also `HELP`, and `IB` for
+the PDF analyzer below). Every slider change re-runs the real Python model in ~0–15 ms
+once booted.
 
 ### 📊 Scenario & sensitivity engine (SCEN tab)
 
@@ -256,8 +290,11 @@ the full analysis pipeline *client-side*:
    **AUTO** (IB bot): CAPM WACC (80/20 equity-debt + 150 bp credit spread), terminal
    g ≤ r_f, sector-neutral β, Damodaran 5% ERP — with the **risk-free rate scraped live
    from the free US Treasury FiscalData API** (keyless, CORS-open) and a documented
-   offline fallback. **MANUAL**: 16 override sliders; untouched sliders keep bot values.
-3. **Run** — checkboxes select which of the ten models enter the report (ALL/NONE).
+   offline fallback. **MANUAL**: 24 override sliders (16 general + 8 for the two
+   Pro+ models' footnote-only figures — lease payment, reverse-factoring exposure,
+   contingent liabilities, TAM); untouched sliders keep bot values.
+3. **Run** — checkboxes select which of the twelve models enter the report (ALL/NONE);
+   the two Ind AS hidden-debt/reverse-DCF checkboxes are gated to Analyst Pro and above.
 4. **Export** — download the report as **PDF** (reportlab), **Google Docs** (a .docx built
    with python-docx that Google Docs opens natively), or **Excel** (openpyxl) — all
    rendered inside the browser, nothing uploaded anywhere.
@@ -285,6 +322,38 @@ your browser.
 
 Both modes also offer **Continue with Google** (real Google Identity Services, enabled by
 `GOOGLE_CLIENT_ID`) and **Explore as guest**.
+
+#### Enabling Google Sign-In
+
+`/api/auth-config` exposes `process.env.GOOGLE_CLIENT_ID` to the login page; until it's
+set, the **Continue with Google** button stays disabled with an explicit "not configured"
+hint instead of failing silently. To turn it on:
+
+1. [console.cloud.google.com](https://console.cloud.google.com) → *APIs & Services ▸
+   Credentials* → **Create Credentials ▸ OAuth client ID** → application type
+   **Web application** (create an OAuth consent screen first if the project doesn't have
+   one yet).
+2. Under **Authorized JavaScript origins**, add every origin the login page is served
+   from — e.g. `https://financial-models-six.vercel.app`, any custom domain, and
+   `http://localhost:3000` for local testing. Google Identity Services authorises by
+   origin, not by redirect URI, so no "Authorized redirect URIs" entry is needed for this
+   flow.
+3. Copy the **Client ID** (ends in `.apps.googleusercontent.com` — not the Client secret)
+   and set it as `GOOGLE_CLIENT_ID` in the Vercel project's environment variables, then
+   redeploy.
+4. Verify by requesting `/api/auth-config` directly — `googleClientId` should show the
+   value you set, not `null`.
+
+**"Error 401: invalid_client — The OAuth client was not found"** when clicking the button
+means Google doesn't recognise the `client_id` it received — `GOOGLE_CLIENT_ID` is set to
+something, just not a live OAuth client. Almost always one of:
+- The value was mistyped, truncated, wrapped in quotes, or is actually the Client
+  *secret*/an API key rather than the Client ID.
+- The OAuth client (or its whole GCP project) was deleted or belongs to a different
+  Google Cloud project than the one you're checking.
+- The env var is set for the wrong Vercel environment scope (e.g. only *Preview*, while
+  you're testing *Production*) — pull up **Settings ▸ Environment Variables** and confirm
+  it's attached to the scope you're hitting, then redeploy.
 
 #### Enabling the server backend (10 minutes, free tiers)
 
@@ -419,7 +488,7 @@ tracking.
 Two persistent controls frame every view:
 
 - **Hamburger menu** (top-left) — a **GUIDE** tab with a step-by-step walk-through of the
-  whole terminal, a **MODELS** tab briefing each of the ten techniques in plain English
+  whole terminal, a **MODELS** tab briefing each of the twelve techniques in plain English
   with a *Best for* line so you can match the tool to your need (and jump straight in), and
   a **HISTORY** tab that auto-saves every company you analyse on the IB desk (reopen or
   delete any past analysis; persists in `localStorage`).
@@ -462,6 +531,11 @@ The static about page lives at [`/about`](https://financial-models-six.vercel.ap
 - Gordon, M. (1959). *Dividends, Earnings, and Stock Prices.* RES.
 - Hull, J. (2018). *Options, Futures, and Other Derivatives*, 10th ed.
 - Damodaran, A. *Investment Valuation.* Wiley. · Jorion, P. *Value at Risk.* McGraw-Hill.
+- IASB / ICAI. *Ind AS 116 / IFRS 16, Leases* (2016). · IASB. *Amendments to IAS 7 and
+  IFRS 7: Supply Chain Financing Arrangements* (2023).
+- Buffett, W. E. (1986). *Berkshire Hathaway Shareholder Letter* — owner earnings.
+- Rappaport, A. & Mauboussin, M. J. (2001). *Expectations Investing: Reading Stock Prices
+  for Better Returns.* Harvard Business School Press.
 
 ## License
 

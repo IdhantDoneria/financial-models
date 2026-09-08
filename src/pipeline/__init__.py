@@ -1,6 +1,6 @@
 """PDF-to-model analysis pipeline.
 
-Turns an uploaded company financial PDF into a live valuation across the ten
+Turns an uploaded company financial PDF into a live valuation across all twelve
 models. The pipeline is split into four testable stages:
 
 1. :mod:`~src.pipeline.pdf_extractor` — cascade text/table extraction using

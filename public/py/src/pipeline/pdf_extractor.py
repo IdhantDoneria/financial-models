@@ -68,6 +68,15 @@ class ExtractedFinancials:
     revenue_growth: float | None = None
     operating_margin: float | None = None
     tax_rate: float | None = None
+    #: Depreciation & amortisation (cash-flow-statement add-back) — used by
+    #: the Ind AS 116 hidden-debt normalizer's owner-earnings recomputation.
+    depreciation_amortization: float | None = None
+    #: Research & development expense (income statement) — used as the cash
+    #: R&D spend in the same owner-earnings recomputation.
+    rd_expense: float | None = None
+    #: Capital expenditure ("purchases of property and equipment" /
+    #: "capex", cash-flow statement) — used as a maintenance-capex proxy.
+    capital_expenditures: float | None = None
     #: Which backends actually produced text (for debugging in the UI).
     backends_used: list[str] = field(default_factory=list)
     #: Raw text (first ~50k chars) kept for downstream inspection.
@@ -94,6 +103,9 @@ class ExtractedFinancials:
             "dividend_per_share": self.dividend_per_share, "beta": self.beta,
             "revenue_growth": self.revenue_growth,
             "operating_margin": self.operating_margin, "tax_rate": self.tax_rate,
+            "depreciation_amortization": self.depreciation_amortization,
+            "rd_expense": self.rd_expense,
+            "capital_expenditures": self.capital_expenditures,
             "backends_used": self.backends_used,
         }
 
@@ -464,6 +476,19 @@ class PDFExtractor:
             tax_rate=self._first_after(
                 text, [r"effective\s+tax\s+rate", r"tax\s+rate"], window=40,
                 plausible=self._not_year_like),
+            depreciation_amortization=self._first_after(
+                text, [r"depreciation\s+and\s+amortization",
+                       r"depreciation\s*(?:&|and)\s*amortisation"],
+                apply_scale=True),
+            rd_expense=self._first_after(
+                text, [r"research\s+and\s+development\s+expenses?",
+                       r"research\s*(?:&|and)\s*development"],
+                apply_scale=True),
+            capital_expenditures=self._first_after(
+                text, [r"capital\s+expenditures?",
+                       r"purchases?\s+of\s+property(?:,?\s+plant)?"
+                       r"(?:\s*(?:&|and)\s*equipment)?"],
+                apply_scale=True),
         )
 
         # A percent scraped as e.g. "12" from "12%" should read as 0.12.
@@ -471,6 +496,14 @@ class PDFExtractor:
             v = getattr(data, attr)
             if v is not None and v > 1:
                 setattr(data, attr, v / 100.0)
+
+        # These three are always reported as a positive magnitude in the
+        # downstream formulas (an add-back, an expense, a spend) even when
+        # the source statement shows them as a parenthesised cash outflow.
+        for attr in ("depreciation_amortization", "rd_expense", "capital_expenditures"):
+            v = getattr(data, attr)
+            if v is not None:
+                setattr(data, attr, abs(v))
 
         data.raw_text = text[:50_000]
         return data

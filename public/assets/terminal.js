@@ -231,6 +231,12 @@ const TAPE_FALLBACK = [
 
 /* ------------------------------------------------------------------------ */
 const $ = (sel) => document.querySelector(sel);
+//: User-controlled text (account display name, email, a company name pulled
+//  from an uploaded PDF) reaches several innerHTML sinks below. Escape it
+//  before interpolation — same helper/behavior as admin.html.
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({
+  "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+}[c]));
 const state = {
   pyodide: null, runPy: null, micropip: null, current: null, values: {},
   timer: null, seq: 0, view: "model",
@@ -264,32 +270,38 @@ function currentUser() {
     return s;
   } catch { return null; }
 }
+//: A server-backed session (email/password OTP, or Google — both verified
+//  and issued by the backend) is identified by provider now, not by a
+//  client-held token: the token itself lives only in an httpOnly cookie the
+//  browser attaches automatically, never in JS-readable state. Device-local
+//  and guest sessions have no server to ask and are excluded here.
+function isServerBacked(u) { return !!(u && (u.provider === "otp" || u.provider === "google")); }
+
 function signOut() {
   // Revoke the server-side session first when one exists (email-OTP mode).
+  // credentials:"same-origin" sends the httpOnly session cookie — this is
+  // the ONLY thing that authorizes the call now, no header needed.
   try {
     const s = JSON.parse(localStorage.getItem(LS_SESSION) || "null");
-    if (s && s.token) {
-      fetch("api/auth-logout", {
-        method: "POST", keepalive: true,
-        headers: { Authorization: "Bearer " + s.token },
-      }).catch(() => {});
+    if (isServerBacked(s)) {
+      fetch("api/auth-logout", { method: "POST", keepalive: true, credentials: "same-origin" })
+        .catch(() => {});
     }
   } catch { /* best-effort revocation */ }
   try { localStorage.removeItem(LS_SESSION); } catch { /* ignore */ }
   location.replace("login.html");
 }
 
-//: Server-backed sessions (email-OTP/password, or Google now that it's
-//  verified server-side too) are validated against the backend after boot;
-//  a revoked/expired token signs the visitor out instead of trusting local
-//  state forever. Device-local and guest sessions carry no token, so they
-//  have no server to ask and this is a no-op for them.
+//: Server-backed sessions are validated against the backend after boot; a
+//  revoked/expired cookie signs the visitor out instead of trusting local
+//  state forever. Device-local and guest sessions have no server to ask and
+//  this is a no-op for them.
 async function validateServerSession() {
   const u = state.user;
-  if (!u || !u.token) return;
+  if (!isServerBacked(u)) return;
   try {
     const r = await fetch("api/auth-me",
-      { headers: { Authorization: "Bearer " + u.token }, signal: AbortSignal.timeout(10000) });
+      { credentials: "same-origin", signal: AbortSignal.timeout(10000) });
     if (r.status === 401) { signOut(); return; }
     if (r.ok) {
       const j = await r.json();
@@ -297,7 +309,7 @@ async function validateServerSession() {
         u.name = j.user.name;
         localStorage.setItem(LS_SESSION, JSON.stringify(u));
         const who = $("#who");
-        if (who) who.innerHTML = `◉ USER <b>${String(u.name).toUpperCase().slice(0, 24)}</b>`;
+        if (who) who.innerHTML = `◉ USER <b>${esc(String(u.name).toUpperCase().slice(0, 24))}</b>`;
       }
     }
   } catch { /* offline — keep the local session */ }
@@ -376,7 +388,7 @@ async function boot() {
       "import web_bridge\n" +
       "web_bridge.run_model"
     );
-    bootLog("10 models online — src/ imported unmodified", "ok"); bootPct(100);
+    bootLog("12 models online — src/ imported unmodified", "ok"); bootPct(100);
 
     const savedCc = (() => { try { return localStorage.getItem(LS_COUNTRY); } catch { return null; } })();
     state.country = COUNTRIES.find((c) => c.code === savedCc) || COUNTRIES[0];
@@ -411,11 +423,18 @@ function buildUI() {
     row.onclick = () => selectModel(m.mn);
     rail.appendChild(row);
 
-    const btn = document.createElement("button");
-    btn.dataset.mn = m.mn;
-    btn.innerHTML = `<b>F${i + 1}</b>${m.mn}`;
-    btn.onclick = () => selectModel(m.mn);
-    fk.appendChild(btn);
+    // The keydown handler below only recognises F1-F10 (F11/F12 are also
+    // browser-reserved for fullscreen in most browsers, unreliable to
+    // preventDefault) — don't label a strip button "F11"/"F12" implying a
+    // shortcut that doesn't exist. The rail row above and the mnemonic
+    // command bar still reach every model regardless.
+    if (i < 10) {
+      const btn = document.createElement("button");
+      btn.dataset.mn = m.mn;
+      btn.innerHTML = `<b>F${i + 1}</b>${m.mn}`;
+      btn.onclick = () => selectModel(m.mn);
+      fk.appendChild(btn);
+    }
   });
 
   // IB desk — the PDF analyzer view (mnemonic IB / PDF / REPORT).
@@ -449,9 +468,9 @@ function buildUI() {
   // signed-in identity chip (SIGN OUT now lives inside the hamburger menu)
   const u = state.user;
   $("#who").innerHTML = `${["google", "otp"].includes(u.provider) ? "◉" : "●"} USER <b>${
-    String(u.name || u.uid).toUpperCase().slice(0, 24)}</b>`;
+    esc(String(u.name || u.uid).toUpperCase().slice(0, 24))}</b>`;
   const mw = $("#menu-who");
-  if (mw) mw.innerHTML = `SIGNED IN · <b>${String(u.name || u.uid).toUpperCase().slice(0, 22)}</b>`;
+  if (mw) mw.innerHTML = `SIGNED IN · <b>${esc(String(u.name || u.uid).toUpperCase().slice(0, 22))}</b>`;
 
   renderClock();
   setInterval(renderClock, 1000);
@@ -856,7 +875,24 @@ async function runCurrent() {
 
   let payload;
   try {
-    payload = JSON.parse(state.runPy(model.mn, JSON.stringify(state.values)));
+    if (PREMIUM_MODELS.has(model.mn)) {
+      // Computed server-side only (api/premium.py) — the premiumModelGate()
+      // check in selectModel() is a fast UX pre-check, not the real
+      // boundary; this fetch re-derives entitlement from the session
+      // cookie regardless of how this function was reached.
+      const r = await fetch("api/premium", {
+        method: "POST", credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: model.mn, params: state.values }),
+      });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+      if (j.status && j.status !== "OK") throw new Error(j.status);
+      payload = { results: j.results, figure: j.figure, explain: j.explain,
+                  calc_ms: j.calc_ms, extras: j.extras };
+    } else {
+      payload = JSON.parse(state.runPy(model.mn, JSON.stringify(state.values)));
+    }
   } catch (err) {
     if (seq !== state.seq) return;
     renderError(err); return;
@@ -885,7 +921,11 @@ const PCT_KEY = /rate|return|growth|yield|alpha|confidence|premium|weight|margin
 function fmtValue(key, v) {
   if (v === null || v === undefined) return "—";
   if (typeof v === "boolean") return v ? "TRUE" : "FALSE";
-  if (typeof v === "string") return v.toUpperCase();
+  // Escaped here (not just at the call site) because this formatter is the
+  // single choke point several sinks share for extracted-PDF string fields
+  // (company_name, ticker) — genuinely attacker-controlled via a crafted
+  // upload, unlike the model-computed values also passed through here.
+  if (typeof v === "string") return esc(v.toUpperCase());
   if (Array.isArray(v)) {
     if (v.length <= 6 && v.every((x) => typeof x === "number"))
       return v.map((x) => +x.toFixed(3)).join("  ");
@@ -1027,8 +1067,8 @@ window.addEventListener("DOMContentLoaded", () => {
  * IB DESK — company PDF analyzer
  * Upload a 10-K/10-Q -> pure-Python extraction (pypdf + pdfminer.six in
  * WASM) -> auto assumptions (live US-Treasury risk-free + IB heuristics) or
- * manual overrides -> run any subset of the 10 models -> download the
- * report as PDF / Google-Docs (.docx) / Excel.
+ * manual overrides -> run any subset of the twelve models (two Pro+-gated)
+ * -> download the report as PDF / Google-Docs (.docx) / Excel.
  * ======================================================================== */
 
 const IB_MODELS = [
@@ -1037,6 +1077,21 @@ const IB_MODELS = [
   "Black-Scholes-Merton", "Binomial Tree (CRR)", "Monte Carlo (GBM)",
   "Heston Stochastic Volatility",
 ];
+
+//: The two premium models, gated the same way the mnemonic-driven direct
+//  run is (see premiumModelGate()) — included in the checkbox grid but
+//  excluded from the default "select all" / disabled until the gate
+//  resolves, so a free-tier report can't silently include them.
+const IB_PREMIUM_MODELS = [
+  "Ind AS 116 Hidden-Debt Normalizer", "Reverse DCF / Market-Implied Expectations",
+];
+//: These two are computed server-side ONLY now (api/premium.py) — see the
+//  fns.run wrapper in ensureAnalyzerPackages(). Maps the full display name
+//  to the short code that endpoint expects.
+const IB_PREMIUM_MNEMONIC = {
+  "Ind AS 116 Hidden-Debt Normalizer": "HDEBT",
+  "Reverse DCF / Market-Implied Expectations": "RDCF",
+};
 
 /* Manual-mode overrides: every knob ManualOverrides supports. Only sliders
  * the user actually moves are sent, so untouched inputs keep the IB-bot
@@ -1058,6 +1113,22 @@ const IB_OVERRIDES = [
   { id: "heston_theta", label: "HESTON θ", min: 0.005, max: 0.5, step: 0.005, def: 0.0625 },
   { id: "heston_xi", label: "HESTON ξ", min: 0.05, max: 1.5, step: 0.05, def: 0.3 },
   { id: "heston_rho", label: "HESTON ρ", min: -0.95, max: 0.5, step: 0.05, def: -0.6 },
+  // HDEBT/RDCF: the footnote-only figures the auto-assumer defaults to $0 /
+  // 10x-revenue precisely because no regex can trust extracting them (see
+  // AutoAssumer.build's rationale) — this is how a user supplies the real
+  // number from the filing instead. Unlike the standalone mnemonic-driven
+  // HDEBT/RDCF sliders (which run on small illustrative "millions" units),
+  // the IB desk's whole pipeline is raw dollars throughout — same
+  // convention as the EXTRACTED DATA panel's field editor — so these are
+  // raw-dollar (int, comma-formatted) rather than a cosmetic "M" scale.
+  { id: "annual_lease_payment", label: "LEASE PAYMENT/YR", money: true, min: 0, max: 500_000_000, step: 1_000_000, def: 0, int: true },
+  { id: "lease_term_years", label: "LEASE TERM (Y)", min: 1, max: 15, step: 1, def: 5, int: true },
+  { id: "reverse_factoring_exposure", label: "REVERSE FACTORING", money: true, min: 0, max: 500_000_000, step: 1_000_000, def: 0, int: true },
+  { id: "cl1_amount", label: "CONTINGENT LIAB 1", money: true, min: 0, max: 1_000_000_000, step: 1_000_000, def: 0, int: true },
+  { id: "cl1_probability", label: "CL1 PROBABILITY", min: 0, max: 1, step: 0.05, def: 0, pct: true },
+  { id: "cl2_amount", label: "CONTINGENT LIAB 2", money: true, min: 0, max: 1_000_000_000, step: 1_000_000, def: 0, int: true },
+  { id: "cl2_probability", label: "CL2 PROBABILITY", min: 0, max: 1, step: 0.05, def: 0, pct: true },
+  { id: "total_addressable_market", label: "TAM (RDCF)", money: true, min: 0, max: 1_000_000_000_000, step: 10_000_000, def: 10_000_000_000, int: true },
 ];
 
 const IB_FIELD_LABELS = {
@@ -1067,7 +1138,8 @@ const IB_FIELD_LABELS = {
   net_debt: "NET DEBT", shares_outstanding: "SHARES OUT",
   current_price: "SHARE PRICE", dividend_per_share: "DIVIDEND / SH",
   beta: "BETA", revenue_growth: "REV GROWTH", operating_margin: "OP MARGIN",
-  tax_rate: "TAX RATE",
+  tax_rate: "TAX RATE", depreciation_amortization: "D&A",
+  rd_expense: "R&D EXPENSE", capital_expenditures: "CAPEX",
 };
 
 /* ------------------------- live market data ---------------------------- */
@@ -1189,16 +1261,44 @@ function buildIBForm() {
     <div class="ckall"><button id="iball">ALL</button><button id="ibnone">NONE</button></div>
     <div class="ckgrid" id="ibck"></div>`);
   const grid = $("#ibck");
-  IB_MODELS.forEach((name) => {
+  // Premium gate is fetched once per IB session and cached; optimistic
+  // (enabled) on the very first render, then this whole section re-renders
+  // once the real answer is known — same fail-open shape as every other
+  // gate in the app, just non-blocking here since section 4 isn't the only
+  // thing on screen.
+  if (state.ib.premiumGate === undefined) {
+    state.ib.premiumGate = null;   // pending
+    premiumModelGate().then((gate) => {
+      state.ib.premiumGate = gate;
+      if (!gate.allowed) IB_PREMIUM_MODELS.forEach((n) => state.ib.selected.delete(n));
+      if (state.view === "ib") buildIBForm();
+    });
+  }
+  const premiumGate = state.ib.premiumGate || { allowed: true };
+  IB_MODELS.concat(IB_PREMIUM_MODELS).forEach((name) => {
+    const isPremium = IB_PREMIUM_MODELS.includes(name);
+    const locked = isPremium && !premiumGate.allowed;
     const lab = document.createElement("label");
-    lab.className = "ck";
+    lab.className = "ck" + (locked ? " ck-locked" : "");
+    if (locked) lab.title = premiumGate.reason || "Requires Analyst Pro or above.";
     const cb = document.createElement("input");
-    cb.type = "checkbox"; cb.checked = state.ib.selected.has(name); cb.dataset.model = name;
+    cb.type = "checkbox"; cb.checked = !locked && state.ib.selected.has(name);
+    cb.disabled = locked; cb.dataset.model = name;
     cb.onchange = () => { cb.checked ? state.ib.selected.add(name) : state.ib.selected.delete(name); };
-    lab.appendChild(cb); lab.appendChild(document.createTextNode(name));
+    lab.appendChild(cb);
+    lab.appendChild(document.createTextNode(name));
+    if (isPremium) {
+      const badge = document.createElement("span");
+      badge.className = "ckpro"; badge.textContent = locked ? "PRO+ 🔒" : "PRO+";
+      lab.appendChild(badge);
+    }
     grid.appendChild(lab);
   });
-  $("#iball").onclick = () => { state.ib.selected = new Set(IB_MODELS); grid.querySelectorAll("input").forEach((c) => (c.checked = true)); };
+  $("#iball").onclick = () => {
+    const allowedNames = IB_MODELS.concat(premiumGate.allowed ? IB_PREMIUM_MODELS : []);
+    state.ib.selected = new Set(allowedNames);
+    grid.querySelectorAll("input").forEach((c) => { if (!c.disabled) c.checked = true; });
+  };
   $("#ibnone").onclick = () => { state.ib.selected.clear(); grid.querySelectorAll("input").forEach((c) => (c.checked = false)); };
 
   // 5 · run + export
@@ -1252,9 +1352,75 @@ function ensureAnalyzerPackages() {
         "import micropip\n" +
         "await micropip.install(['pypdf', 'pdfminer.six', 'reportlab', 'openpyxl', 'python-docx'])"
       );
+      const rawAnalyze = state.pyodide.runPython("web_bridge.analyze_pdf");
+      const rawRun = state.pyodide.runPython("web_bridge.run_report");
       state.ib.fns = {
-        analyze: state.pyodide.runPython("web_bridge.analyze_pdf"),
-        run: state.pyodide.runPython("web_bridge.run_report"),
+        // Gate enforcement lives HERE, not only in onIBUpload()/the model
+        // checkboxes — those are UX (fail fast, explain why), this is the
+        // actual boundary every caller funnels through, including one that
+        // reaches state.ib.fns directly from devtools bypassing the UI
+        // entirely. It's still a client-side check on a client-side compute
+        // engine — a determined attacker can still overwrite state.ib.fns
+        // itself — but it closes the "call the existing entrypoint and skip
+        // the gate" class of bypass, which is what the pentest actually used.
+        analyze: async (buf, period) => {
+          const gate = await uploadGate();
+          if (!gate.allowed) return JSON.stringify({ ok: false, error: gate.reason });
+          const result = rawAnalyze(buf, period);
+          if (gate.metered) {
+            try { if (JSON.parse(result).ok) await consumeUpload(); } catch { /* malformed result — nothing to meter */ }
+          }
+          return result;
+        },
+        // HDEBT/RDCF never reach the WASM engine at all now — they're
+        // computed by api/premium.py, which re-derives plan entitlement
+        // from the session cookie against Redis directly. This function
+        // only decides routing; it grants nothing itself.
+        run: async (paramsJson) => {
+          let params;
+          try { params = JSON.parse(paramsJson); } catch { return rawRun(paramsJson); }
+          const selected = Array.isArray(params.selected) ? params.selected : [];
+          const premiumSelected = selected.filter((n) => IB_PREMIUM_MODELS.includes(n));
+          const nonPremium = selected.filter((n) => !IB_PREMIUM_MODELS.includes(n));
+
+          const baseOut = JSON.parse(rawRun(JSON.stringify({ ...params, selected: nonPremium })));
+          if (!premiumSelected.length || !baseOut.ok) return JSON.stringify(baseOut);
+
+          const extracted = state.ib.extracted && state.ib.extracted.fields;
+          const premiumResults = await Promise.all(premiumSelected.map(async (fullName) => {
+            try {
+              const r = await fetch("api/premium", {
+                method: "POST", credentials: "same-origin",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  model: IB_PREMIUM_MNEMONIC[fullName], extracted,
+                  mode: params.mode, overrides: params.overrides,
+                  live_rf: params.live_rf, rf_source: params.rf_source, erp: params.erp,
+                }),
+              });
+              const j = await r.json();
+              return r.ok ? j : { ok: false, model: fullName,
+                error: j.error || `HTTP ${r.status}`, denied: r.status === 401 || r.status === 403 };
+            } catch {
+              return { ok: false, model: fullName, error: "premium compute unreachable" };
+            }
+          }));
+
+          for (const pr of premiumResults) {
+            const name = pr.model || premiumSelected[premiumResults.indexOf(pr)];
+            if (pr.ok) {
+              baseOut.summary.push({ Model: name, "Headline result": pr.headline, Status: pr.status });
+              if (pr.results) baseOut.results[name] = pr.results;
+              if (pr.errors) baseOut.errors[name] = pr.errors;
+              Object.assign(baseOut.rationale, pr.rationale || {});
+            } else {
+              baseOut.summary.push({ Model: name, "Headline result": "-",
+                Status: pr.denied ? pr.error : `ERROR: ${pr.error}` });
+              baseOut.errors[name] = pr.error;
+            }
+          }
+          return JSON.stringify(baseOut);
+        },
         exportR: state.pyodide.runPython("web_bridge.export_report"),
         restore: state.pyodide.runPython("web_bridge.restore_extraction"),
         override: state.pyodide.runPython("web_bridge.override_field"),
@@ -1301,7 +1467,9 @@ async function onIBUpload() {
   await new Promise((r) => setTimeout(r, 25));
   try {
     const buf = new Uint8Array(await file.arrayBuffer());
-    const out = JSON.parse(state.ib.fns.analyze(buf, state.ib.period));
+    // Metering happens inside state.ib.fns.analyze() itself now (the actual
+    // enforcement boundary) — the gate check above is just fast, friendly UX.
+    const out = JSON.parse(await state.ib.fns.analyze(buf, state.ib.period));
     if (!out.ok) throw new Error(out.error);
     state.ib.extracted = out;
     state.ib.report = null;
@@ -1309,7 +1477,6 @@ async function onIBUpload() {
     renderIBExtracted();
     ibStatus(`EXTRACTED · ${out.period.toUpperCase()} BASIS · ${out.backends.join("+") || "no backend"}`);
     $("#ostat").className = "meta";
-    if (gate.metered) consumeUpload();   // count only successful analyses
   } catch (err) {
     state.ib.extracted = null;
     ibStatus("EXTRACTION FAILED: " + String(err).slice(0, 160), true);
@@ -1465,7 +1632,7 @@ async function runIBReport() {
       fx_per_usd: state.ib.fx,
       overrides: state.ib.mode === "manual" ? state.ib.dirty : {},
     };
-    const out = JSON.parse(state.ib.fns.run(JSON.stringify(payload)));
+    const out = JSON.parse(await state.ib.fns.run(JSON.stringify(payload)));
     if (!out.ok) throw new Error(out.error);
     state.ib.report = out;
     renderIBReport();
@@ -1483,7 +1650,7 @@ async function runIBReport() {
 
 //: Mirrors web_bridge.py's `_KEY_FIELDS` tuple length — the fields the
 //  extractor reports as FOUND/MISSING (see analyze_pdf()'s `missing` list).
-const IB_KEY_FIELD_COUNT = 15;
+const IB_KEY_FIELD_COUNT = 18;
 
 //: A report built mostly from auto-assumed generic defaults (a placeholder
 //  price, a 5% growth default, etc.) can still show every model as "OK" —
@@ -1518,14 +1685,18 @@ function renderIBReport() {
     return;
   }
   const company = state.ib.extracted?.fields?.company_name || "UPLOADED COMPANY";
-  let html = `<h2>REPORT — ${company.toUpperCase()} · ${out.mode.toUpperCase()} MODE</h2>`;
+  let html = `<h2>REPORT — ${esc(company.toUpperCase())} · ${out.mode.toUpperCase()} MODE</h2>`;
   html += confidenceBannerHTML();
   html += `<table><tr><th>MODEL</th><th>HEADLINE RESULT</th><th>STATUS</th></tr>`;
   out.summary.forEach((row) => {
     const ok = !String(row.Status).toLowerCase().includes("error");
-    html += `<tr class="${ok ? "" : "err"}"><td>${row.Model}</td>
-      <td class="num">${row["Headline result"]}</td>
-      <td class="${ok ? "stat-ok" : "stat-err"}">${row.Status}</td></tr>`;
+    // row.Status can embed a raw model validation-error message, which in
+    // turn can echo attacker-supplied text (e.g. a manual-override value
+    // that failed numeric validation) — esc() every field here, not just
+    // the ones normally numeric, since "normally numeric" isn't guaranteed.
+    html += `<tr class="${ok ? "" : "err"}"><td>${esc(row.Model)}</td>
+      <td class="num">${esc(String(row["Headline result"]))}</td>
+      <td class="${ok ? "stat-ok" : "stat-err"}">${esc(String(row.Status))}</td></tr>`;
   });
   html += "</table><h2>ASSUMPTIONS (MARKET CONTEXT)</h2><table>";
   Object.entries(out.market_context).forEach(([key, value]) => {
@@ -1542,11 +1713,15 @@ function renderIBDoc() {
   const out = state.ib.report;
   const doc = $("#doc");
   if (!out) { doc.innerHTML = "<p>Run a report to see the assumption rationale.</p>"; return; }
+  // out.errors keys/values ultimately trace back to model validation-error
+  // text, which can echo raw attacker-supplied input (see renderIBReport) —
+  // esc() before this is fed to marked.parse()/innerHTML below, same as
+  // every other PDF/user-derived sink in this file.
   let md = "## Assumption rationale (IB bot audit trail)\n\n| Assumption | Basis |\n|---|---|\n";
-  Object.entries(out.rationale).forEach(([key, text]) => { md += `| ${key} | ${text} |\n`; });
+  Object.entries(out.rationale).forEach(([key, text]) => { md += `| ${esc(key)} | ${esc(text)} |\n`; });
   if (Object.keys(out.errors).length) {
     md += "\n## Models not run\n\n";
-    Object.entries(out.errors).forEach(([name, err]) => { md += `- **${name}**: ${err}\n`; });
+    Object.entries(out.errors).forEach(([name, err]) => { md += `- **${esc(name)}**: ${esc(err)}\n`; });
   }
   doc.innerHTML = marked.parse(md);
 }
@@ -1683,6 +1858,12 @@ const MODEL_BRIEFS = [
   { mn: "HES", nm: "Heston Stochastic Vol", cat: "Derivatives",
     desc: "Prices options with volatility that is itself random and mean-reverting, capturing the volatility smile/skew real markets show.",
     use: "Best when constant-volatility models misprice — deep in/out-of-the-money options and markets with a pronounced skew." },
+  { mn: "HDEBT", nm: "Ind AS 116 Hidden-Debt Normalizer", cat: "Forensic Accounting",
+    desc: "Capitalises operating leases, disclosed reverse-factoring exposure and probability-weighted contingent liabilities onto reported net debt, and recomputes Buffett-style owner earnings by reversing capitalised R&D.",
+    use: "Best when reported net debt understates real leverage — lease-heavy or trade-finance-heavy businesses (retail, logistics, airlines) where footnotes hide as much debt as the balance sheet shows." },
+  { mn: "RDCF", nm: "Reverse DCF (Market-Implied)", cat: "Market-Implied",
+    desc: "Inverts the standard DCF: takes today's market price and numerically solves for the constant FCF growth rate — and TAM capture — the price already implies.",
+    use: "Best for sanity-checking a stock's current price against your own growth beliefs, instead of assuming a growth rate to produce a price." },
 ];
 
 function initMenu() {
@@ -1747,10 +1928,11 @@ function renderGuide(body) {
 }
 
 function renderBriefs(body) {
-  body.innerHTML = `<h3>THE 10 MODELS — WHAT EACH IS BEST FOR</h3>` +
+  body.innerHTML = `<h3>THE 12 MODELS — WHAT EACH IS BEST FOR</h3>` +
     MODEL_BRIEFS.map((b) => `
       <div class="brief">
-        <div class="bh"><span class="bmn">${b.mn}</span><span class="bnm">${b.nm}</span><span class="bcat">${b.cat}</span></div>
+        <div class="bh"><span class="bmn">${b.mn}</span><span class="bnm">${b.nm}</span><span class="bcat">${b.cat}</span>${
+          PREMIUM_MODELS.has(b.mn) ? '<span class="bcat" style="color:var(--amber)">PRO+</span>' : ""}</div>
         <div class="bdesc">${b.desc}</div>
         <div class="buse"><b>Best for:</b> ${b.use}</div>
         <button class="bopen" data-mn="${b.mn}">OPEN ${b.mn} →</button>
@@ -1771,12 +1953,12 @@ function renderHistoryTab(body) {
     return;
   }
   const who = state.user ? String(state.user.name || state.user.uid).toUpperCase() : "GUEST";
-  body.innerHTML = `<h3>SAVED COMPANY ANALYSES · ${list.length} — ${who}</h3>
+  body.innerHTML = `<h3>SAVED COMPANY ANALYSES · ${list.length} — ${esc(who)}</h3>
     <div class="hist-actions"><button id="histclear">CLEAR ALL</button></div>` +
     list.map((h, i) => `
       <div class="hist-item">
         <div class="hmeta">
-          <div class="hco">${(h.company || "UNTITLED").toUpperCase()}</div>
+          <div class="hco">${esc((h.company || "UNTITLED").toUpperCase())}</div>
           <div class="hsub">${h.mode ? h.mode.toUpperCase() + " · " : ""}${h.nModels} MODELS · ${h.country || ""} · ${new Date(h.ts).toLocaleString()}</div>
         </div>
         <button class="hload" data-i="${i}">OPEN</button>
@@ -2207,10 +2389,9 @@ async function runSensitivityGrid() {
  * and nothing is gated.
  * ======================================================================== */
 
-//: The two new models this pass shipped — available from ANALYST PRO up.
-//  Purely a client-side UX gate (see premiumModelGate()): like every other
-//  model's math, there is no server round-trip to enforce this more
-//  strongly, the same trust model the other 10 models already have.
+//: The two premium models — available from ANALYST PRO up. Actually
+//  computed server-side (api/premium.py, see runCurrent()); premiumModelGate()
+//  is only a fast client-side UX pre-check now, not the enforcement boundary.
 const PREMIUM_MODELS = new Set(["HDEBT", "RDCF"]);
 
 async function getBillingCfg() {
@@ -2224,13 +2405,12 @@ async function getBillingCfg() {
 
 async function refreshUsage() {
   const u = state.user;
-  // Any server-backed session (email-OTP/password, or Google since it was
-  // wired to a real server-side account) carries a bearer token — guest and
-  // device-local-only sessions don't, and have nothing for /api/usage to look up.
-  if (!u || !u.token) return null;
+  // Guest and device-local-only sessions have nothing for /api/usage to
+  // look up; server-backed ones authorize via the httpOnly session cookie.
+  if (!isServerBacked(u)) return null;
   try {
     const r = await fetch("api/usage",
-      { headers: { Authorization: "Bearer " + u.token }, signal: AbortSignal.timeout(8000) });
+      { credentials: "same-origin", signal: AbortSignal.timeout(8000) });
     const j = await r.json();
     if (r.ok && j.ok) { state.billing.usage = j; syncPlanChip(); return j; }
   } catch { /* keep last known usage */ }
@@ -2268,7 +2448,7 @@ async function uploadGate() {
   const cfg = await getBillingCfg();
   if (!cfg || !cfg.billing) return { allowed: true, metered: false };
   const u = state.user;
-  if (!u || !u.token) {
+  if (!isServerBacked(u)) {
     return { allowed: false, upgrade: true,
       reason: "UPLOADS NEED A SERVER-BACKED ACCOUNT — SIGN OUT & SIGN IN WITH EMAIL OR GOOGLE (FREE PLAN: 3/MO)" };
   }
@@ -2288,7 +2468,7 @@ async function premiumModelGate() {
   const cfg = await getBillingCfg();
   if (!cfg || !cfg.billing) return { allowed: true };   // billing offline -> open
   const u = state.user;
-  if (!u || !u.token) {
+  if (!isServerBacked(u)) {
     return { allowed: false,
       reason: "This tool needs a server-backed account on ANALYST PRO or higher — sign out and sign in with email or Google, then upgrade." };
   }
@@ -2303,10 +2483,9 @@ async function premiumModelGate() {
 
 async function consumeUpload() {
   const u = state.user;
-  if (!u || !u.token) return;
+  if (!isServerBacked(u)) return;
   try {
-    const r = await fetch("api/usage",
-      { method: "POST", headers: { Authorization: "Bearer " + u.token } });
+    const r = await fetch("api/usage", { method: "POST", credentials: "same-origin" });
     const j = await r.json();
     if (j && typeof j.used === "number") { state.billing.usage = j; syncPlanChip(); }
   } catch { /* metering is best-effort */ }
@@ -2330,7 +2509,7 @@ async function renderPlanTab(body) {
   const cfg = await getBillingCfg();
   const us = cfg && cfg.billing ? await refreshUsage() : null;
   const u = state.user;
-  const isOtp = u && !!u.token;   // any server-backed session — email/password, OTP, or Google
+  const isOtp = isServerBacked(u);   // any server-backed session — email/password, OTP, or Google
   const current = us ? us.plan : "free";
 
   let head = "";
@@ -2356,7 +2535,7 @@ async function renderPlanTab(body) {
         free of charge, active until ${us.expiresAt ? new Date(us.expiresAt).toLocaleDateString() : "—"}.</div>`;
     }
     head = gift + `<div class="pusage">
-      <div class="purow"><span>SIGNED IN AS</span><b>${String(u.name || u.uid).toUpperCase().slice(0, 28)}</b></div>
+      <div class="purow"><span>SIGNED IN AS</span><b>${esc(String(u.name || u.uid).toUpperCase().slice(0, 28))}</b></div>
       <div class="purow"><span>CURRENT PLAN</span><b class="${current !== "free" ? "paid" : ""}">${us.planName}</b></div>
       <div class="purow"><span>UPLOADS THIS MONTH (${us.month || ""})</span><b>${us.used} / ${lim}</b></div>
       ${us.limit !== null ? `<div class="pmeterbar"><div style="width:${pctUsed}%"></div></div>` : ""}
@@ -2448,13 +2627,13 @@ async function devFakeSignature(msg) {
 async function startCheckout(plan, period) {
   const cfg = await getBillingCfg();
   const u = state.user;
-  if (!cfg || !cfg.billing || !u || !u.token) return;
+  if (!cfg || !cfg.billing || !isServerBacked(u)) return;
   planMsg("CREATING ORDER…");
   let order;
   try {
     const r = await fetch("api/billing-order", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: "Bearer " + u.token },
+      method: "POST", credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ plan, period }),
     });
     order = await r.json();
@@ -2468,8 +2647,8 @@ async function startCheckout(plan, period) {
     planMsg("VERIFYING PAYMENT…");
     try {
       const r = await fetch("api/billing-verify", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: "Bearer " + u.token },
+        method: "POST", credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(resp),
       });
       const j = await r.json();

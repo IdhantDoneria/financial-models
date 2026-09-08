@@ -62,8 +62,40 @@ function bearer(req) {
   return m ? m[1].trim() : null;
 }
 
+// Session transport: an httpOnly cookie (the browser client relies on this
+// exclusively — it never reads or stores the token) with a Bearer header
+// kept as a fallback for any non-browser caller (the test harness, a future
+// API consumer). Cookie wins when both are present.
+const SESSION_COOKIE = "fm_sess";
+
+function cookieToken(req) {
+  const raw = req.headers && req.headers.cookie;
+  if (!raw) return null;
+  for (const part of String(raw).split(";")) {
+    const eq = part.indexOf("=");
+    if (eq === -1) continue;
+    if (part.slice(0, eq).trim() === SESSION_COOKIE) return decodeURIComponent(part.slice(eq + 1).trim());
+  }
+  return null;
+}
+
+//: SameSite=Strict is safe here (not just convenient) — every legitimate
+//  caller of this cookie is a same-origin fetch() from this app's own pages;
+//  nothing legitimately needs it sent cross-site, so Strict also means this
+//  cookie carries no CSRF exposure of its own without needing CSRF tokens.
+//  Secure requires HTTPS in production; browsers treat localhost/127.0.0.1
+//  as a secure context too, so local dev over plain HTTP still works.
+function setSessionCookie(res, token, maxAgeSec) {
+  res.setHeader("Set-Cookie",
+    `${SESSION_COOKIE}=${encodeURIComponent(token)}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=${maxAgeSec}`);
+}
+
+function clearSessionCookie(res) {
+  res.setHeader("Set-Cookie", `${SESSION_COOKIE}=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0`);
+}
+
 async function getSession(req) {
-  const token = bearer(req);
+  const token = cookieToken(req) || bearer(req);
   if (!token) return null;
   const raw = await store.get(`sess:${token}`);
   if (!raw) return null;
@@ -73,6 +105,7 @@ async function getSession(req) {
 module.exports = {
   EMAIL_RE, SESSION_TTL, OTP_TTL, OTP_MAX_TRIES, RESEND_COOLDOWN, HOURLY_SEND_CAP,
   PW_MIN, PW_MAX_TRIES, PW_TRY_WINDOW,
-  hashOtp, newToken, newOtp, timingSafeEq, readBody, json, bearer, getSession,
+  hashOtp, newToken, newOtp, timingSafeEq, readBody, json, bearer, cookieToken, getSession,
+  setSessionCookie, clearSessionCookie,
   hashPasswordRecord, verifyPasswordRecord,
 };

@@ -15,6 +15,18 @@ const URL_ = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL;
 const TOKEN = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN;
 const DEV = process.env.AUTH_DEV_MEMORY === "1";
 
+// Dev-memory mode accepts fixed fallback credentials (admin.js: "devadmin",
+// billing.js: "devsecret" — both published in-repo, not secrets). That's
+// fine for local testing, where nothing but the developer's own machine can
+// reach it, but would be a full auth bypass if this env var ever survived
+// into a real deployment. Fail loudly instead of silently granting access.
+if (DEV && process.env.VERCEL_ENV === "production") {
+  throw new Error(
+    "AUTH_DEV_MEMORY=1 is set in a production deployment — refusing to boot. " +
+    "This mode accepts fixed fallback credentials and must never run outside local dev."
+  );
+}
+
 const mem = new Map(); // key -> { v, exp }
 function memGet(key) {
   const e = mem.get(key);

@@ -13,9 +13,11 @@
 // uploads/mo @ ₹299/mo or ₹2,499/yr · DESK UNLIMITED (unlimited uploads)
 // @ ₹599/mo or ₹4,999/yr. "Upload" = one IB-desk PDF analysis. Analyst Pro
 // and above also unlock the Ind AS 116 hidden-debt normalizer and reverse
-// DCF solver (gated client-side in terminal.js — see PREMIUM_MODELS there;
-// like every other model's math, there is no server-side computation to
-// gate more strongly than that).
+// DCF solver — unlike every other model's math (client-side WASM), these
+// two are actually computed server-side, in api/premium.py, which
+// re-derives plan entitlement from this same store rather than trusting
+// the client. terminal.js's PREMIUM_MODELS/premiumModelGate() are a fast
+// UX pre-check only, not the enforcement boundary.
 //
 // Local testing: with AUTH_DEV_MEMORY=1 and no real keys, a fake gateway
 // takes over — orders get dev ids and signatures verify against the fixed

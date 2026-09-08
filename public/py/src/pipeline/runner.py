@@ -9,15 +9,18 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
-import pandas as pd
+
+if TYPE_CHECKING:  # pragma: no cover
+    import pandas as pd
 
 from .. import (
     BinomialTreeModel, BlackScholesModel, CAPMModel, DiscountedCashFlowModel,
-    FamaFrenchModel, GordonGrowthModel, HestonModel,
-    ModernPortfolioTheoryModel, MonteCarloOptionModel, ValueAtRiskModel,
+    FamaFrenchModel, GordonGrowthModel, HestonModel, IndASHiddenDebtModel,
+    ModernPortfolioTheoryModel, MonteCarloOptionModel, ReverseDCFModel,
+    ValueAtRiskModel,
 )
 from ..base_model import BaseFinancialModel
 from .assumptions import AssumptionSet
@@ -37,6 +40,8 @@ AVAILABLE_MODELS: dict[str, type[BaseFinancialModel]] = {
     "Binomial Tree (CRR)": BinomialTreeModel,
     "Monte Carlo (GBM)": MonteCarloOptionModel,
     "Heston Stochastic Volatility": HestonModel,
+    "Ind AS 116 Hidden-Debt Normalizer": IndASHiddenDebtModel,
+    "Reverse DCF / Market-Implied Expectations": ReverseDCFModel,
 }
 
 
@@ -60,6 +65,8 @@ class AnalysisReport:
 
     def summary_frame(self) -> "pd.DataFrame":
         """Return a tidy DataFrame — one row per model with headline outputs."""
+        import pandas as pd
+
         rows = []
         for name, res in self.results.items():
             headline = self._headline(name, res)
@@ -83,6 +90,8 @@ class AnalysisReport:
             "Binomial Tree (CRR)": ("price", "$"),
             "Monte Carlo (GBM)": ("price", "$"),
             "Heston Stochastic Volatility": ("price", "$"),
+            "Ind AS 116 Hidden-Debt Normalizer": ("adjusted_net_debt", "$"),
+            "Reverse DCF / Market-Implied Expectations": ("implied_fcf_cagr", "%"),
         }
         key, unit = picks.get(name, (None, ""))
         if key and key in res:

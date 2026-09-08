@@ -17,8 +17,11 @@ const me = require("../api/_handlers/auth-me.js");
 const logout = require("../api/_handlers/auth-logout.js");
 const config = require("../api/_handlers/auth-config.js");
 
-function call(handler, { method = "POST", body, token } = {}) {
-  const req = { method, body, headers: token ? { authorization: `Bearer ${token}` } : {} };
+function call(handler, { method = "POST", body, token, cookie } = {}) {
+  const headers = {};
+  if (token) headers.authorization = `Bearer ${token}`;
+  if (cookie) headers.cookie = `fm_sess=${cookie}`;
+  const req = { method, body, headers };
   const res = {
     headers: {}, code: 0, out: null,
     setHeader(k, v) { this.headers[k] = v; },
@@ -97,6 +100,24 @@ function ok(cond, label) {
   ok(r.code === 200, "logout ok");
   r = await call(me, { method: "GET", token });
   ok(r.code === 401, "token dead after logout");
+
+  console.log("· session cookie: set on login, authorizes /me alone, cleared on logout");
+  r = await call(requestOtp, { body: { email: "cookie@example.com" } });
+  r = await call(verifyOtp, { body: { email: "cookie@example.com", code: r.out.devCode,
+    name: "Cookie Tester", password: "hunter2!secure" } });
+  ok(r.code === 200 && typeof r.headers["Set-Cookie"] === "string"
+     && /^fm_sess=/.test(r.headers["Set-Cookie"]) && /HttpOnly/.test(r.headers["Set-Cookie"])
+     && /SameSite=Strict/.test(r.headers["Set-Cookie"]),
+     "verify-otp sets an HttpOnly, SameSite=Strict session cookie");
+  const cookieToken = r.headers["Set-Cookie"].split(";")[0].split("=")[1];
+  r = await call(me, { method: "GET", cookie: cookieToken });   // no Authorization header at all
+  ok(r.code === 200 && r.out.user.email === "cookie@example.com",
+     "/me authorizes from the cookie alone, no bearer header");
+  r = await call(logout, { cookie: cookieToken });
+  ok(r.code === 200 && /^fm_sess=;/.test(r.headers["Set-Cookie"]) && /Max-Age=0/.test(r.headers["Set-Cookie"]),
+     "logout clears the cookie (Max-Age=0)");
+  r = await call(me, { method: "GET", cookie: cookieToken });
+  ok(r.code === 401, "cookie session dead after logout");
 
   console.log("· second login increments loginCount");
   await new Promise((s) => setTimeout(s, 10));

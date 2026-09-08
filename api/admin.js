@@ -28,9 +28,18 @@
 const store = require("./_lib/store");
 const A = require("./_lib/auth");
 const B = require("./_lib/billing");
+const { clientIp } = require("./_lib/net");
 
 const DEV = process.env.AUTH_DEV_MEMORY === "1";
 const KEY = process.env.ADMIN_KEY || (DEV ? "devadmin" : "");
+
+// Unlike OTP/password, there's no per-account identity to key a lockout on
+// before auth succeeds — this is a shared secret, not a login. Throttle by
+// caller IP instead: same store.incr+TTL primitive api/_lib/auth.js uses,
+// capped low since a legitimate operator only ever needs a handful of
+// attempts, not a flood.
+const ADMIN_MAX_TRIES = 10;
+const ADMIN_TRY_WINDOW = 900; // 15 min
 
 function authorized(req) {
   const k = req.headers && (req.headers["x-admin-key"] || req.headers["X-Admin-Key"]);
@@ -94,7 +103,17 @@ async function geoBreakdown() {
 module.exports = async (req, res) => {
   if (!KEY || !store.configured())
     return A.json(res, 503, { error: "ADMIN DESK NOT CONFIGURED — set ADMIN_KEY (and a store) in Vercel env vars" });
-  if (!authorized(req)) return A.json(res, 401, { error: "INVALID ADMIN KEY" });
+
+  const failKey = `admin:fail:${clientIp(req)}`;
+  const fails = parseInt((await store.get(failKey)) || "0", 10) || 0;
+  if (fails >= ADMIN_MAX_TRIES)
+    return A.json(res, 429, { error: "TOO MANY FAILED ADMIN-KEY ATTEMPTS — TRY AGAIN LATER" });
+
+  if (!authorized(req)) {
+    await store.incr(failKey, ADMIN_TRY_WINDOW);
+    return A.json(res, 401, { error: "INVALID ADMIN KEY" });
+  }
+  await store.del(failKey); // reset on success so a typo streak doesn't linger
 
   try {
     if (req.method === "GET")

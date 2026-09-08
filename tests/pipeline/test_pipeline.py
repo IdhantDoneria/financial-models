@@ -6,7 +6,7 @@ Validates every stage:
     2. **AutoAssumer** — every model receives well-formed kwargs; missing
        inputs get sensible defaults.
     3. **ManualAssumer** — every override propagates.
-    4. **Runner** — runs all ten models on synthetic data without exceptions.
+    4. **Runner** — runs all twelve models on synthetic data without exceptions.
     5. **Exporters** — PDF and XLSX outputs are created and non-empty.
 """
 
@@ -239,6 +239,33 @@ def test_nse_symbol_recognised_as_ticker():
 
 
 # --------------------------------------------------------------------------- #
+# 1c. Extraction of the HDEBT owner-earnings fields (D&A, R&D, capex)
+# --------------------------------------------------------------------------- #
+def test_extracts_depreciation_rd_and_capex_for_owner_earnings():
+    ex = PDFExtractor()
+    data = ex.scrape_figures(
+        "(Dollars in millions)\n"
+        "Depreciation and amortization $ 600\n"
+        "Research and development expenses $ 900\n"
+        "Purchases of property and equipment $ 700\n"
+    )
+    assert data.depreciation_amortization == pytest.approx(600e6, rel=0.01)
+    assert data.rd_expense == pytest.approx(900e6, rel=0.01)
+    assert data.capital_expenditures == pytest.approx(700e6, rel=0.01)
+
+
+def test_capex_reported_as_a_parenthesised_outflow_is_still_a_positive_amount():
+    """A cash-flow-statement line reads as a parenthesised outflow, but the
+    downstream owner-earnings formula (net_income - maintenance_capex, …)
+    expects a positive expenditure magnitude, not a signed accounting entry."""
+    ex = PDFExtractor()
+    data = ex.scrape_figures(
+        "(In millions)\nPurchases of property and equipment (700)\n"
+    )
+    assert data.capital_expenditures == pytest.approx(700e6, rel=0.01)
+
+
+# --------------------------------------------------------------------------- #
 # 2. Auto assumer — every model gets kwargs
 # --------------------------------------------------------------------------- #
 def test_auto_assumer_covers_every_model(synthetic_pdf):
@@ -249,6 +276,38 @@ def test_auto_assumer_covers_every_model(synthetic_pdf):
     ctx = assumptions.market_context
     assert 0 < ctx["risk_free_rate"] < 0.10
     assert ctx["terminal_growth"] <= ctx["risk_free_rate"]   # Gordon constraint
+
+
+def test_hdebt_defaults_to_no_adjustment_when_nothing_is_disclosed(synthetic_pdf):
+    """The synthetic filing has no lease/reverse-factoring/contingent-
+    liability disclosures — the honest default is $0 hidden debt, not a
+    guessed number, so adjusted figures should equal the reported ones."""
+    data = PDFExtractor().extract(synthetic_pdf)
+    kw = AutoAssumer().build(data).kwargs_by_model["Ind AS 116 Hidden-Debt Normalizer"]
+    assert kw["annual_lease_payment"] == 0.0
+    assert kw["reverse_factoring_exposure"] == 0.0
+    assert kw["cl1_amount"] == 0.0 and kw["cl1_probability"] == 0.0
+    assert kw["lease_discount_rate"] > 0   # must stay positive (model requires it)
+
+
+def test_rdcf_tam_defaults_to_ten_times_base_revenue(synthetic_pdf):
+    """No filing states its own TAM in a form a regex can trust — the
+    auto-assumer's documented placeholder is 10x current revenue."""
+    data = PDFExtractor().extract(synthetic_pdf)
+    kw = AutoAssumer().build(data).kwargs_by_model["Reverse DCF / Market-Implied Expectations"]
+    assert kw["total_addressable_market"] == pytest.approx(10.0 * kw["base_revenue"])
+
+
+def test_hdebt_and_rdcf_share_the_same_wacc_and_terminal_growth_as_dcf(synthetic_pdf):
+    """RDCF explicitly reuses DiscountedCashFlowModel's own EV formula
+    internally — its discount_rate/terminal_growth should be the same
+    numbers DCF gets, not an independently-guessed second set."""
+    data = PDFExtractor().extract(synthetic_pdf)
+    a = AutoAssumer().build(data)
+    dcf_kw = a.kwargs_by_model["Discounted Cash Flow"]
+    rdcf_kw = a.kwargs_by_model["Reverse DCF / Market-Implied Expectations"]
+    assert rdcf_kw["discount_rate"] == pytest.approx(dcf_kw["discount_rate"])
+    assert rdcf_kw["terminal_growth"] == pytest.approx(dcf_kw["terminal_growth"])
 
 
 # --------------------------------------------------------------------------- #
@@ -265,6 +324,29 @@ def test_manual_overrides_reach_kwargs(synthetic_pdf):
     assert a.market_context["volatility"] == pytest.approx(0.5)
     assert a.kwargs_by_model["Black-Scholes-Merton"]["sigma"] == pytest.approx(0.5)
     assert a.kwargs_by_model["Discounted Cash Flow"]["discount_rate"] == pytest.approx(0.14)
+
+
+def test_hdebt_rdcf_manual_overrides_reach_kwargs(synthetic_pdf):
+    """The footnote-only figures the auto-assumer can't extract (lease
+    payment, reverse factoring, contingent liabilities, TAM) must be
+    settable by hand — that's the whole point of exposing them as
+    ManualOverrides fields instead of leaving them permanently at $0."""
+    data = PDFExtractor().extract(synthetic_pdf)
+    ov = ManualOverrides(
+        annual_lease_payment=200_000_000, lease_term_years=7,
+        reverse_factoring_exposure=150_000_000,
+        cl1_amount=500_000_000, cl1_probability=0.3,
+        total_addressable_market=200_000_000_000,
+    )
+    a = ManualAssumer().build(data, ov)
+    hdebt = a.kwargs_by_model["Ind AS 116 Hidden-Debt Normalizer"]
+    assert hdebt["annual_lease_payment"] == pytest.approx(200_000_000)
+    assert hdebt["lease_term_years"] == 7
+    assert hdebt["reverse_factoring_exposure"] == pytest.approx(150_000_000)
+    assert hdebt["cl1_amount"] == pytest.approx(500_000_000)
+    assert hdebt["cl1_probability"] == pytest.approx(0.3)
+    rdcf = a.kwargs_by_model["Reverse DCF / Market-Implied Expectations"]
+    assert rdcf["total_addressable_market"] == pytest.approx(200_000_000_000)
 
 
 # --------------------------------------------------------------------------- #

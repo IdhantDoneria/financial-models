@@ -75,6 +75,8 @@ async function fxPerUsd(ccy) {
            fxDate: j.time_last_update_utc || null };
 }
 
+const { clientIp, withinLimit } = require("./_lib/net");
+
 module.exports = async (req, res) => {
   const url = new URL(req.url || "/", "http://internal");
   const cc = String(url.searchParams.get("cc") || "US").toUpperCase();
@@ -82,6 +84,12 @@ module.exports = async (req, res) => {
   res.setHeader("Content-Type", "application/json; charset=utf-8");
   res.setHeader("Access-Control-Allow-Origin", "*");
   if (!m) return res.status(400).json({ error: `unknown market '${cc}'` });
+  // The response is shared/CDN-cached for 6h, so this only ever matters
+  // before the cache is warm — but a flood of concurrent first-hits still
+  // fans out to FRED/Treasury/er-api, so cap it per caller too.
+  if (!(await withinLimit(`rates:rl:${clientIp(req)}`, 20, 60))) {
+    return res.status(429).json({ error: "rate limited" });
+  }
   res.setHeader("Cache-Control", "public, s-maxage=21600, stale-while-revalidate=86400");
 
   // Yield + FX fetched in parallel; each failure degrades independently —

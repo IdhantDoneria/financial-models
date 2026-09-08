@@ -11,12 +11,7 @@
 
 const crypto = require("crypto");
 const store = require("./_lib/store");
-
-function clientIp(req) {
-  const xf = req.headers && req.headers["x-forwarded-for"];
-  if (xf) return String(xf).split(",")[0].trim();
-  return (req.socket && req.socket.remoteAddress) || (req.connection && req.connection.remoteAddress) || "";
-}
+const { clientIp, withinLimit } = require("./_lib/net");
 
 function isPrivate(ip) {
   return !ip || ip === "::1" || ip === "127.0.0.1" ||
@@ -30,6 +25,12 @@ module.exports = async (req, res) => {
   const ip = clientIp(req);
   if (isPrivate(ip)) {
     return res.status(200).json({ ok: false, reason: "private-ip" });
+  }
+  // 20 lookups/min/IP — generous for real page loads, enough to stop a
+  // scripted loop from forcing a fresh ipwho.is call (and geo:seen churn)
+  // on every request.
+  if (!(await withinLimit(`geo:rl:${ip}`, 20, 60))) {
+    return res.status(429).json({ ok: false, reason: "rate-limited" });
   }
 
   try {
