@@ -151,13 +151,25 @@ def test_tesla_dcf_runs_end_to_end_without_crashing(tesla_text):
     assert report.results["Discounted Cash Flow"]["enterprise_value"] > 0
 
 
-def test_tesla_implausible_cost_of_debt_is_rejected_not_used(tesla_text):
-    """Regression for the specific gap this backtest surfaced: Tesla's own
-    "Total debt" line is a multi-column table and the single-column reader
-    grabs the wrong (understated) figure, which would otherwise imply a
-    nonsensical ~21% cost of debt. WACC must fall back to the default
-    rather than silently using it — see AutoAssumer.build's cost_of_debt_real
-    plausibility guard."""
+def test_tesla_total_debt_sums_current_and_long_term_columns(tesla_text):
+    """Regression for the bug this backtest originally surfaced: Tesla's
+    own "Total debt" line is a multi-column debt-schedule table ("Total
+    debt 1,569 6,584 $8,177 $6,429" — current-portion / long-term-portion
+    / unpaid-principal / unused-committed-amount); a single-column reader
+    grabbed just the first (current-portion) figure, understating real
+    total debt ~5x and implying a nonsensical ~21.5% cost of debt.
+    PDFExtractor._scrape_total_debt now sums the confirmed Current +
+    Long-Term columns instead."""
+    data = PDFExtractor().scrape_figures(tesla_text)
+    assert data.total_debt == pytest.approx(8_153_000_000, rel=0.01)
+
+
+def test_tesla_real_cost_of_debt_now_flows_into_wacc(tesla_text):
+    """With total_debt fixed, interest expense / real total debt (~4.15%)
+    is a genuinely plausible cost of debt and should now be used in WACC
+    instead of falling back to the generic rf+150bp default."""
     data = PDFExtractor().scrape_figures(tesla_text)
     assumptions = AutoAssumer().build(data)
-    assert "rf+150bp default" in assumptions.rationale[("DCF", "discount_rate")]
+    rationale = assumptions.rationale[("DCF", "discount_rate")]
+    assert "interest expense/total debt" in rationale
+    assert "rf+150bp default" not in rationale

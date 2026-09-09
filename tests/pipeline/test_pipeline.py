@@ -507,6 +507,35 @@ def test_extracts_interest_expense_for_real_cost_of_debt():
     assert data2.interest_expense == pytest.approx(774.92e5, rel=0.01)
 
 
+def test_total_debt_sums_current_and_long_term_columns_when_confirmed():
+    """(Real Tesla 10-K text, trimmed) — a debt-schedule table with a
+    confirmed "Current ... Long-Term" header sums the first two columns
+    for real total debt (current-portion + long-term-portion), instead of
+    reading just the first number and understating total debt by ~5x."""
+    ex = PDFExtractor()
+    text = (
+        "(in millions)\n"
+        "Net Carrying Value\n"
+        "Unpaid Principal Balance\n"
+        "Unused Committed Amount\n"
+        "Contractual Interest Rates\n"
+        "Contractual Maturity DateCurrent Long-Term\n"
+        "Total debt 1,569 6,584 $ 8,177 $ 6,429\n"
+        "Finance leases 71 152\n"
+    )
+    data = ex.scrape_figures(text)
+    assert data.total_debt == pytest.approx((1_569 + 6_584) * 1e6, rel=0.01)
+
+
+def test_total_debt_reads_a_single_figure_normally_without_current_longterm_header():
+    """The common case — a plain "Total debt $X" line with no Current/
+    Long-Term column breakdown nearby — must be completely unaffected by
+    the summing logic above."""
+    ex = PDFExtractor()
+    data = ex.scrape_figures("(Dollars in millions)\nTotal debt $ 3,500\n")
+    assert data.total_debt == pytest.approx(3_500e6, rel=0.01)
+
+
 # --------------------------------------------------------------------------- #
 # 2b. Real capital structure + cost of debt for WACC
 # --------------------------------------------------------------------------- #
