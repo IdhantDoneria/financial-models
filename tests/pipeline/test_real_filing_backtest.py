@@ -173,3 +173,18 @@ def test_tesla_real_cost_of_debt_now_flows_into_wacc(tesla_text):
     rationale = assumptions.rationale[("DCF", "discount_rate")]
     assert "interest expense/total debt" in rationale
     assert "rf+150bp default" not in rationale
+
+
+def test_tesla_disclosed_stock_comp_volatility_used_instead_of_default(tesla_text):
+    """Tesla's real 10-K states "Expected volatility 60% 59% 63%" in its
+    stock-comp footnote — a real, filing-disclosed ASC 718 Black-Scholes
+    input that was previously extracted only far enough to explicitly
+    EXCLUDE it from a false current_price match, then discarded rather
+    than used. The option-pricing models (and VaR/MPT, which share the
+    same volatility input) should now use this real 60% instead of the
+    generic 25% default."""
+    data = PDFExtractor().scrape_figures(tesla_text)
+    assert data.disclosed_volatility == pytest.approx(0.60, rel=0.01)
+    assumptions = AutoAssumer().build(data)
+    assert assumptions.market_context["volatility"] == pytest.approx(0.60, rel=0.01)
+    assert assumptions.kwargs_by_model["Black-Scholes-Merton"]["sigma"] == pytest.approx(0.60, rel=0.01)

@@ -81,6 +81,15 @@ class ExtractedFinancials:
     #: a real cost of debt (this ÷ total_debt) for WACC instead of a flat
     #: risk-free+150bp spread, when both this and total_debt are known.
     interest_expense: float | None = None
+    #: "Expected [share price] volatility" — a real, company-specific
+    #: figure most 10-Ks disclose in the stock-based-compensation footnote
+    #: (an ASC 718 Black-Scholes input for valuing employee option grants,
+    #: not necessarily identical to a market-implied volatility for an
+    #: arbitrary option, but real and period-specific — a genuine input to
+    #: prefer over a flat 25% default for the option-pricing models). The
+    #: `current_price` pattern above explicitly excludes this exact phrase
+    #: to avoid a false price match; this field is what actually captures it.
+    disclosed_volatility: float | None = None
     #: ISO 4217 code the filing's own figures are denominated in (detected
     #: from currency symbols/codes in the document text — see
     #: :meth:`PDFExtractor._detect_currency`). Every monetary field above is
@@ -120,6 +129,7 @@ class ExtractedFinancials:
             "rd_expense": self.rd_expense,
             "capital_expenditures": self.capital_expenditures,
             "interest_expense": self.interest_expense,
+            "disclosed_volatility": self.disclosed_volatility,
             "currency": self.currency,
             "backends_used": self.backends_used,
         }
@@ -791,10 +801,13 @@ class PDFExtractor:
             interest_expense=self._first_after(
                 text, [r"interest\s+expense", r"finance\s+costs?"],
                 apply_scale=True),
+            disclosed_volatility=self._first_after(
+                text, [r"expected\s+(?:share\s+price\s+|stock\s+price\s+)?volatility"],
+                window=40, plausible=self._not_year_like),
         )
 
         # A percent scraped as e.g. "12" from "12%" should read as 0.12.
-        for attr in ("revenue_growth", "operating_margin", "tax_rate"):
+        for attr in ("revenue_growth", "operating_margin", "tax_rate", "disclosed_volatility"):
             v = getattr(data, attr)
             if v is not None and v > 1:
                 setattr(data, attr, v / 100.0)

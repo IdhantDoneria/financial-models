@@ -507,6 +507,57 @@ def test_extracts_interest_expense_for_real_cost_of_debt():
     assert data2.interest_expense == pytest.approx(774.92e5, rel=0.01)
 
 
+def test_extracts_disclosed_stock_comp_volatility_and_feeds_option_models():
+    """(Real Tesla 10-K text) — a real, filing-disclosed volatility figure
+    should be used instead of the generic 25% default for the option-
+    pricing models. The negative lookahead on current_price's own "share
+    price" pattern exists specifically because this phrase is common —
+    confirm it's now actually captured, not just excluded from the wrong
+    field."""
+    ex = PDFExtractor()
+    text = (
+        "Year Ended December 31,\n2025 2024 2023\n"
+        "Risk-free interest rate 3.95 % 3.92 % 3.90 %\n"
+        "Expected term (in years) 4.7 4.3 4.5\n"
+        "Expected volatility 60 % 59 % 63 %\n"
+        "Dividend yield — % — % — %\n"
+    )
+    data = ex.scrape_figures(text)
+    assert data.disclosed_volatility == pytest.approx(0.60, rel=0.01)
+    assert data.current_price is None   # still not falsely matched as a price
+
+    assumptions = AutoAssumer().build(data)
+    assert assumptions.market_context["volatility"] == pytest.approx(0.60, rel=0.01)
+    assert assumptions.kwargs_by_model["Black-Scholes-Merton"]["sigma"] == pytest.approx(0.60, rel=0.01)
+    rationale = assumptions.rationale[("Options/MPT/VaR", "volatility")]
+    assert "60%" in rationale and "stock-comp footnote" in rationale
+
+
+def test_volatility_default_used_when_nothing_disclosed(synthetic_pdf):
+    """No regression — a filing that never states an expected volatility
+    (this fixture doesn't) still falls back to the generic 25% default."""
+    data = PDFExtractor().extract(synthetic_pdf)
+    assert data.disclosed_volatility is None
+    assumptions = AutoAssumer().build(data)
+    assert assumptions.market_context["volatility"] == pytest.approx(0.25)
+
+
+def test_mpt_discloses_its_market_vol_and_correlation_are_assumed():
+    """MPT's market volatility and correlation are fixed constants with no
+    real substitute this app can currently compute — they must at least be
+    disclosed as assumed rather than presented as if derived."""
+    from src.pipeline.pdf_extractor import ExtractedFinancials
+    data = ExtractedFinancials(revenue=1_000_000)
+    assumptions = AutoAssumer().build(data)
+    rationale = assumptions.rationale[("MPT", "market volatility / correlation")]
+    assert "not derived" in rationale
+    assert "18%" in rationale and "0.60" in rationale
+    # The covariance matrix's off-diagonal/second-diagonal entries must
+    # actually use these disclosed constants, not some other silent value.
+    cov = assumptions.kwargs_by_model["Modern Portfolio Theory"]["covariance"]
+    assert cov[1][1] == pytest.approx(0.18 ** 2)
+
+
 def test_total_debt_sums_current_and_long_term_columns_when_confirmed():
     """(Real Tesla 10-K text, trimmed) — a debt-schedule table with a
     confirmed "Current ... Long-Term" header sums the first two columns
@@ -648,6 +699,145 @@ def test_hdebt_not_marked_partial_once_any_footnote_figure_is_supplied(synthetic
     assert hdebt not in assumptions.partial
 
 
+def test_var_falls_back_to_unit_notional_not_fabricated_market_cap():
+    """No filing states its own market cap unless price AND share count
+    are both disclosed (the common case, especially for quarterly filings
+    — real BLS/Tesla fixtures both come back None for both). The old
+    (price or 100.0)*(shares or 1,000,000) fallback substituted a
+    fabricated $100M notional, so a real dollar VaR figure was reported
+    against a market cap wrong by orders of magnitude for any real
+    company. Falls back to VaR's own $1 unit-notional default instead —
+    still a real, meaningful %-of-portfolio answer, just not a dollar one."""
+    from src.pipeline.pdf_extractor import ExtractedFinancials
+    data = ExtractedFinancials(revenue=1_000_000, net_income=100_000,
+                               free_cash_flows=[80_000, 85_000, 90_000, 95_000, 100_000])
+    assumptions = AutoAssumer().build(data)
+    kw = assumptions.kwargs_by_model["Value at Risk / CVaR"]
+    assert kw["portfolio_value"] == pytest.approx(1.0)
+    assert "Value at Risk / CVaR" in assumptions.partial
+
+    report = AnalysisRunner(data).run(assumptions, ["Value at Risk / CVaR"], mode="auto")
+    assert "Value at Risk / CVaR" in report.results   # still runs
+    df = report.summary_frame()
+    row = df.loc[df["Model"] == "Value at Risk / CVaR"].iloc[0]
+    assert row["Status"] == "UNASSESSED"
+    assert row["Headline result"].endswith("%"), \
+        f"expected a % headline on the unit-notional fallback, got {row['Headline result']!r}"
+
+
+def test_var_uses_the_real_market_cap_and_dollar_headline_when_known():
+    """When price and shares ARE both disclosed, VaR should use the real
+    market cap (not the unit-notional fallback) and report a real dollar
+    figure, not a %."""
+    from src.pipeline.pdf_extractor import ExtractedFinancials
+    data = ExtractedFinancials(revenue=1_000_000, net_income=100_000, current_price=50.0,
+                               shares_outstanding=10_000_000,
+                               free_cash_flows=[80_000, 85_000, 90_000, 95_000, 100_000])
+    assumptions = AutoAssumer().build(data)
+    kw = assumptions.kwargs_by_model["Value at Risk / CVaR"]
+    assert kw["portfolio_value"] == pytest.approx(50.0 * 10_000_000)
+    assert "Value at Risk / CVaR" not in assumptions.partial
+
+    report = AnalysisRunner(data).run(assumptions, ["Value at Risk / CVaR"], mode="auto")
+    df = report.summary_frame()
+    row = df.loc[df["Model"] == "Value at Risk / CVaR"].iloc[0]
+    assert row["Status"] == "OK"
+    assert row["Headline result"].startswith("$"), \
+        f"expected a $ headline with a real market cap, got {row['Headline result']!r}"
+
+
+def test_fama_french_always_flagged_partial_regardless_of_filing_data(synthetic_pdf):
+    """Unlike HDEBT/VaR, Fama-French's issue isn't missing filing data —
+    even a fully-populated filing (this fixture has revenue, beta,
+    everything) doesn't fix it, because AnalysisRunner._build_ff_kwargs
+    builds a synthetic asset return series from the SAME beta assumption
+    it's then regressed against. That's circular by construction; no
+    amount of extracted data changes that, so the flag must always be
+    present."""
+    data = PDFExtractor().extract(synthetic_pdf)   # a fully-populated fixture
+    assert data.beta is not None   # confirms this isn't a missing-data case
+    assumptions = AutoAssumer().build(data)
+    assert "Fama-French 3-Factor" in assumptions.partial
+
+    report = AnalysisRunner(data).run(assumptions, ["Fama-French 3-Factor"], mode="auto")
+    assert "Fama-French 3-Factor" in report.results   # still runs
+    df = report.summary_frame()
+    row = df.loc[df["Model"] == "Fama-French 3-Factor"].iloc[0]
+    assert row["Status"] == "UNASSESSED"
+
+
+def test_gordon_growth_blocked_when_no_dividend_disclosed(synthetic_pdf):
+    """(Real Tesla 10-K structure) — a company that pays no dividend at
+    all (or one whose DPS simply wasn't extracted) must not get a
+    fabricated "2% of price" dividend fed into Gordon Growth: the model
+    can't represent $0, and there's no honest partial output the way
+    DCF's per-share value can go unset, so this blocks entirely rather
+    than running on a guessed number — same treatment as Reverse DCF's
+    missing-TAM case."""
+    from src.pipeline.pdf_extractor import ExtractedFinancials
+    data = ExtractedFinancials(revenue=1_000_000, net_income=100_000, current_price=50.0,
+                               shares_outstanding=10_000_000,
+                               free_cash_flows=[80_000, 85_000, 90_000, 95_000, 100_000])
+    assert data.dividend_per_share is None
+    assumptions = AutoAssumer().build(data)
+    kw = assumptions.kwargs_by_model["Gordon Growth Model"]
+    assert kw["dividend"] is None
+    assert "Gordon Growth Model" in assumptions.unavailable
+
+    report = AnalysisRunner(data).run(assumptions, ["Gordon Growth Model"], mode="auto")
+    assert "Gordon Growth Model" not in report.results
+    assert "Gordon Growth Model" in report.errors
+
+
+def test_gordon_growth_runs_normally_once_a_real_dividend_is_known():
+    """A company that DOES disclose a real dividend per share should run
+    normally — this is a gap in extraction/disclosure, not a blanket
+    block on the model."""
+    from src.pipeline.pdf_extractor import ExtractedFinancials
+    data = ExtractedFinancials(revenue=1_000_000, net_income=100_000, current_price=50.0,
+                               shares_outstanding=10_000_000, dividend_per_share=1.5,
+                               free_cash_flows=[80_000, 85_000, 90_000, 95_000, 100_000])
+    assumptions = AutoAssumer().build(data)
+    assert "Gordon Growth Model" not in assumptions.unavailable
+    report = AnalysisRunner(data).run(assumptions, ["Gordon Growth Model"], mode="auto")
+    assert "Gordon Growth Model" in report.results
+    assert report.results["Gordon Growth Model"]["price"] > 0
+
+
+_OPTION_MODELS = ("Black-Scholes-Merton", "Binomial Tree (CRR)",
+                  "Monte Carlo (GBM)", "Heston Stochastic Volatility")
+
+
+def test_option_models_flagged_partial_when_spot_is_fabricated():
+    """Unlike DCF/RDCF/VaR, a fabricated $100 spot for the option models
+    isn't blocking-level misleading — they're presented in the UI as
+    pricing-mechanics demonstrations with an adjustable slider default,
+    not company-specific predictions — but they should still be flagged
+    for the same reporting consistency HDEBT/VaR get: a user comparing
+    models in one report shouldn't see plain "OK" on all four with no
+    indication the spot was invented."""
+    from src.pipeline.pdf_extractor import ExtractedFinancials
+    data = ExtractedFinancials(revenue=1_000_000)
+    assumptions = AutoAssumer().build(data)
+    for model in _OPTION_MODELS:
+        assert model in assumptions.partial, f"{model} should be flagged partial"
+
+    report = AnalysisRunner(data).run(assumptions, list(_OPTION_MODELS), mode="auto")
+    df = report.summary_frame()
+    for model in _OPTION_MODELS:
+        assert model in report.results, f"{model} should still run"
+        status = df.loc[df["Model"] == model, "Status"].iloc[0]
+        assert status == "UNASSESSED", f"{model} status: {status}"
+
+
+def test_option_models_not_flagged_when_a_real_share_price_is_known():
+    from src.pipeline.pdf_extractor import ExtractedFinancials
+    data = ExtractedFinancials(revenue=1_000_000, current_price=87.5)
+    assumptions = AutoAssumer().build(data)
+    for model in _OPTION_MODELS:
+        assert model not in assumptions.partial, f"{model} should not be flagged"
+
+
 def test_rdcf_tam_is_not_fabricated_and_blocks_auto_mode(synthetic_pdf):
     """No filing states its own TAM in a form a regex can trust, and unlike
     WACC/terminal growth there's no formula-based proxy that's meaningfully
@@ -779,20 +969,24 @@ def test_hdebt_rdcf_manual_overrides_reach_kwargs(synthetic_pdf):
 # 4. Runner executes every model without exceptions
 # --------------------------------------------------------------------------- #
 def test_runner_all_models_produce_results(synthetic_pdf):
-    """Reverse DCF is the sole expected exception in pure auto mode — no
-    filing states a trustworthy TAM, so it's a required manual input (see
-    test_rdcf_tam_is_not_fabricated_and_blocks_auto_mode) and correctly
-    lands in errors, not results, until one is supplied."""
+    """Reverse DCF and Gordon Growth are the expected exceptions in pure
+    auto mode — no filing states a trustworthy TAM (see
+    test_rdcf_tam_is_not_fabricated_and_blocks_auto_mode) or, on this
+    fixture, a dividend per share (see
+    test_gordon_growth_blocked_when_no_dividend_disclosed) — both are
+    required manual inputs and correctly land in errors, not results,
+    until supplied."""
     data = PDFExtractor().extract(synthetic_pdf)
     assumptions = AutoAssumer().build(data)
     report = AnalysisRunner(data).run(assumptions, list(AVAILABLE_MODELS), mode="auto")
     rdcf = "Reverse DCF / Market-Implied Expectations"
-    assert set(report.errors) == {rdcf}, f"unexpected failures: {report.errors}"
-    assert set(report.results) == set(AVAILABLE_MODELS) - {rdcf}
+    gordon = "Gordon Growth Model"
+    assert set(report.errors) == {rdcf, gordon}, f"unexpected failures: {report.errors}"
+    assert set(report.results) == set(AVAILABLE_MODELS) - {rdcf, gordon}
     for name, res in report.results.items():
         assert res and isinstance(res, dict)
 
-    # Supplying TAM manually unblocks it, and it runs like everything else.
+    # Supplying TAM/dividend manually unblocks both, same as everything else.
     ov = ManualOverrides(total_addressable_market=200_000_000_000)
     manual_assumptions = ManualAssumer().build(data, ov)
     manual_report = AnalysisRunner(data).run(manual_assumptions, [rdcf], mode="manual")
