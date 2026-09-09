@@ -617,6 +617,76 @@ class PDFExtractor:
     def _plausible_share_count(value: float) -> bool:
         return value >= 1_000
 
+    #: Confirms a "Current ... Long-Term" column-header pair precedes a
+    #: debt row — e.g. a real Tesla 10-K debt-schedule table's header
+    #: ("Net Carrying Value" split into "Current"/"Long-Term" sub-columns,
+    #: OCR-run together as "...Maturity DateCurrent Long-Term"). Only
+    #: trusted when confirmed nearby, so a filing with a plain single-
+    #: figure "Total debt $X" line (the common case) is read exactly as
+    #: before — see :meth:`_scrape_total_debt`.
+    _CURRENT_LONGTERM_HEADER_RE = re.compile(
+        r"current[^\n]{0,80}long[-\s]?term", re.IGNORECASE)
+
+    @classmethod
+    def _scrape_total_debt(cls, text: str) -> float | None:
+        """Real total debt, summing Current + Long-Term columns when a
+        confirmed debt-schedule table shows that's what a "Total debt"
+        row's first two numbers actually are.
+
+        A real Tesla 10-K's debt-schedule table reads "Total debt 1,569
+        6,584 $ 8,177 $ 6,429" — four numeric columns: current-portion net
+        carrying value, long-term-portion net carrying value, unpaid
+        principal balance, and unused committed amount (definitely NOT
+        debt). A plain first-number read grabs just the current portion
+        (1,569), understating real total debt (current + long-term =
+        8,153, close to the unpaid-principal column's 8,177) by ~5x. Only
+        attempted when the "Current ... Long-Term" header pair is
+        positively confirmed nearby; otherwise behaves exactly like a
+        plain :meth:`_first_after` read (the common case: a single
+        unbroken "Total debt $X" figure).
+        """
+        patterns = [r"total\s+debt", r"long[-\s]term\s+debt",
+                    r"total\s+borrowings", r"\bborrowings\b"]
+        for pat in patterns:
+            for match in re.finditer(pat, text, re.IGNORECASE):
+                lookback = text[max(0, match.start() - 800):match.start()]
+                if cls._CURRENT_LONGTERM_HEADER_RE.search(lookback):
+                    tail = text[match.end():match.end() + 150]
+                    tail = cls._ARITH_REF_RE.sub(lambda m: " " * len(m.group(0)), tail)
+                    tail = cls._BROKEN_THOUSANDS_SEP_RE.sub(r",\1", tail)
+                    nums: list[float] = []
+                    for m in cls._NUMBER_RE.finditer(tail):
+                        if cls._DATE_TAIL_RE.match(tail[m.end():]):
+                            continue
+                        raw, dec, unit = m.groups()
+                        try:
+                            v = float(raw.replace(",", "") + ("." + dec if dec else ""))
+                        except ValueError:
+                            continue
+                        token = m.group(0)
+                        if "(" in token and ")" in token:
+                            v = -v
+                        if unit:
+                            v *= cls.SCALE_HINTS.get(unit.lower(), 1.0)
+                        nums.append(v)
+                        if len(nums) >= 2:
+                            break
+                    if len(nums) == 2:
+                        total = nums[0] + nums[1]
+                        if abs(total) < 1e5:
+                            total *= cls._local_scale(text, match.start())
+                        return total
+                # No confirmed Current/Long-Term breakdown for this
+                # occurrence — read it the same way any other field is.
+                trailing = text[match.end():match.end() + 120]
+                value = cls._parse_number(trailing)
+                if value is None:
+                    continue
+                if abs(value) < 1e5:
+                    value *= cls._local_scale(text, match.start())
+                return value
+        return None
+
     def scrape_figures(self, text: str) -> ExtractedFinancials:
         """Apply regex heuristics to a raw text blob and populate a report.
 
@@ -677,10 +747,7 @@ class PDFExtractor:
                        r"net\s+profit\s+for\s+the\s+\S+",
                        r"profit\s+after\s+tax", r"\bPAT\b"],
                 apply_scale=True, disqualify=self._FOOTNOTE_SCOPE_DISQUALIFIERS),
-            total_debt=self._first_after(
-                text, [r"total\s+debt", r"long[-\s]term\s+debt",
-                       r"total\s+borrowings", r"\bborrowings\b"],
-                apply_scale=True),
+            total_debt=self._scrape_total_debt(text),
             cash_and_equivalents=self._first_after(
                 text, [r"cash\s+and\s+(?:cash\s+)?equivalents"], apply_scale=True),
             shares_outstanding=self._first_after(

@@ -1,4 +1,4 @@
-=== EXCERPT 1: cover page (lines 1-100) ===
+~~~~~ SECTION ALPHA ~~~~~
 UNITED STATES
 SECURITIES AND EXCHANGE COMMISSION
 Washington, D.C. 20549
@@ -100,7 +100,7 @@ Signatures
 Table of Contents
 Forward-Looking Statements
 
-=== EXCERPT 2: MD&A revenue/tax summary (lines 1880-2100) ===
+~~~~~ SECTION BRAVO ~~~~~
 we believe that it is more likely than not that some of those positions may not be fully sustained upon review by tax
 authorities. We are required to file income tax returns in the U.S. and various foreign jurisdictions, which requires us
 to interpret the applicable tax laws and regulations in effect in such jurisdictions. Such returns are subject to audit by
@@ -323,7 +323,7 @@ In addition, because a large portion of our future expenditures will be to fund 
 needed we will be able to adjust our capital and operating expenditures by operating segment. For example, if our
 near-term manufacturing operations decrease in scale or ramp more slowly than expected, including due to global
 
-=== EXCERPT 3: income statement, interest expense (lines 2380,2430) ===
+~~~~~ SECTION CHARLIE ~~~~~
 Redeemable noncontrolling interests in subsidiaries 58 63
 Equity
 Stockholders’ equity
@@ -376,7 +376,7 @@ noncontrolling interests in subsidiaries 61 62 (23)
 Net income attributable to common stockholders $ 3,794 $ 7,091 $ 14,997
 Net income per share of common stock attributable to common
 
-=== EXCERPT 4: revenue by category (lines 2650,2700) ===
+~~~~~ SECTION DELTA ~~~~~
 generation systems and leases under our direct vehicle leasing programs. The typical condition for a controlling
 financial interest ownership is holding a majority of the voting interests of an entity; however, a controlling financial
 interest may also exist in entities, such as VIEs, through arrangements that do not involve controlling voting
@@ -429,7 +429,7 @@ which is when the control of a vehicle transfers. Payments are typically receive
 accordance with payment terms customary to the business, except sales we finance for which payments are collected
 over the contractual loan term. We also recognize a sales return reserve based on historical experience plus
 
-=== EXCERPT 5: debt schedule (lines 3550,3650) ===
+~~~~~ SECTION ECHO ~~~~~
 Our accrued liabilities and other current liabilities consisted of the following (in millions):
 December 31,
 2025

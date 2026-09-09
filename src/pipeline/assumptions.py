@@ -203,24 +203,27 @@ class AutoAssumer:
             we_real = market_cap / (market_cap + data.total_debt)
         # Real cost of debt — interest expense / total debt — instead of a
         # flat rf+150bp spread, when both are known AND the resulting rate
-        # is actually plausible (a genuine cost of debt for any real
-        # borrower sits between the risk-free rate and roughly rf+15%,
-        # i.e. investment-grade through deep junk). This guard is not
-        # theoretical: a real Tesla 10-K's "Total debt" line is a
-        # multi-column table (current portion / non-current / prior-year
-        # total, e.g. "1,569 6,584 $8,177 $6,429") and this extractor's
-        # single-column reader grabs the first one — a real, pre-existing
-        # gap this fix's own testing surfaced. Naively dividing interest
-        # expense by that understated figure produced a nonsensical 21.5%
-        # "cost of debt" that would have made WACC worse than the flat
-        # default it was meant to improve on. Fixing that multi-column
-        # read is a separate, larger extraction change; this guard is what
-        # keeps THIS fix safe in the meantime — an implausible ratio falls
-        # back to the existing default rather than corrupting WACC.
+        # is actually plausible. PDFExtractor._scrape_total_debt sums a
+        # confirmed Current+Long-Term column breakdown rather than reading
+        # just the first number (a real Tesla 10-K's debt-schedule table —
+        # "Total debt 1,569 6,584 $8,177 $6,429" — previously understated
+        # total debt ~5x this way, producing a nonsensical ~21.5% derived
+        # cost of debt), but this guard stays as defence in depth against
+        # any other extraction shape that still produces an implausible
+        # ratio. The lower bound is intentionally loose (rf-2%, not a
+        # strict rf floor): a real borrower's actual cost of debt can sit
+        # a little below this model's own generic/live risk-free
+        # assumption without that being a sign of a bad extraction —
+        # Tesla's own real figures (interest expense / real total debt)
+        # land at ~4.15%, marginally under a 4.25% rf default, and a
+        # strict "must be >= rf" bound would wrongly discard that genuine
+        # value. The upper bound (rf+15%) still rules out anything from
+        # investment-grade through deep junk but rejects a clearly wrong
+        # ratio like the pre-fix 21.5%.
         cost_of_debt_real = None
         if data.interest_expense is not None and data.total_debt:
             candidate = data.interest_expense / data.total_debt
-            if rf <= candidate <= rf + 0.15:
+            if (rf - 0.02) <= candidate <= (rf + 0.15):
                 cost_of_debt_real = candidate
         wacc = o.discount_rate if o.discount_rate is not None else self._wacc(
             beta, tax, we=we_real, cost_of_debt=cost_of_debt_real)
