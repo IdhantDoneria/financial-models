@@ -20,7 +20,10 @@ module.exports = async (req, res) => {
     return A.json(res, 503, { error: "SERVER AUTH NOT CONFIGURED" });
 
   let body;
-  try { body = await A.readBody(req); } catch { return A.json(res, 400, { error: "invalid JSON" }); }
+  try { body = await A.readBody(req); } catch (err) {
+    if (err instanceof A.BodyTooLargeError) return A.json(res, 413, { error: "REQUEST BODY TOO LARGE" });
+    return A.json(res, 400, { error: "invalid JSON" });
+  }
   const addr = String(body.email || "").trim().toLowerCase();
   const code = String(body.code || "").replace(/\D/g, "");
   if (!A.EMAIL_RE.test(addr)) return A.json(res, 400, { error: "ENTER A VALID EMAIL" });
@@ -31,15 +34,26 @@ module.exports = async (req, res) => {
     if (!raw) return A.json(res, 400, { error: "CODE EXPIRED OR NOT REQUESTED — SEND A NEW ONE" });
     const rec = JSON.parse(raw);
 
-    if (rec.tries >= A.OTP_MAX_TRIES) {
+    // Attempt budget lives in its own counter, claimed via store.incr — a
+    // single atomic Redis INCR, unlike the old get-rec/mutate-tries/setex-
+    // rec sequence above, which only stayed race-free by accident of this
+    // dev server's synchronous in-memory store. Against real Redis
+    // (network round-trips, concurrent serverless invocations), that
+    // sequence was a TOCTOU race: concurrent verify calls could each read a
+    // stale `tries` count before any of their writes landed, so a fan of
+    // simultaneous guesses could get more than OTP_MAX_TRIES real hash
+    // comparisons through. INCR hands out a strictly-increasing, unique
+    // ticket per request regardless of how many race each other here, so
+    // at most OTP_MAX_TRIES can ever pass this gate.
+    const tries = await store.incr(`otp:tries:${addr}`, A.OTP_TTL);
+    if (tries > A.OTP_MAX_TRIES) {
       await store.del(`otp:${addr}`);
+      await store.del(`otp:tries:${addr}`);
       return A.json(res, 429, { error: "TOO MANY WRONG ATTEMPTS — REQUEST A NEW CODE" });
     }
     if (!A.timingSafeEq(A.hashOtp(addr, code), rec.h)) {
-      rec.tries += 1;
-      const left = A.OTP_MAX_TRIES - rec.tries;
-      if (left <= 0) await store.del(`otp:${addr}`);
-      else await store.setex(`otp:${addr}`, 300, JSON.stringify(rec));
+      const left = A.OTP_MAX_TRIES - tries;
+      if (left <= 0) { await store.del(`otp:${addr}`); await store.del(`otp:tries:${addr}`); }
       return A.json(res, 401, { error: left > 0
         ? `INVALID CODE — ${left} ATTEMPT${left === 1 ? "" : "S"} LEFT`
         : "TOO MANY WRONG ATTEMPTS — REQUEST A NEW CODE" });
@@ -66,6 +80,7 @@ module.exports = async (req, res) => {
     }
 
     await store.del(`otp:${addr}`);   // single use — committed past this point
+    await store.del(`otp:tries:${addr}`);
 
     // upsert profile — this is where "all the user details" live server-side
     if (body.name && String(body.name).trim().length >= 2) user.name = String(body.name).trim().slice(0, 80);

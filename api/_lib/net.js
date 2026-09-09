@@ -37,4 +37,20 @@ async function withinLimit(key, max, windowSec) {
   }
 }
 
-module.exports = { clientIp, withinLimit };
+/** Every per-IP limiter here is keyed on clientIp(), which trusts the
+ *  X-Real-Ip / X-Forwarded-For headers the request arrives with — accurate
+ *  when Vercel's edge is guaranteed to set/overwrite them, but a caller can
+ *  rotate a fresh value per request against anything else in front (a local
+ *  dev server, a misconfigured proxy, direct access), making the per-IP cap
+ *  free to defeat by simply changing the header. withinLimitLayered() adds
+ *  a second counter that ignores IP entirely, so no amount of header
+ *  rotation raises the *total* attempt budget past `globalMax` — only makes
+ *  it look like it's coming from more places. Keep globalMax well above
+ *  realistic legitimate traffic (it's a backstop, not the primary limit). */
+async function withinLimitLayered(key, max, windowSec, globalKey, globalMax) {
+  const perCaller = await withinLimit(key, max, windowSec);
+  const overall = await withinLimit(globalKey, globalMax, windowSec);
+  return perCaller && overall;
+}
+
+module.exports = { clientIp, withinLimit, withinLimitLayered };

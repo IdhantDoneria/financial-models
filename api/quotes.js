@@ -64,7 +64,7 @@ async function quote(s) {
 //  `?sym=` instead of the hardcoded SYMBOLS list.
 const SYM_RE = /^[A-Za-z0-9.\-^=]{1,16}$/;   // conservative allowlist — no path/query injection
 
-const { clientIp, withinLimit } = require("./_lib/net");
+const { clientIp, withinLimitLayered } = require("./_lib/net");
 
 module.exports = async (req, res) => {
   const url = new URL(req.url || "/", "http://internal");
@@ -81,7 +81,10 @@ module.exports = async (req, res) => {
     if (!SYM_RE.test(sym)) return res.status(400).json({ ok: false, error: "invalid symbol" });
     // Uncached path only — the fixed-basket tape below is already CDN-cached
     // and shared across every visitor, so it needs no per-caller limit.
-    if (!(await withinLimit(`quotes:rl:${clientIp(req)}`, 30, 60))) {
+    // Layered with a global backstop since clientIp() is only as
+    // trustworthy as whatever's in front of this function — see the
+    // comment in _lib/net.js.
+    if (!(await withinLimitLayered(`quotes:rl:${clientIp(req)}`, 30, 60, "quotes:rl:global", 600))) {
       return res.status(429).json({ ok: false, error: "rate limited" });
     }
     const q = await quote({ sym, label: sym, money: true });

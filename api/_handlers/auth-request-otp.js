@@ -18,7 +18,10 @@ module.exports = async (req, res) => {
     return A.json(res, 503, { error: "EMAIL NOT CONFIGURED — set GMAIL_USER + GMAIL_APP_PASSWORD (see README)" });
 
   let body;
-  try { body = await A.readBody(req); } catch { return A.json(res, 400, { error: "invalid JSON" }); }
+  try { body = await A.readBody(req); } catch (err) {
+    if (err instanceof A.BodyTooLargeError) return A.json(res, 413, { error: "REQUEST BODY TOO LARGE" });
+    return A.json(res, 400, { error: "invalid JSON" });
+  }
   const addr = String(body.email || "").trim().toLowerCase();
   if (!A.EMAIL_RE.test(addr)) return A.json(res, 400, { error: "ENTER A VALID EMAIL" });
 
@@ -30,7 +33,8 @@ module.exports = async (req, res) => {
 
     const code = A.newOtp();
     await store.setex(`otp:${addr}`, A.OTP_TTL,
-      JSON.stringify({ h: A.hashOtp(addr, code), tries: 0, ts: Date.now() }));
+      JSON.stringify({ h: A.hashOtp(addr, code), ts: Date.now() }));
+    await store.del(`otp:tries:${addr}`);   // fresh code — reset the atomic attempt counter (see auth-verify-otp.js)
     await store.setex(`otp:cd:${addr}`, A.RESEND_COOLDOWN, "1");
 
     const sent = await email.sendOtp(addr, code);

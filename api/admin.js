@@ -41,6 +41,18 @@ const KEY = process.env.ADMIN_KEY || (DEV ? "devadmin" : "");
 const ADMIN_MAX_TRIES = 10;
 const ADMIN_TRY_WINDOW = 900; // 15 min
 
+// clientIp() trusts X-Real-Ip/X-Forwarded-For, which is only accurate when
+// something in front of this function (Vercel's edge) is guaranteed to set
+// or overwrite them — anything else (local dev, a misconfigured proxy,
+// direct access) lets a caller rotate a fresh header value per request and
+// get a brand-new per-IP budget every time, making ADMIN_MAX_TRIES free to
+// bypass. This second, IP-agnostic counter is a backstop: no amount of
+// header rotation can push the *total* wrong-key guesses against this
+// shared secret past ADMIN_GLOBAL_MAX_TRIES in the window, whatever IP each
+// individual guess claims. It's deliberately looser than the per-IP cap so
+// it doesn't lock out a real operator working from one honest IP.
+const ADMIN_GLOBAL_MAX_TRIES = 40;
+
 function authorized(req) {
   const k = req.headers && (req.headers["x-admin-key"] || req.headers["X-Admin-Key"]);
   return !!k && A.timingSafeEq(String(k), KEY);
@@ -105,12 +117,19 @@ module.exports = async (req, res) => {
     return A.json(res, 503, { error: "ADMIN DESK NOT CONFIGURED — set ADMIN_KEY (and a store) in Vercel env vars" });
 
   const failKey = `admin:fail:${clientIp(req)}`;
-  const fails = parseInt((await store.get(failKey)) || "0", 10) || 0;
-  if (fails >= ADMIN_MAX_TRIES)
+  const globalFailKey = "admin:fail:global";
+  const [fails, globalFails] = await Promise.all([
+    store.get(failKey).then((v) => parseInt(v || "0", 10) || 0),
+    store.get(globalFailKey).then((v) => parseInt(v || "0", 10) || 0),
+  ]);
+  if (fails >= ADMIN_MAX_TRIES || globalFails >= ADMIN_GLOBAL_MAX_TRIES)
     return A.json(res, 429, { error: "TOO MANY FAILED ADMIN-KEY ATTEMPTS — TRY AGAIN LATER" });
 
   if (!authorized(req)) {
-    await store.incr(failKey, ADMIN_TRY_WINDOW);
+    await Promise.all([
+      store.incr(failKey, ADMIN_TRY_WINDOW),
+      store.incr(globalFailKey, ADMIN_TRY_WINDOW),
+    ]);
     return A.json(res, 401, { error: "INVALID ADMIN KEY" });
   }
   await store.del(failKey); // reset on success so a typo streak doesn't linger
@@ -121,7 +140,10 @@ module.exports = async (req, res) => {
     if (req.method !== "POST") return A.json(res, 405, { error: "GET or POST" });
 
     let body;
-    try { body = await A.readBody(req); } catch { return A.json(res, 400, { error: "invalid JSON" }); }
+    try { body = await A.readBody(req); } catch (err) {
+      if (err instanceof A.BodyTooLargeError) return A.json(res, 413, { error: "REQUEST BODY TOO LARGE" });
+      return A.json(res, 400, { error: "invalid JSON" });
+    }
     const email = String(body.email || "").trim().toLowerCase();
     if (!A.EMAIL_RE.test(email)) return A.json(res, 400, { error: "ENTER A VALID EMAIL" });
 

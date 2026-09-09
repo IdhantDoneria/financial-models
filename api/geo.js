@@ -11,7 +11,7 @@
 
 const crypto = require("crypto");
 const store = require("./_lib/store");
-const { clientIp, withinLimit } = require("./_lib/net");
+const { clientIp, withinLimitLayered } = require("./_lib/net");
 
 function isPrivate(ip) {
   return !ip || ip === "::1" || ip === "127.0.0.1" ||
@@ -28,8 +28,10 @@ module.exports = async (req, res) => {
   }
   // 20 lookups/min/IP — generous for real page loads, enough to stop a
   // scripted loop from forcing a fresh ipwho.is call (and geo:seen churn)
-  // on every request.
-  if (!(await withinLimit(`geo:rl:${ip}`, 20, 60))) {
+  // on every request. Layered with a global backstop since clientIp() is
+  // only as trustworthy as whatever's in front of this function — see the
+  // comment in _lib/net.js.
+  if (!(await withinLimitLayered(`geo:rl:${ip}`, 20, 60, "geo:rl:global", 400))) {
     return res.status(429).json({ ok: false, reason: "rate-limited" });
   }
 

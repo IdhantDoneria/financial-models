@@ -75,7 +75,7 @@ async function fxPerUsd(ccy) {
            fxDate: j.time_last_update_utc || null };
 }
 
-const { clientIp, withinLimit } = require("./_lib/net");
+const { clientIp, withinLimitLayered } = require("./_lib/net");
 
 module.exports = async (req, res) => {
   const url = new URL(req.url || "/", "http://internal");
@@ -86,8 +86,10 @@ module.exports = async (req, res) => {
   if (!m) return res.status(400).json({ error: `unknown market '${cc}'` });
   // The response is shared/CDN-cached for 6h, so this only ever matters
   // before the cache is warm — but a flood of concurrent first-hits still
-  // fans out to FRED/Treasury/er-api, so cap it per caller too.
-  if (!(await withinLimit(`rates:rl:${clientIp(req)}`, 20, 60))) {
+  // fans out to FRED/Treasury/er-api, so cap it per caller too. Layered
+  // with a global backstop since clientIp() is only as trustworthy as
+  // whatever's in front of this function — see the comment in _lib/net.js.
+  if (!(await withinLimitLayered(`rates:rl:${clientIp(req)}`, 20, 60, "rates:rl:global", 400))) {
     return res.status(429).json({ error: "rate limited" });
   }
   res.setHeader("Cache-Control", "public, s-maxage=21600, stale-while-revalidate=86400");

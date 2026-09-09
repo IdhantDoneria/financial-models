@@ -118,6 +118,21 @@ const ADMIN = { "x-admin-key": "devadmin" };
   const badKey = await call(handlers.admin, { headers: { "x-admin-key": "guess" } });
   check("admin: wrong key -> 401", badKey.code === 401);
 
+  // -- admin: per-IP lockout used to be free to bypass by rotating
+  // X-Forwarded-For per request (clientIp() trusts it outright) — a global,
+  // IP-agnostic backstop now caps total wrong-key guesses regardless of how
+  // many distinct IPs they claim to come from.
+  let spoofedBlockedAt = null;
+  for (let i = 0; i < 45; i++) {
+    const r = await call(handlers.admin, { headers: { "x-admin-key": "guess",
+      "x-forwarded-for": `10.0.${i}.1` } });
+    if (r.code === 429) { spoofedBlockedAt = i; break; }
+  }
+  check("admin: rotating X-Forwarded-For no longer bypasses the key lockout",
+    spoofedBlockedAt !== null, "never got 429 across 45 distinct spoofed IPs");
+  await store.del("admin:fail:global");    // don't let this trip the legitimate calls below
+  await store.del("admin:fail:unknown");   // clientIp() fallback for this harness's fake req
+
   const list = await call(handlers.admin, { headers: ADMIN });
   const emails = list.body.rows.map((r) => r.email);
   // 3 promo signups + pwuser (the short-password attempt was rejected

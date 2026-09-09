@@ -23,7 +23,10 @@ module.exports = async (req, res) => {
   if (!clientId) return A.json(res, 503, { error: "GOOGLE SIGN-IN NOT CONFIGURED" });
 
   let body;
-  try { body = await A.readBody(req); } catch { return A.json(res, 400, { error: "invalid JSON" }); }
+  try { body = await A.readBody(req); } catch (err) {
+    if (err instanceof A.BodyTooLargeError) return A.json(res, 413, { error: "REQUEST BODY TOO LARGE" });
+    return A.json(res, 400, { error: "invalid JSON" });
+  }
 
   let payload;
   try {

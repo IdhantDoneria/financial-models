@@ -18,7 +18,10 @@ module.exports = async (req, res) => {
   if (!sess) return A.json(res, 401, { error: "SIGN IN WITH EMAIL TO UPGRADE" });
 
   let body;
-  try { body = await A.readBody(req); } catch { return A.json(res, 400, { error: "invalid JSON" }); }
+  try { body = await A.readBody(req); } catch (err) {
+    if (err instanceof A.BodyTooLargeError) return A.json(res, 413, { error: "REQUEST BODY TOO LARGE" });
+    return A.json(res, 400, { error: "invalid JSON" });
+  }
   const plan = String(body.plan || "");
   const period = String(body.period || "monthly");
   const p = B.PLANS[plan];

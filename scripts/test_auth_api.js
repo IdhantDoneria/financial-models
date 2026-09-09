@@ -129,5 +129,19 @@ function ok(cond, label) {
   ok(r.code === 200 && r.out.user.loginCount === 2 && r.out.user.name === "Morgan Delaney",
      `profile persisted across logins (loginCount=${r.out.user.loginCount}, name kept)`);
 
+  console.log("· request body size cap (readBody's raw-stream fallback path)");
+  {
+    const A = require("../api/_lib/auth.js");
+    const bigChunk = Buffer.alloc(300 * 1024, 0x39);   // 300KB, over the 256KB cap
+    const bigReq = { method: "POST", headers: {}, async *[Symbol.asyncIterator]() { yield bigChunk; } };
+    let threw = null;
+    try { await A.readBody(bigReq); } catch (e) { threw = e; }
+    ok(threw instanceof A.BodyTooLargeError, "oversized stream body rejected before JSON.parse ever runs");
+
+    const okReq = { method: "POST", headers: {}, async *[Symbol.asyncIterator]() { yield Buffer.from('{"a":1}'); } };
+    const parsed = await A.readBody(okReq);
+    ok(parsed.a === 1, "ordinary small bodies still parse normally");
+  }
+
   console.log(`\n${process.exitCode ? "FAILURES ABOVE" : `ALL ${passed} BACKEND CHECKS PASS`}`);
 })().catch((e) => { console.error("HARNESS ERROR:", e); process.exit(1); });

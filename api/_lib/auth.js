@@ -39,14 +39,39 @@ function verifyPasswordRecord(password, rec) {
   return timingSafeEq(crypto.scryptSync(password, rec.salt, 64).toString("hex"), rec.hash);
 }
 
+// The raw-stream fallback path (used whenever Vercel hasn't already
+// pre-parsed req.body — every non-Vercel host, and the raw-signature path
+// billing-webhook.js reads for itself) buffered without limit until this
+// cap was added: a single unauthenticated request could push an arbitrary
+// number of megabytes into memory before JSON.parse ever ran. None of these
+// endpoints legitimately need more than a few KB (email/code/name/password,
+// a Google id_token, a plan/grant body) — 256KB leaves generous headroom.
+const MAX_BODY_BYTES = 256 * 1024;
+
+class BodyTooLargeError extends Error {}
+
+/** Read the raw request body as a string, rejecting once MAX_BODY_BYTES is
+ *  exceeded (checked incrementally, not just via Content-Length — a caller
+ *  can omit or lie about that header). */
+async function readRawBody(req) {
+  const len = req.headers && req.headers["content-length"];
+  if (len && Number(len) > MAX_BODY_BYTES) throw new BodyTooLargeError("body too large");
+  const chunks = [];
+  let total = 0;
+  for await (const c of req) {
+    total += c.length;
+    if (total > MAX_BODY_BYTES) throw new BodyTooLargeError("body too large");
+    chunks.push(c);
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
+
 /** Parse the JSON body (Vercel pre-parses; fall back to the raw stream). */
 async function readBody(req) {
   if (req.body !== undefined && req.body !== null) {
     return typeof req.body === "string" ? JSON.parse(req.body || "{}") : req.body;
   }
-  const chunks = [];
-  for await (const c of req) chunks.push(c);
-  const raw = Buffer.concat(chunks).toString("utf8");
+  const raw = await readRawBody(req);
   return raw ? JSON.parse(raw) : {};
 }
 
@@ -104,8 +129,8 @@ async function getSession(req) {
 
 module.exports = {
   EMAIL_RE, SESSION_TTL, OTP_TTL, OTP_MAX_TRIES, RESEND_COOLDOWN, HOURLY_SEND_CAP,
-  PW_MIN, PW_MAX_TRIES, PW_TRY_WINDOW,
-  hashOtp, newToken, newOtp, timingSafeEq, readBody, json, bearer, cookieToken, getSession,
+  PW_MIN, PW_MAX_TRIES, PW_TRY_WINDOW, MAX_BODY_BYTES, BodyTooLargeError,
+  hashOtp, newToken, newOtp, timingSafeEq, readBody, readRawBody, json, bearer, cookieToken, getSession,
   setSessionCookie, clearSessionCookie,
   hashPasswordRecord, verifyPasswordRecord,
 };
