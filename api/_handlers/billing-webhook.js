@@ -9,6 +9,7 @@
 
 const store = require("../_lib/store");
 const B = require("../_lib/billing");
+const A = require("../_lib/auth");
 
 // Signature is over raw bytes — the parent /api/billing function keeps
 // Vercel's JSON body helper off for the whole dispatcher.
@@ -25,9 +26,11 @@ module.exports = async (req, res) => {
   if (req.body !== undefined && req.body !== null) {
     raw = typeof req.body === "string" ? req.body : JSON.stringify(req.body);
   } else {
-    const chunks = [];
-    for await (const c of req) chunks.push(c);
-    raw = Buffer.concat(chunks).toString("utf8");
+    try { raw = await A.readRawBody(req); }
+    catch (err) {
+      if (err instanceof A.BodyTooLargeError) return json(413, { error: "REQUEST BODY TOO LARGE" });
+      return json(400, { error: "invalid body" });
+    }
   }
 
   const sig = req.headers["x-razorpay-signature"] || "";

@@ -15,7 +15,10 @@ module.exports = async (req, res) => {
     return A.json(res, 503, { error: "SERVER AUTH NOT CONFIGURED" });
 
   let body;
-  try { body = await A.readBody(req); } catch { return A.json(res, 400, { error: "invalid JSON" }); }
+  try { body = await A.readBody(req); } catch (err) {
+    if (err instanceof A.BodyTooLargeError) return A.json(res, 413, { error: "REQUEST BODY TOO LARGE" });
+    return A.json(res, 400, { error: "invalid JSON" });
+  }
   const addr = String(body.email || "").trim().toLowerCase();
   const pw = String(body.password || "");
   if (!A.EMAIL_RE.test(addr)) return A.json(res, 400, { error: "ENTER A VALID EMAIL" });

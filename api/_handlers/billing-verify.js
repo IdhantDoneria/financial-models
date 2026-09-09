@@ -20,7 +20,10 @@ module.exports = async (req, res) => {
   if (!sess) return A.json(res, 401, { error: "SIGN IN WITH EMAIL TO UPGRADE" });
 
   let body;
-  try { body = await A.readBody(req); } catch { return A.json(res, 400, { error: "invalid JSON" }); }
+  try { body = await A.readBody(req); } catch (err) {
+    if (err instanceof A.BodyTooLargeError) return A.json(res, 413, { error: "REQUEST BODY TOO LARGE" });
+    return A.json(res, 400, { error: "invalid JSON" });
+  }
   const orderId = String(body.razorpay_order_id || "");
   const paymentId = String(body.razorpay_payment_id || "");
   const sig = String(body.razorpay_signature || "");
