@@ -130,6 +130,19 @@ const ADMIN = { "x-admin-key": "devadmin" };
   }
   check("admin: rotating X-Forwarded-For no longer bypasses the key lockout",
     spoofedBlockedAt !== null, "never got 429 across 45 distinct spoofed IPs");
+
+  // admin:fail:global is now maxed out purely from an attacker's wrong
+  // guesses (from spoofed IPs the attacker never actually controls). The
+  // REAL operator, submitting the REAL key from their own honest IP, must
+  // still get in — a lockout meant to slow down guessing must never end up
+  // locking out someone who already has the real credential. This was a
+  // real bug: the counter check used to run before the key check, so a
+  // maxed-out global counter rejected every request with 429 regardless of
+  // whether the key was actually correct.
+  const realOperator = await call(handlers.admin, { headers: ADMIN });
+  check("admin: correct key still works even while the global guess-budget is exhausted",
+    realOperator.code === 200, `got ${realOperator.code}`);
+
   await store.del("admin:fail:global");    // don't let this trip the legitimate calls below
   await store.del("admin:fail:unknown");   // clientIp() fallback for this harness's fake req
 

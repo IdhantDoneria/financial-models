@@ -45,11 +45,24 @@ async function withinLimit(key, max, windowSec) {
  *  free to defeat by simply changing the header. withinLimitLayered() adds
  *  a second counter that ignores IP entirely, so no amount of header
  *  rotation raises the *total* attempt budget past `globalMax` — only makes
- *  it look like it's coming from more places. Keep globalMax well above
- *  realistic legitimate traffic (it's a backstop, not the primary limit). */
-async function withinLimitLayered(key, max, windowSec, globalKey, globalMax) {
+ *  it look like it's coming from more places.
+ *
+ *  That global counter is itself a shared resource, though — a real local
+ *  pentest confirmed a single caller can burn through it in well under a
+ *  second (hundreds of cheap, header-rotated requests), and every OTHER
+ *  caller then gets rejected for the rest of the window even though they
+ *  personally did nothing wrong. `globalWindowSec` bounds how long that
+ *  collateral lockout can last: defaulting it much shorter than the
+ *  per-caller `windowSec` (while scaling `globalMax` down to match, so the
+ *  steady-state allowed *rate* is unchanged) means a burst that exhausts
+ *  the shared budget self-clears in a few seconds instead of persisting for
+ *  the whole per-caller window. This doesn't fix the underlying header-
+ *  trust question (that's a platform/edge-configuration concern, not
+ *  something this code can verify at runtime) — it just keeps the blast
+ *  radius of any single burst small regardless of why it happened. */
+async function withinLimitLayered(key, max, windowSec, globalKey, globalMax, globalWindowSec) {
   const perCaller = await withinLimit(key, max, windowSec);
-  const overall = await withinLimit(globalKey, globalMax, windowSec);
+  const overall = await withinLimit(globalKey, globalMax, globalWindowSec || windowSec);
   return perCaller && overall;
 }
 

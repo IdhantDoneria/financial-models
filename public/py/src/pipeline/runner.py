@@ -71,16 +71,26 @@ class AnalysisReport:
             self.company.currency, "$")
         rows = []
         for name, res in self.results.items():
-            headline = self._headline(name, res, currency_symbol)
-            status = "UNASSESSED" if name in self.assumptions.partial else "OK"
+            is_partial = name in self.assumptions.partial
+            headline = self._headline(name, res, currency_symbol, partial=is_partial)
+            status = "UNASSESSED" if is_partial else "OK"
             rows.append({"Model": name, "Headline result": headline,
                          "Status": status})
         for name, err in self.errors.items():
             rows.append({"Model": name, "Headline result": "-", "Status": err})
         return pd.DataFrame(rows)
 
+    #: Models whose headline unit switches from "$" to "%" when
+    #: AssumptionSet.partial flags them — VaR/CVaR's dollar figure only
+    #: means something with a real portfolio value; without one, the model
+    #: still runs (on a $1 unit notional — see AutoAssumer.build) and the
+    #: SAME numeric result is a real, meaningful %-of-portfolio loss instead.
+    _PERCENT_WHEN_PARTIAL = {"Value at Risk / CVaR"}
+
     @staticmethod
-    def _headline(name: str, res: dict[str, Any], currency_symbol: str = "$") -> str:
+    def _headline(
+        name: str, res: dict[str, Any], currency_symbol: str = "$", partial: bool = False,
+    ) -> str:
         """Pick the single most-useful number per model for the summary row.
 
         Args:
@@ -88,6 +98,8 @@ class AnalysisReport:
                 own detected currency (:attr:`ExtractedFinancials.currency`),
                 not necessarily USD. Defaults to "$" so any caller that
                 hasn't been updated to pass it keeps today's behaviour.
+            partial: Whether AssumptionSet.partial flags this model — see
+                :attr:`_PERCENT_WHEN_PARTIAL`.
         """
         picks = {
             "Discounted Cash Flow": ("enterprise_value", "$"),
@@ -104,6 +116,8 @@ class AnalysisReport:
             "Reverse DCF / Market-Implied Expectations": ("implied_fcf_cagr", "%"),
         }
         key, unit = picks.get(name, (None, ""))
+        if partial and name in AnalysisReport._PERCENT_WHEN_PARTIAL:
+            unit = "%"
         if key and key in res:
             value = res[key]
             if isinstance(value, (int, float, np.floating)):

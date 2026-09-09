@@ -68,11 +68,27 @@ async function readRawBody(req) {
 
 /** Parse the JSON body (Vercel pre-parses; fall back to the raw stream). */
 async function readBody(req) {
+  let parsed;
   if (req.body !== undefined && req.body !== null) {
-    return typeof req.body === "string" ? JSON.parse(req.body || "{}") : req.body;
+    parsed = typeof req.body === "string" ? JSON.parse(req.body || "{}") : req.body;
+  } else {
+    const raw = await readRawBody(req);
+    parsed = raw ? JSON.parse(raw) : {};
   }
-  const raw = await readRawBody(req);
-  return raw ? JSON.parse(raw) : {};
+  // JSON.parse happily accepts a top-level `null`, an array, or a bare
+  // primitive ("null", "[1,2]", "42" are all valid JSON) — every caller
+  // here immediately does `body.someField`, which throws an UNCAUGHT
+  // TypeError on anything but a plain object (a literal `null` body was
+  // enough to trigger a real one: `Cannot read properties of null (reading
+  // 'email')`), escaping every handler's own `catch { ...return 400... }`
+  // and surfacing as a raw 500 with the exception message echoed to the
+  // client instead of the intended "invalid JSON" response. Normalising
+  // here means every one of readBody's callers is protected by the same
+  // existing catch block they already have, with no changes needed there.
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new SyntaxError("request body must be a JSON object");
+  }
+  return parsed;
 }
 
 function json(res, code, obj) {

@@ -531,3 +531,17 @@ will be based on the rating assigned to our senior, unsecured long-term indebted
 to time. The fee for undrawn amounts is variable based on the Credit Rating and is currently 0.125% per annum.
 There are no restrictions on draw-down or use for general corporate purposes with respect to any available
 committed funds under our RCF Credit Agreement, except certain specified conditions prior to draw-down.
+
+~~~~~ SECTION FOXTROT ~~~~~
+We use the fair value method in recognizing stock-based compensation expense. Under the fair value method,
+we estimate the fair value of each stock option award with service or service and performance conditions and the
+ESPP on the grant date generally using the Black-Scholes option pricing model. The weighted-average assumptions
+used in the Black-Scholes model for stock options are as follows:
+Year Ended December 31,
+2025 2024 2023
+Risk-free interest rate 3.95 % 3.92 % 3.90 %
+Expected term (in years) 4.7 4.3 4.5
+Expected volatility 60 % 59 % 63 %
+Dividend yield — % — % — %
+Grant date fair value per share $ 178.36 $ 114.29 $ 121.62
+The risk-free interest rate is based on the U.S. Treasury yield for zero-coupon U.S. Treasury notes with

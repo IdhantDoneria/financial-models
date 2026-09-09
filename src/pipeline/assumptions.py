@@ -107,6 +107,23 @@ class ManualOverrides:
 # --------------------------------------------------------------------------- #
 # Auto assumer
 # --------------------------------------------------------------------------- #
+#: Modern Portfolio Theory's broad-market volatility and company/market
+#: correlation — both fixed constants, not derived from anything. Unlike
+#: `vol` (the company's own volatility, real when the filing's stock-comp
+#: footnote discloses one — see AutoAssumer.build), there's no equivalent
+#: cheap real substitute here: this app fetches a single current-day quote
+#: (api/quotes.js), never a historical price series for either the market
+#: index or the company, so no realized volatility or correlation is
+#: actually computable from data the app has access to today. A live
+#: historical-range feed could replace _MPT_MARKET_VOL with a real trailing
+#: figure; _MPT_CORRELATION has no cheap real substitute even then (it would
+#: need the company's OWN historical series too). Named and disclosed in
+#: `rationale` rather than left as bare literals in the covariance matrix,
+#: so a user can see these are assumed, not derived.
+_MPT_MARKET_VOL = 0.18
+_MPT_CORRELATION = 0.6
+
+
 class AutoAssumer:
     """Fill every missing model input with a practitioner-style default.
 
@@ -229,13 +246,38 @@ class AutoAssumer:
             beta, tax, we=we_real, cost_of_debt=cost_of_debt_real)
         # Terminal growth cannot exceed the risk-free rate (Gordon constraint).
         g_terminal = o.terminal_growth if o.terminal_growth is not None else min(rf, 0.025)
-        vol = o.volatility if o.volatility is not None else self.default_vol
+        # A real, filing-disclosed volatility (the "expected [share price]
+        # volatility" a 10-K's stock-comp footnote states as an ASC 718
+        # Black-Scholes input for valuing employee option grants) is a
+        # genuine, company- and period-specific number — prefer it over
+        # the flat 25% default the same way the tax_rate fix elsewhere
+        # prefers a scraped rate over a generic one. It's not necessarily
+        # identical to a market-implied volatility for an arbitrary traded
+        # option (it's management's own accounting estimate), which is
+        # worth a rationale caveat, but it's real data, not a guess.
+        vol = (o.volatility if o.volatility is not None
+               else data.disclosed_volatility if data.disclosed_volatility is not None
+               else self.default_vol)
         # Fabricated FCF trajectory: revenue × margin × (1+g)^t when actual FCFs missing.
         fcfs = data.free_cash_flows or self._synth_fcfs(data, wacc)
         spot = data.current_price or 100.0  # normalised units when unknown
         strike = o.strike_ratio * spot if o.strike_ratio else spot
-        # Dividend for Gordon: use scraped DPS or 2% of price as a default.
-        dividend = data.dividend_per_share or 0.02 * spot
+        # Gordon Growth requires dividend > 0 — unlike DCF (which happily
+        # reports enterprise/equity value with price_per_share left None
+        # when share count is unknown), there's no honest partial output
+        # here: the model can't represent "this company pays no dividend"
+        # at all, only a specific positive number. A fabricated "2% of
+        # price" doesn't just approximate an unknown real dividend — for a
+        # real company that pays no dividend at all (large classes of
+        # growth/tech filers, confirmed on the Tesla fixture: zero
+        # dividends for essentially its entire public life), it invents a
+        # number that CONTRADICTS a known fact about the company, and even
+        # for a genuine payer whose DPS just wasn't extracted cleanly,
+        # real yields vary far too widely (roughly 0.5%-6%+ across real
+        # dividend payers) for "2% of price" to be a trustworthy stand-in
+        # either way. Left None when not disclosed; gated as `unavailable`
+        # below rather than run on a fabricated number in either case.
+        dividend = data.dividend_per_share
         g_div = o.dividend_growth if o.dividend_growth is not None else 0.03
         shares = data.shares_outstanding or 1_000_000.0
         net_debt = data.net_debt if data.net_debt is not None else 0.0
@@ -263,9 +305,13 @@ class AutoAssumer:
             },
             "Modern Portfolio Theory": {
                 # Two-asset proxy: the target company + broad market benchmark.
+                # `vol` (the company's own volatility — real when disclosed,
+                # see the volatility rationale above) drives the first
+                # diagonal entry; MKT_VOL and CORRELATION below are NOT
+                # derived from anything — see the MPT rationale entry.
                 "expected_returns": [rf + beta * self.erp, rf + self.erp],
-                "covariance": [[vol**2, 0.6 * vol * 0.18],
-                               [0.6 * vol * 0.18, 0.18**2]],
+                "covariance": [[vol**2, _MPT_CORRELATION * vol * _MPT_MARKET_VOL],
+                               [_MPT_CORRELATION * vol * _MPT_MARKET_VOL, _MPT_MARKET_VOL**2]],
                 "risk_free_rate": rf,
             },
             "Value at Risk / CVaR": {
@@ -273,7 +319,27 @@ class AutoAssumer:
                 "std": vol / (252**0.5),
                 "confidence_level": o.var_confidence if o.var_confidence is not None else 0.95,
                 "horizon_days": o.var_horizon_days if o.var_horizon_days is not None else 10,
-                "portfolio_value": (data.current_price or 100.0) * (data.shares_outstanding or 1_000_000),
+                # A real dollar VaR needs a real market cap — the old
+                # (price or 100.0)*(shares or 1,000,000) fallback quietly
+                # substituted a $100M notional for any filing missing
+                # either figure (the common case), so the reported "var"
+                # was a specific, wrong dollar amount, not a vague
+                # approximation — on a real Tesla-scale filing that's off
+                # from the true market cap by four orders of magnitude.
+                # Unlike Reverse DCF, though, VaR doesn't need a real
+                # dollar anchor to be meaningful at all: the model's own
+                # default portfolio_value is 1.0 (see ValueAtRiskModel's
+                # constructor) and a %-of-portfolio loss is still a real,
+                # useful answer with no market-cap dependency — so this
+                # falls back to that unit notional instead of a fabricated
+                # dollar figure, and the report layer (AnalysisReport.
+                # _headline) shows it as a % rather than a "$" amount
+                # whenever `partial` below is set.
+                "portfolio_value": (
+                    data.current_price * data.shares_outstanding
+                    if data.current_price is not None and data.shares_outstanding is not None
+                    else 1.0
+                ),
                 "method": "parametric",
             },
             "Capital Asset Pricing Model": {
@@ -373,6 +439,25 @@ class AutoAssumer:
         rationale[("CAPM", "beta")] = (
             "Scraped from PDF." if data.beta else f"Sector-neutral default = {beta}."
         )
+        rationale[("Options/MPT/VaR", "volatility")] = (
+            f"Scraped from the filing's stock-comp footnote ('expected "
+            f"volatility' — {vol:.0%}); this is management's own ASC 718 "
+            f"Black-Scholes input for valuing employee option grants, real "
+            f"and period-specific but not necessarily identical to a "
+            f"market-implied volatility for an arbitrary traded option."
+            if data.disclosed_volatility is not None and o.volatility is None
+            else f"Default = {vol:.0%} (no disclosed volatility found)."
+        )
+        rationale[("MPT", "market volatility / correlation")] = (
+            f"Market volatility ({_MPT_MARKET_VOL:.0%}) and company-market "
+            f"correlation ({_MPT_CORRELATION:.2f}) are fixed assumptions, "
+            f"not derived from live or filing data — this app only fetches "
+            f"a single current-day quote (api/quotes.js), never a "
+            f"historical price series for either the market index or the "
+            f"company, so no real realized volatility or correlation is "
+            f"actually computable today. The company's OWN volatility "
+            f"above ({vol:.0%}) IS real when the filing discloses one."
+        )
         rationale[("HDEBT", "annual_lease_payment / reverse_factoring / contingent liabilities")] = (
             "No filing reliably states these as one clean, tabulated figure a "
             "regex can trust — defaulted to $0 / 0% (an unadjusted company "
@@ -415,6 +500,57 @@ class AutoAssumer:
                 "real figures from the filing's footnotes in MANUAL mode to "
                 "get an actual hidden-debt read."
             )
+        if data.current_price is None or data.shares_outstanding is None:
+            partial["Value at Risk / CVaR"] = (
+                "No share price or share count disclosed — reporting risk as "
+                "a % of portfolio value on a $1 unit notional instead of a "
+                "fabricated dollar figure. Correct the share price/count "
+                "fields for a real dollar-denominated VaR/CVaR."
+            )
+        if data.current_price is None:
+            # Lower stakes than DCF/RDCF/VaR's dollar figures deliberately
+            # get a softer note here: these four models are presented in
+            # the UI as pricing-MECHANICS demonstrations (their own
+            # category/description frames them that way, and spot/strike
+            # are exposed as directly user-adjustable sliders defaulting to
+            # 100, not as a scraped "real" company fact) — a "$9.59 option
+            # price" built on a $100 normalised spot doesn't claim to be a
+            # company-specific prediction the way a DCF headline does.
+            # Still worth flagging for the same consistency HDEBT/VaR get:
+            # a user comparing models in the IB Desk report shouldn't see
+            # "OK" for all four with no indication the spot was invented.
+            for opt_model in ("Black-Scholes-Merton", "Binomial Tree (CRR)",
+                              "Monte Carlo (GBM)", "Heston Stochastic Volatility"):
+                partial[opt_model] = (
+                    "No share price disclosed — spot defaulted to $100 "
+                    "(normalised units). This model illustrates option-"
+                    "pricing mechanics rather than pricing a real option on "
+                    "this specific company; set the real share price for a "
+                    "company-specific figure."
+                )
+        # Fama-French is flagged unconditionally, not just when a filing is
+        # missing data — the app has no historical price series for the
+        # company at all (only point-in-time filing extraction), so
+        # AnalysisRunner._build_ff_kwargs synthesises an "asset" return
+        # series as RF + beta_hint*Mkt-RF + noise, then that exact series
+        # gets regressed against Mkt-RF/SMB/HML inside the model. That's
+        # circular, not approximate: running the regression against 10
+        # years of real Fama-French factor data at beta_hint 1.0, 0.5 and
+        # 2.0 recovers β_mkt ≈ the input almost exactly (R² 0.95-0.997)
+        # every time, regardless of what the real company's actual factor
+        # exposure is — the R² a user sees looks like a rigorous empirical
+        # fit but is mechanically guaranteed by construction. No fix exists
+        # short of a real historical-returns feed this app doesn't have;
+        # flagging it is the honest option available now.
+        partial["Fama-French 3-Factor"] = (
+            "This model's 'asset' return series is synthesised from the "
+            "same beta assumption it's then regressed against — the market-"
+            "factor loading and R² will always look strong regardless of "
+            "the real company's actual factor exposure, since there's no "
+            "real historical price series for this company to regress "
+            "against instead. Treat this as an illustration of the "
+            "methodology, not an empirical fit to this company."
+        )
 
         unavailable: dict[str, str] = {}
         # Reverse DCF's entire premise is inverting *today's real market
@@ -448,6 +584,16 @@ class AutoAssumer:
             )
             rationale[("RDCF", "current_price / shares_outstanding / total_addressable_market")] = \
                 unavailable["Reverse DCF / Market-Implied Expectations"]
+
+        if data.dividend_per_share is None:
+            unavailable["Gordon Growth Model"] = (
+                "No dividend per share disclosed. Gordon Growth can't "
+                "represent a $0 dividend, and a fabricated placeholder would "
+                "either contradict a real fact about a non-dividend-paying "
+                "company or guess at a real payer's actual yield — enter "
+                "the real dividend per share manually to run this model."
+            )
+            rationale[("Gordon Growth", "dividend")] = unavailable["Gordon Growth Model"]
 
         return AssumptionSet(
             kwargs_by_model=kwargs,

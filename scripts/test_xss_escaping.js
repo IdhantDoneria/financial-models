@@ -93,7 +93,11 @@ const terminalSinks = [
   // error's echoed input) before this fix.
   /<td>\$\{esc\(row\.Model\)\}<\/td>/,
   /<td class="num">\$\{esc\(String\(row\["Headline result"\]\)\)\}<\/td>/,
-  /\$\{ok \? "stat-ok" : "stat-err"\}">\$\{esc\(String\(row\.Status\)\)\}<\/td>/,
+  // Refactored from an inline `${ok ? "stat-ok" : "stat-err"}` ternary into
+  // the three-way isOk/isUnassessed/statClass variables (see renderIBReport
+  // in terminal.js) when the HDEBT-unassessed distinction was added — the
+  // escaping call itself (what this test actually guards) is unchanged.
+  /\$\{statClass\}">\$\{esc\(status\)\}<\/td>/,
   /md \+= `\| \$\{esc\(key\)\} \| \$\{esc\(text\)\} \|\\n`/,
   /md \+= `- \*\*\$\{esc\(name\)\}\*\*: \$\{esc\(err\)\}\\n`/,
 ];
