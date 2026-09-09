@@ -30,8 +30,10 @@ module.exports = async (req, res) => {
   // scripted loop from forcing a fresh ipwho.is call (and geo:seen churn)
   // on every request. Layered with a global backstop since clientIp() is
   // only as trustworthy as whatever's in front of this function — see the
-  // comment in _lib/net.js.
-  if (!(await withinLimitLayered(`geo:rl:${ip}`, 20, 60, "geo:rl:global", 400))) {
+  // comment in _lib/net.js. Same steady-state rate as before (~6.7/s) but
+  // windowed at 5s instead of 60s, so a burst that exhausts the shared
+  // budget locks out other callers for a few seconds, not up to a minute.
+  if (!(await withinLimitLayered(`geo:rl:${ip}`, 20, 60, "geo:rl:global", 35, 5))) {
     return res.status(429).json({ ok: false, reason: "rate-limited" });
   }
 

@@ -143,5 +143,25 @@ function ok(cond, label) {
     ok(parsed.a === 1, "ordinary small bodies still parse normally");
   }
 
+  console.log("· readBody rejects a non-object top-level JSON body (null/array/primitive)");
+  {
+    // JSON.parse happily accepts a literal "null", an array, or a bare
+    // number/string — every real caller of readBody immediately does
+    // `body.someField`, which throws an UNCAUGHT TypeError on anything but
+    // a plain object. A real "null" body triggered exactly this against
+    // the live dev server (a raw 500 with the exception message echoed to
+    // the client) before this fix. Every one of these must now raise
+    // (letting each handler's own existing "invalid JSON" 400 catch it),
+    // not return a non-object value.
+    const A = require("../api/_lib/auth.js");
+    for (const [label, raw] of [["null", "null"], ["array", "[1,2,3]"],
+                                 ["number", "42"], ["string", '"hi"']]) {
+      const req = { method: "POST", headers: {}, async *[Symbol.asyncIterator]() { yield Buffer.from(raw); } };
+      let threw = null;
+      try { await A.readBody(req); } catch (e) { threw = e; }
+      ok(threw instanceof SyntaxError, `readBody(${label}) throws instead of returning a non-object`);
+    }
+  }
+
   console.log(`\n${process.exitCode ? "FAILURES ABOVE" : `ALL ${passed} BACKEND CHECKS PASS`}`);
 })().catch((e) => { console.error("HARNESS ERROR:", e); process.exit(1); });

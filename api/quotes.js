@@ -83,8 +83,10 @@ module.exports = async (req, res) => {
     // and shared across every visitor, so it needs no per-caller limit.
     // Layered with a global backstop since clientIp() is only as
     // trustworthy as whatever's in front of this function — see the
-    // comment in _lib/net.js.
-    if (!(await withinLimitLayered(`quotes:rl:${clientIp(req)}`, 30, 60, "quotes:rl:global", 600))) {
+    // comment in _lib/net.js. Same steady-state rate as before (10/s) but
+    // windowed at 5s instead of 60s, so a burst that exhausts the shared
+    // budget locks out other callers for a few seconds, not up to a minute.
+    if (!(await withinLimitLayered(`quotes:rl:${clientIp(req)}`, 30, 60, "quotes:rl:global", 50, 5))) {
       return res.status(429).json({ ok: false, error: "rate limited" });
     }
     const q = await quote({ sym, label: sym, money: true });

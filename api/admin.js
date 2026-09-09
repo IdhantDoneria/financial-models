@@ -116,23 +116,35 @@ module.exports = async (req, res) => {
   if (!KEY || !store.configured())
     return A.json(res, 503, { error: "ADMIN DESK NOT CONFIGURED — set ADMIN_KEY (and a store) in Vercel env vars" });
 
+  // The correct key is checked FIRST, before either lockout counter is
+  // consulted — a lockout is only ever meant to slow down someone who
+  // doesn't already have the real key. Gating on the counters before this
+  // check would let an attacker who has never seen the real key lock the
+  // real operator out anyway: drive admin:fail:global to
+  // ADMIN_GLOBAL_MAX_TRIES with throwaway wrong guesses (trivial — it's
+  // IP-agnostic by design, see the comment above), and the next request
+  // gets rejected by the counter check alone, never even reaching
+  // authorized(req) — so the legitimate operator's own correct key would
+  // be refused too, repeatably, every ADMIN_TRY_WINDOW. A real credential
+  // must always win regardless of how exhausted the guess-budget is; only
+  // guessing itself needs to be rate-limited.
   const failKey = `admin:fail:${clientIp(req)}`;
   const globalFailKey = "admin:fail:global";
-  const [fails, globalFails] = await Promise.all([
-    store.get(failKey).then((v) => parseInt(v || "0", 10) || 0),
-    store.get(globalFailKey).then((v) => parseInt(v || "0", 10) || 0),
-  ]);
-  if (fails >= ADMIN_MAX_TRIES || globalFails >= ADMIN_GLOBAL_MAX_TRIES)
-    return A.json(res, 429, { error: "TOO MANY FAILED ADMIN-KEY ATTEMPTS — TRY AGAIN LATER" });
-
-  if (!authorized(req)) {
+  if (authorized(req)) {
+    await store.del(failKey); // reset on success so a typo streak doesn't linger
+  } else {
+    const [fails, globalFails] = await Promise.all([
+      store.get(failKey).then((v) => parseInt(v || "0", 10) || 0),
+      store.get(globalFailKey).then((v) => parseInt(v || "0", 10) || 0),
+    ]);
+    if (fails >= ADMIN_MAX_TRIES || globalFails >= ADMIN_GLOBAL_MAX_TRIES)
+      return A.json(res, 429, { error: "TOO MANY FAILED ADMIN-KEY ATTEMPTS — TRY AGAIN LATER" });
     await Promise.all([
       store.incr(failKey, ADMIN_TRY_WINDOW),
       store.incr(globalFailKey, ADMIN_TRY_WINDOW),
     ]);
     return A.json(res, 401, { error: "INVALID ADMIN KEY" });
   }
-  await store.del(failKey); // reset on success so a typo streak doesn't linger
 
   try {
     if (req.method === "GET")

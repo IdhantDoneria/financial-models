@@ -89,7 +89,10 @@ module.exports = async (req, res) => {
   // fans out to FRED/Treasury/er-api, so cap it per caller too. Layered
   // with a global backstop since clientIp() is only as trustworthy as
   // whatever's in front of this function — see the comment in _lib/net.js.
-  if (!(await withinLimitLayered(`rates:rl:${clientIp(req)}`, 20, 60, "rates:rl:global", 400))) {
+  // Same steady-state rate as before (~6.7/s) but windowed at 5s instead
+  // of 60s, so a burst that exhausts the shared budget locks out other
+  // callers for a few seconds, not up to a minute.
+  if (!(await withinLimitLayered(`rates:rl:${clientIp(req)}`, 20, 60, "rates:rl:global", 35, 5))) {
     return res.status(429).json({ error: "rate limited" });
   }
   res.setHeader("Cache-Control", "public, s-maxage=21600, stale-while-revalidate=86400");

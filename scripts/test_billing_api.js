@@ -182,6 +182,16 @@ async function buy(token, plan, period = "monthly") {
   const whUse = await call(handlers.usage, { method: "GET", token: whToken });
   check("webhook: buyer's entitlement is live", whUse.body.plan === "pro" && whUse.body.limit === 50);
 
+  // A literal JSON "null" body is valid JSON — JSON.parse succeeds and
+  // returns null — but `event.event` right after used to throw an
+  // uncaught TypeError on it (escaping the parse-only try/catch), leaking
+  // a raw 500 instead of the intended 400. A validly-signed "null" body is
+  // exactly the shape a malformed/buggy real Razorpay retry could send.
+  const whNull = await call(handlers.billingWebhook, {
+    method: "POST", rawBody: "null", headers: { "x-razorpay-signature": devSig("null") } });
+  check("webhook: valid-signature null body -> 400, not an unhandled 500",
+    whNull.code === 400, `got ${whNull.code}`);
+
   // -- expiry: a lapsed pass falls back to FREE ----------------------------
   await store.set("sub:webhook-buyer@example.com", JSON.stringify({
     plan: "pro", period: "monthly", paymentId: "pay_wh1", orderId: whOrder.body.orderId,

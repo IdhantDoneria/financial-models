@@ -38,6 +38,13 @@ module.exports = async (req, res) => {
 
   let event;
   try { event = JSON.parse(raw); } catch { return json(400, { error: "invalid JSON" }); }
+  // JSON.parse accepts a top-level `null`/array/primitive too (all valid
+  // JSON) — `event.event` below would throw an uncaught TypeError on
+  // anything but a plain object, escaping this function's own error
+  // handling. See api/_lib/auth.js's readBody for the same class of bug
+  // found and fixed elsewhere in the auth endpoints.
+  if (event === null || typeof event !== "object" || Array.isArray(event))
+    return json(400, { error: "invalid JSON" });
   if (event.event !== "payment.captured") return json(200, { ok: true, ignored: event.event });
 
   try {
