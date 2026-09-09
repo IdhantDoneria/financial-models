@@ -65,7 +65,7 @@ import numpy as np
 
 from src import IndASHiddenDebtModel, ReverseDCFModel
 from src.pipeline.assumptions import AutoAssumer, ManualAssumer, ManualOverrides
-from src.pipeline.pdf_extractor import ExtractedFinancials
+from src.pipeline.pdf_extractor import ExtractedFinancials, PDFExtractor
 
 PREMIUM_MODELS = {
     "HDEBT": "Ind AS 116 Hidden-Debt Normalizer",
@@ -99,14 +99,14 @@ def _clean(value):
     return str(value)
 
 
-def _headline(mnemonic: str, results: dict) -> str:
+def _headline(mnemonic: str, results: dict, currency_symbol: str = "$") -> str:
     key, unit = _HEADLINE_PICK[mnemonic]
     value = results.get(key)
     if isinstance(value, (int, float)):
         if unit == "%":
             return f"{value * 100:.2f}%"
         if unit == "$":
-            return f"${value:,.2f}"
+            return f"{currency_symbol}{value:,.2f}"
         return f"{value:.4f}"
     return str(next(iter(results.values()), "-"))
 
@@ -197,6 +197,12 @@ def _run_extracted(mnemonic: str, model_name: str, body: dict) -> dict:
         else:
             assumptions = auto.build(data)
 
+        unavailable_reason = assumptions.unavailable.get(model_name)
+        if unavailable_reason is not None:
+            return {"ok": True, "model": model_name, "headline": "-",
+                    "status": "INSUFFICIENT DATA", "results": None,
+                    "errors": unavailable_reason, "rationale": {}}
+
         model_kwargs = dict(assumptions.kwargs_by_model.get(model_name, {}))
         model = PREMIUM_CLASSES[mnemonic](**model_kwargs)
         results = _clean(model.calculate())
@@ -207,9 +213,14 @@ def _run_extracted(mnemonic: str, model_name: str, body: dict) -> dict:
 
     rationale = {f"{m} · {p}": text for (m, p), text in assumptions.rationale.items()
                  if m == mnemonic}
+    currency_symbol = PDFExtractor.CURRENCY_SYMBOLS.get(data.currency, "$")
+    # A model that ran but on inputs the filing never disclosed (e.g. HDEBT
+    # with no lease/contingent-liability figures) shouldn't read as a
+    # confirmed-clean "OK" — see AssumptionSet.partial.
+    status = "UNASSESSED" if model_name in assumptions.partial else "OK"
     return {
         "ok": True, "model": model_name,
-        "headline": _headline(mnemonic, results), "status": "OK",
+        "headline": _headline(mnemonic, results, currency_symbol), "status": status,
         "results": results, "errors": None, "rationale": rationale,
     }
 

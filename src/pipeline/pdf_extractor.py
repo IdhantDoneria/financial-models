@@ -77,6 +77,19 @@ class ExtractedFinancials:
     #: Capital expenditure ("purchases of property and equipment" /
     #: "capex", cash-flow statement) — used as a maintenance-capex proxy.
     capital_expenditures: float | None = None
+    #: Finance costs / interest expense (income statement) — used to derive
+    #: a real cost of debt (this ÷ total_debt) for WACC instead of a flat
+    #: risk-free+150bp spread, when both this and total_debt are known.
+    interest_expense: float | None = None
+    #: ISO 4217 code the filing's own figures are denominated in (detected
+    #: from currency symbols/codes in the document text — see
+    #: :meth:`PDFExtractor._detect_currency`). Every monetary field above is
+    #: in raw units of THIS currency, not necessarily USD — a DCF/RDCF
+    #: headline built from an undetected non-USD filing and labelled "$"
+    #: would misrepresent the actual scale by whatever the real FX rate is.
+    #: Defaults to "USD" (this pipeline's original, implicit assumption)
+    #: when the document gives no more specific signal.
+    currency: str = "USD"
     #: Which backends actually produced text (for debugging in the UI).
     backends_used: list[str] = field(default_factory=list)
     #: Raw text (first ~50k chars) kept for downstream inspection.
@@ -106,6 +119,8 @@ class ExtractedFinancials:
             "depreciation_amortization": self.depreciation_amortization,
             "rd_expense": self.rd_expense,
             "capital_expenditures": self.capital_expenditures,
+            "interest_expense": self.interest_expense,
+            "currency": self.currency,
             "backends_used": self.backends_used,
         }
 
@@ -134,6 +149,56 @@ class PDFExtractor:
         "lakh": 1e5, "lakhs": 1e5, "lac": 1e5, "lacs": 1e5,
         "thousand": 1e3, "k": 1e3,
     }
+
+    #: Display symbol per ISO 4217 code — used wherever a headline number
+    #: gets a currency prefix instead of an unconditional "$" (see
+    #: :class:`src.pipeline.runner.AnalysisReport._headline`).
+    CURRENCY_SYMBOLS = {
+        "USD": "$", "INR": "₹", "EUR": "€", "GBP": "£", "JPY": "¥",
+        "CNY": "¥", "CAD": "C$", "AUD": "A$", "HKD": "HK$", "SGD": "S$",
+        "CHF": "CHF ", "KRW": "₩",
+    }
+
+    #: A bare currency symbol/code anywhere in running text is not a
+    #: reliable signal on its own — a real BLS International filing
+    #: contains "BLS £-Services Limited" (a subsidiary's name, not a GBP
+    #: figure) and separately mentions a UK-based acquisition entirely
+    #: unrelated to what currency the CONSOLIDATED statement itself is
+    #: denominated in. Every pattern here requires the symbol/code to sit
+    #: immediately next to an actual number, which a company name or an
+    #: incidental prose mention never does.
+    _CURRENCY_SIGNALS: tuple[tuple[str, str], ...] = (
+        (r"₹\s?\d", "INR"),
+        (r"€\s?\d", "EUR"),
+        (r"£\s?\d", "GBP"),
+        (r"¥\s?\d", "JPY"),
+        (r"\bINR\s?\d|\d\s?INR\b", "INR"),
+        (r"\bEUR\s?\d|\d\s?EUR\b", "EUR"),
+        (r"\bGBP\s?\d|\d\s?GBP\b", "GBP"),
+        (r"\bRs\.?\s*\d", "INR"),
+        (r"\$\s?\d", "USD"),
+    )
+
+    @classmethod
+    def _detect_currency(cls, text: str) -> str:
+        """Best-effort ISO 4217 code for the currency this filing reports in.
+
+        "lakh"/"crore" (:attr:`SCALE_HINTS`) checked first — that numbering
+        system is used exclusively for Indian Rupee reporting, so its mere
+        presence is a stronger, already-battle-tested signal than trying to
+        separately re-detect INR from a currency symbol. Falls through to
+        symbol/code detection (each require digit-adjacency — see
+        :attr:`_CURRENCY_SIGNALS`), then defaults to "USD" (this pipeline's
+        original, implicit assumption) when nothing more specific is found,
+        so a filing that gives no signal at all behaves exactly as before
+        this method existed.
+        """
+        if re.search(r"\blakh|\blacs?\b|\bcrores?\b|\bcr\.\b", text, re.IGNORECASE):
+            return "INR"
+        for pattern, code in cls._CURRENCY_SIGNALS:
+            if re.search(pattern, text):
+                return code
+        return "USD"
 
     def __init__(self, max_pages: int | None = None) -> None:
         """Configure extractor.
@@ -250,6 +315,33 @@ class PDFExtractor:
     #: this guard it gets picked up as if it were the actual figure.
     _DATE_TAIL_RE = re.compile(r"^\s*,\s*(?:19|20)\d{2}\b")
 
+    #: A short "(1+II)" / "(V-VI)" span is a line-formula cross-reference —
+    #: Indian filings routinely label a subtotal row "Total income (I+II)"
+    #: or "Profit before tax (V-VI)" right before the real figure, and OCR
+    #: sometimes renders the roman numerals as bare digits ("(1+11)"). Either
+    #: number inside that parenthetical could otherwise outscore the actual
+    #: multi-digit amount a few characters later, since it's the first (or
+    #: second) numeric-looking token the window regex finds. Matched and
+    #: blanked out (same length, so surrounding offsets are unaffected)
+    #: before candidate numbers are scanned — see :meth:`_parse_number`.
+    _ARITH_REF_RE = re.compile(r"\(\s*[IVXivx\d]{1,4}\s*[+\-]\s*[IVXivx\d]{1,4}\s*\)")
+
+    #: OCR sometimes drops the thousands-separator comma and leaves a bare
+    #: space in its place — a real scan of "20,162.22" came back "20 162.22"
+    #: (all four figures on that specific row lost their commas the same
+    #: way). Left alone, the base number regex reads "20" as a complete,
+    #: plausible-looking value and stops there, silently landing on a number
+    #: 1,000x too small once scale ("in lakhs") is applied. Normalise a
+    #: single-space-separated "<1-3 digits> <exactly 3 digits>" run back into
+    #: a comma before scanning for candidates, so the existing comma-grouped
+    #: branch of :attr:`_NUMBER_RE` picks it up correctly. Deliberately a
+    #: literal space only (not ``\s``, which also matches newlines) and
+    #: scoped to the narrow keyword-adjacent window :meth:`_parse_number` is
+    #: always called with — applying this document-wide would risk merging
+    #: two genuinely unrelated numbers that just happen to sit a single
+    #: space apart in running prose.
+    _BROKEN_THOUSANDS_SEP_RE = re.compile(r"(?<=\d) (\d{3})(?!\d)")
+
     @classmethod
     def _parse_number(cls, match_text: str) -> float | None:
         """Parse the first *plausible* numeric token, honouring $, (), commas and scale suffix.
@@ -268,8 +360,14 @@ class PDFExtractor:
         Every candidate token in the window is considered in order (not just
         the first): a token immediately followed by ", <year>" is a date
         fragment (e.g. the "30" in "reported ... on June 30, 2025") and is
-        skipped in favour of the next number in the window, if any.
+        skipped in favour of the next number in the window, if any. A
+        "(1+II)"-style line-formula cross-reference is blanked out entirely
+        before candidates are scanned — see :attr:`_ARITH_REF_RE`. A broken
+        "20 162.22" thousands separator is normalised back to "20,162.22" —
+        see :attr:`_BROKEN_THOUSANDS_SEP_RE`.
         """
+        match_text = cls._ARITH_REF_RE.sub(lambda m: " " * len(m.group(0)), match_text)
+        match_text = cls._BROKEN_THOUSANDS_SEP_RE.sub(r",\1", match_text)
         for m in cls._NUMBER_RE.finditer(match_text):
             if cls._DATE_TAIL_RE.match(match_text[m.end():]):
                 continue
@@ -286,11 +384,30 @@ class PDFExtractor:
             return value
         return None
 
+    #: Boilerplate SEBI/ICAI auditor-report language that scopes a nearby
+    #: figure to a *subset* of the company (unreviewed subsidiaries, a
+    #: before-consolidation cut) rather than its consolidated total — e.g.
+    #: a real BLS International filing's "Other Matters" section reads
+    #: "...whose interim financial information reflects total revenues
+    #: (before consolidation adjustment) of Rs. 38,753.24 lakhs...", which a
+    #: bare "total revenue" keyword match previously picked up in place of
+    #: the real consolidated figure sitting earlier in the document under
+    #: "Income from operations" — both numbers are plausible-looking, so
+    #: this was silently wrong, not obviously broken. Reusable across any
+    #: field where a footnote-scoped figure could plausibly precede the
+    #: real consolidated one in document order.
+    _FOOTNOTE_SCOPE_DISQUALIFIERS = (
+        r"before\s+consolidation\s+adjustment",
+        r"whose\s+(?:interim\s+)?financial\s+(?:information|statements|results)",
+        r"\bsubsidiar",
+    )
+
     @classmethod
     def _first_after(
         cls, text: str, patterns: list[str], window: int = 120,
         apply_scale: bool = False,
         plausible: Callable[[float], bool] | None = None,
+        disqualify: tuple[str, ...] | None = None,
     ) -> float | None:
         """Return the first *plausible* number appearing after any of ``patterns``.
 
@@ -310,10 +427,18 @@ class PDFExtractor:
                 actually a bare calendar year, a share count in the tens) is
                 skipped in favour of the next occurrence instead of being
                 returned as-is.
+            disqualify: Optional regexes; a match whose own trailing window
+                (the same text searched for the number) contains any of these
+                is skipped in favour of the next occurrence — a keyword
+                "hit" that's actually scoped to a footnote/subset rather than
+                the real consolidated figure. See
+                :attr:`_FOOTNOTE_SCOPE_DISQUALIFIERS` for the common case.
         """
         for pat in patterns:
             for match in re.finditer(pat, text, re.IGNORECASE):
                 trailing = text[match.end() : match.end() + window]
+                if disqualify and any(re.search(dq, trailing, re.IGNORECASE) for dq in disqualify):
+                    continue
                 value = cls._parse_number(trailing)
                 if value is None:
                     continue
@@ -394,6 +519,89 @@ class PDFExtractor:
                 return scaled[:6]
         return []
 
+    #: Confirms a document uses the SEBI (India) LODR Regulation 33 standard
+    #: quarterly-results table layout before any column position is trusted
+    #: — a real, regulation-mandated header ("... Quarter ended ... Year
+    #: Ended ...") every BSE/NSE-listed company's quarterly filing carries,
+    #: not a guessed convention. Its data columns are always ordered
+    #: [current quarter, immediately preceding quarter, same quarter one
+    #: year earlier, full year] — see :meth:`_derive_yoy_metrics`.
+    _SEBI_QUARTERLY_HEADER_RE = re.compile(r"quarter\s+ended[\s\S]{0,80}year\s+ended", re.IGNORECASE)
+
+    @classmethod
+    def _scrape_row_columns(
+        cls, text: str, patterns: list[str], max_cols: int = 4, window: int = 200,
+    ) -> list[float] | None:
+        """Like :meth:`_scrape_fcf_series` but keyed off arbitrary patterns
+        and capped at ``max_cols`` — used to read a specific row's full set
+        of reporting-period columns (this quarter, last quarter, same
+        quarter last year, full year), not just the first number after it.
+        """
+        for pat in patterns:
+            for match in re.finditer(pat, text, re.IGNORECASE):
+                tail = text[match.end():match.end() + window]
+                tail = cls._ARITH_REF_RE.sub(lambda m: " " * len(m.group(0)), tail)
+                tail = cls._BROKEN_THOUSANDS_SEP_RE.sub(r",\1", tail)
+                nums: list[float] = []
+                for m in cls._NUMBER_RE.finditer(tail):
+                    if cls._DATE_TAIL_RE.match(tail[m.end():]):
+                        continue
+                    raw, dec, unit = m.groups()
+                    try:
+                        value = float(raw.replace(",", "") + ("." + dec if dec else ""))
+                    except ValueError:
+                        continue
+                    token = m.group(0)
+                    if "(" in token and ")" in token:
+                        value = -value
+                    if unit:
+                        value *= cls.SCALE_HINTS.get(unit.lower(), 1.0)
+                    nums.append(value)
+                    if len(nums) >= max_cols:
+                        break
+                if len(nums) >= 3:   # need at least [current, ..., yoy] to be useful
+                    local_scale = cls._local_scale(text, match.start())
+                    return [n * local_scale if abs(n) < 1e5 else n for n in nums]
+        return None
+
+    @classmethod
+    def _derive_yoy_metrics(cls, text: str) -> dict[str, float]:
+        """Real same-document YoY revenue growth / PBT margin / effective
+        tax rate from a prior-year comparative column, instead of the
+        generic 5% / 15% / 25% constants :class:`AutoAssumer` otherwise
+        falls back to when a filing has no explicit "revenue growth" /
+        "operating margin" / "tax rate" statement of its own — true for
+        most quarterly results announcements, which report the *numbers*
+        but rarely narrate the ratios.
+
+        Only attempted when :attr:`_SEBI_QUARTERLY_HEADER_RE` confirms the
+        specific, regulation-mandated column layout this relies on; returns
+        ``{}`` (a no-op) for any other filing structure — a filing that
+        doesn't match isn't a document this technique can safely read,
+        not a case to guess through.
+        """
+        if not cls._SEBI_QUARTERLY_HEADER_RE.search(text[:6000]):
+            return {}
+        out: dict[str, float] = {}
+        revenue_cols = cls._scrape_row_columns(
+            text, [r"income\s+from\s+operations", r"total\s+income"])
+        if revenue_cols and revenue_cols[2] > 0:
+            out["revenue_growth"] = (revenue_cols[0] - revenue_cols[2]) / revenue_cols[2]
+        # "Profit before tax" rather than a segment-table EBIT line — the
+        # main statement's PBT row is unambiguous and already finance-cost-
+        # adjusted; a genuinely lower (but real) margin proxy is safer here
+        # than risking a mismatched segment-table row under a similar label.
+        pbt_cols = cls._scrape_row_columns(
+            text, [r"profit\s+before\s+(?:exceptional\s+items\s*&?\s*)?tax"])
+        if revenue_cols and pbt_cols and revenue_cols[0] > 0:
+            out["operating_margin"] = pbt_cols[0] / revenue_cols[0]
+        tax_cols = cls._scrape_row_columns(text, [r"total\s+tax\s+expenses?"])
+        if tax_cols and pbt_cols and pbt_cols[0] != 0:
+            rate = tax_cols[0] / pbt_cols[0]
+            if 0 <= rate < 1:   # plausibility guard — a real effective rate
+                out["tax_rate"] = rate
+        return out
+
     #: A bare 4-digit value that's also a plausible calendar year is almost
     #: certainly a mis-scrape (a nearby "fiscal 2025"/"as of 2026" caught
     #: instead of an actual percentage) — no real growth rate, margin or tax
@@ -436,15 +644,39 @@ class PDFExtractor:
             company_name=company,
             ticker=ticker_match.group(1).upper() if ticker_match else None,
             fiscal_year=int(fy_match.group(1)) if fy_match else None,
+            currency=self._detect_currency(text),
             revenue=self._first_after(
-                text, [r"total\s+revenue", r"net\s+revenue", r"revenues?\b"],
-                apply_scale=True),
+                text, [r"total\s+revenue", r"net\s+revenue",
+                       # Ind AS / BSE-NSE quarterly-results wording: many
+                       # Indian filings never use the word "revenue" for the
+                       # consolidated top line at all, labelling it "Income
+                       # from operations" (and the income-statement subtotal
+                       # "Total income") instead. Tried before the bare
+                       # "revenues?" catch-all below, which — as a broad,
+                       # unqualified keyword — matches a segment-level
+                       # sub-table row ("1 Segment revenue") just as readily
+                       # as the real consolidated figure.
+                       r"income\s+from\s+operations", r"total\s+income",
+                       # (?<!segment ) — "Segment revenue" tables are a
+                       # near-universal filing structure; without this guard
+                       # this catch-all reliably matches a segment's own
+                       # revenue line (a real, but wrong, number) rather than
+                       # falling through to a pattern that finds the
+                       # consolidated total.
+                       r"(?<!segment )revenues?\b"],
+                apply_scale=True, disqualify=self._FOOTNOTE_SCOPE_DISQUALIFIERS),
             free_cash_flows=self._scrape_fcf_series(text),
             net_income=self._first_after(
                 text, [r"net\s+income", r"net\s+earnings",
                        r"profit\s+for\s+the\s+(?:period|quarter|year)",
+                       # Tolerant of the "period"/"year" itself being OCR-
+                       # corrupted (a real scan turned it into "neriod/vear")
+                       # — the distinctive, rarely-ambiguous part of this
+                       # Ind AS statement label is "Net Profit for the ",
+                       # not the exact word after it.
+                       r"net\s+profit\s+for\s+the\s+\S+",
                        r"profit\s+after\s+tax", r"\bPAT\b"],
-                apply_scale=True),
+                apply_scale=True, disqualify=self._FOOTNOTE_SCOPE_DISQUALIFIERS),
             total_debt=self._first_after(
                 text, [r"total\s+debt", r"long[-\s]term\s+debt",
                        r"total\s+borrowings", r"\bborrowings\b"],
@@ -489,6 +721,9 @@ class PDFExtractor:
                        r"purchases?\s+of\s+property(?:,?\s+plant)?"
                        r"(?:\s*(?:&|and)\s*equipment)?"],
                 apply_scale=True),
+            interest_expense=self._first_after(
+                text, [r"interest\s+expense", r"finance\s+costs?"],
+                apply_scale=True),
         )
 
         # A percent scraped as e.g. "12" from "12%" should read as 0.12.
@@ -500,10 +735,24 @@ class PDFExtractor:
         # These three are always reported as a positive magnitude in the
         # downstream formulas (an add-back, an expense, a spend) even when
         # the source statement shows them as a parenthesised cash outflow.
-        for attr in ("depreciation_amortization", "rd_expense", "capital_expenditures"):
+        for attr in ("depreciation_amortization", "rd_expense", "capital_expenditures",
+                     "interest_expense"):
             v = getattr(data, attr)
             if v is not None:
                 setattr(data, attr, abs(v))
+
+        # Real same-document YoY growth/margin/tax-rate, only for whichever
+        # of the three the filing didn't already state explicitly above —
+        # see _derive_yoy_metrics for why this is scoped to a specific,
+        # confirmed table layout rather than attempted on every filing.
+        if data.revenue_growth is None or data.operating_margin is None or data.tax_rate is None:
+            yoy = self._derive_yoy_metrics(text)
+            if data.revenue_growth is None and "revenue_growth" in yoy:
+                data.revenue_growth = yoy["revenue_growth"]
+            if data.operating_margin is None and "operating_margin" in yoy:
+                data.operating_margin = yoy["operating_margin"]
+            if data.tax_rate is None and "tax_rate" in yoy:
+                data.tax_rate = yoy["tax_rate"]
 
         data.raw_text = text[:50_000]
         return data

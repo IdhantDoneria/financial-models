@@ -239,6 +239,240 @@ def test_nse_symbol_recognised_as_ticker():
 
 
 # --------------------------------------------------------------------------- #
+# 1d. Regressions for the real BLS-filing footnote-misattribution bug —
+#     revenue/net_income were previously scraped from a wrong-but-plausible
+#     number in the auditor's "Other Matters" section (unreviewed
+#     subsidiaries' figures) instead of the real consolidated statement line,
+#     because that footnote sentence happened to contain the FIRST match of
+#     the "total revenue" / "profit after tax" keyword patterns.
+# --------------------------------------------------------------------------- #
+def test_footnote_scoped_revenue_is_disqualified_for_the_real_consolidated_figure():
+    """(Real BLS International text, trimmed) — the auditor's caveat about
+    nine unreviewed subsidiaries states a "total revenues (before
+    consolidation adjustment)" figure that is NOT the company's actual
+    consolidated revenue; the real figure sits earlier in the document under
+    the Ind AS label "Income from operations". Both numbers are individually
+    plausible, so this was silently wrong rather than obviously broken."""
+    text = (
+        "I Income from operations 89,052.66 81,456.42 71,056.53 2,99,821.51\n"
+        "II Other income 2,269.45 3,040.01 2,507.41 9,515.60\n"
+        "III Total income (I+II) 91,322.11 84,496.43 73,563.94 3,09,337.11\n"
+        "...\n"
+        "We did not review the interim financial information of nine "
+        "subsidiaries, whose interim financial information reflects total "
+        "revenues (before consolidation adjustment) of Rs. 38,753.24 lakhs "
+        "for the quarter ended June 30, 2026.\n"
+    )
+    ex = PDFExtractor()
+    val = ex._first_after(
+        text, [r"total\s+revenue", r"net\s+revenue",
+               r"income\s+from\s+operations", r"total\s+income",
+               r"(?<!segment )revenues?\b"],
+        apply_scale=True, disqualify=PDFExtractor._FOOTNOTE_SCOPE_DISQUALIFIERS,
+    )
+    # Scaled 1e5 (lakhs) — the document-wide scale guess picks up "lakhs"
+    # from the (disqualified) footnote sentence itself, same as it
+    # legitimately would from a real filing's header; that's independent of
+    # which keyword match wins, so it correctly applies here too.
+    assert val == pytest.approx(89_052.66 * 1e5, rel=0.01), \
+        f"got {val} — picked the disqualified footnote figure or the wrong subtotal"
+
+
+def test_income_from_operations_recognised_as_indian_filing_revenue_label():
+    """Many Indian BSE/NSE quarterly filings never use the word "revenue"
+    for the consolidated top line at all."""
+    ex = PDFExtractor()
+    data = ex.scrape_figures(
+        "(Amount in Rs. lakhs)\nI Income from operations 89,052.66\n"
+    )
+    assert data.revenue == pytest.approx(89_052.66 * 1e5, rel=0.01)
+
+
+def test_segment_revenue_subtable_not_mistaken_for_consolidated_total():
+    """(Real BLS International text) — "1 Segment revenue" introduces a
+    per-segment breakdown table, not the consolidated figure; the bare
+    "revenues?" catch-all pattern must not match it."""
+    ex = PDFExtractor()
+    data = ex.scrape_figures(
+        "1 Segment revenue\n"
+        "A) Visa and consular services 56,008.72 47,172.01\n"
+        "B) Digital services 33,043.94 34,284.41\n"
+    )
+    assert data.revenue is None   # no consolidated-total pattern matched
+
+
+def test_arithmetic_formula_reference_not_mistaken_for_the_figure():
+    """(Real BLS International text) — a subtotal row labelled "Total income
+    (I+II)" (sometimes OCR'd as "(1+11)") must not have the "1" inside that
+    formula reference read as the figure."""
+    ex = PDFExtractor()
+    val = PDFExtractor._parse_number("Total income (1+11) 91,322.11 84,496.43")
+    assert val == pytest.approx(91_322.11)
+
+
+def test_broken_thousands_separator_space_is_normalised():
+    """(Real BLS International text, OCR-degraded) — a scan of "20,162.22"
+    came back "20 162.22" (space where the comma should be) on the actual
+    Net Profit row; left alone, the number regex reads "20" as a complete
+    value and stops there, landing 1,000x too small once scale is applied."""
+    val = PDFExtractor._parse_number("20 162.22 18 690.01 18 097.57 72 380.02")
+    assert val == pytest.approx(20_162.22)
+
+
+def test_net_profit_for_the_period_tolerant_of_ocr_corrupted_word():
+    """(Real BLS International text, OCR-degraded) — a scan turned "Net
+    Profit for the period/year" into "Net Profit for the neriod/vear",
+    breaking a pattern that requires the literal word "period"/"quarter"/
+    "year". The label "Net Profit for the " itself is distinctive enough to
+    match regardless of what OCR did to the word after it."""
+    ex = PDFExtractor()
+    data = ex.scrape_figures(
+        "(Amount in Rs. lakhs)\n"
+        "IX Net Profit for the neriod/vear r VII-Vlll1 20 162.22 18 690.01\n"
+    )
+    assert data.net_income == pytest.approx(20_162.22 * 1e5, rel=0.01)
+
+
+# --------------------------------------------------------------------------- #
+# 1b-2. Currency detection — a DCF/RDCF headline built from an undetected
+#       non-USD filing and labelled "$" would misrepresent the actual scale
+#       by whatever the real FX rate is (a real live test on the BLS filing
+#       produced a "$54,280,899,174.28" DCF headline for INR-denominated
+#       figures).
+# --------------------------------------------------------------------------- #
+def test_lakh_or_crore_anywhere_implies_indian_rupees():
+    """The lakh/crore numbering system is used exclusively for INR
+    reporting — its presence is a stronger, already-battle-tested signal
+    (the scale detector already finds it reliably) than trying to
+    separately re-detect INR from a currency symbol/code."""
+    assert PDFExtractor._detect_currency("Amount in (Rs.) in lakhs\nTotal income 91,322.11") == "INR"
+    assert PDFExtractor._detect_currency("(Rs. in Crores)\nTotal revenue 387.53") == "INR"
+
+
+def test_currency_symbol_requires_digit_adjacency_not_bare_mention():
+    """(Real BLS International text) — "BLS £-Services Limited" is a
+    subsidiary's name, not a GBP figure, and a separate UK-based
+    acquisition mentioned elsewhere in the same filing has nothing to do
+    with what currency the CONSOLIDATED statement itself is denominated
+    in. A bare symbol/code with no adjacent number must not flip the
+    detected currency away from the real one (INR, signalled by "Rs."
+    elsewhere in the same document)."""
+    text = (
+        "13) BLS Worldwide PTY Limited - South Africa\n"
+        "14) BLS £-Services Limited (formerly known as BLS UK Limited)\n"
+        "...\n"
+        "Rs. 38,753.24 lakhs for the quarter ended June 30, 2026.\n"
+    )
+    assert PDFExtractor._detect_currency(text) == "INR"
+
+
+def test_dollar_sign_with_no_other_signal_still_means_usd():
+    """The pipeline's original, implicit assumption — unchanged when a
+    filing gives no more specific currency signal at all."""
+    assert PDFExtractor._detect_currency("Total revenue $ 12,450 million") == "USD"
+    assert PDFExtractor._detect_currency("No currency mentioned anywhere here.") == "USD"
+
+
+def test_headline_uses_the_filings_own_currency_symbol(synthetic_pdf):
+    """A DCF headline for a filing whose figures are in INR must be
+    prefixed with ₹, not an unconditional $ that misrepresents the scale
+    by whatever the real USD/INR rate is."""
+    from src.pipeline.pdf_extractor import ExtractedFinancials
+    data = ExtractedFinancials(
+        revenue=1_000_000, net_income=100_000, currency="INR",
+        free_cash_flows=[80_000, 85_000, 90_000, 95_000, 100_000])
+    report = AnalysisRunner(data).run(
+        AutoAssumer().build(data), ["Discounted Cash Flow"], mode="auto")
+    df = report.summary_frame()
+    headline = df.loc[df["Model"] == "Discounted Cash Flow", "Headline result"].iloc[0]
+    assert headline.startswith("₹"), f"got {headline!r}"
+
+    # A USD (default) filing still gets the original "$" prefix.
+    usd_data = PDFExtractor().extract(synthetic_pdf)
+    usd_report = AnalysisRunner(usd_data).run(
+        AutoAssumer().build(usd_data), ["Discounted Cash Flow"], mode="auto")
+    usd_df = usd_report.summary_frame()
+    usd_headline = usd_df.loc[usd_df["Model"] == "Discounted Cash Flow", "Headline result"].iloc[0]
+    assert usd_headline.startswith("$"), f"got {usd_headline!r}"
+
+
+# --------------------------------------------------------------------------- #
+# 1b-3. Real same-document YoY growth/margin/tax-rate — replaces the generic
+#       5%/15%/25% FCF-synthesis constants with the filing's own prior-year
+#       comparative column, but ONLY for the specific, regulation-mandated
+#       SEBI LODR Regulation 33 quarterly-results table layout (confirmed
+#       against the real BLS International filing's exact header/column
+#       structure) — not attempted on any other filing shape.
+# --------------------------------------------------------------------------- #
+_SEBI_QUARTERLY_SNIPPET = (
+    "STATEMENT OF UNAUDITED CONSOLIDATED FINANCIAL RESULTS FOR THE QUARTER ENDED JUNE 30, 2026\n"
+    "Amount in (Rs.) in lakhs\n"
+    "SI. No Particulars Quarter ended Year Ended\n"
+    "June 30, 2026 March 31, 2026 June 30, 2025 March 31, 2026\n"
+    "Unaudited Audited Unaudited Audited\n"
+    "I Income from operations 89,052.66 81,456.42 71,056.53 2,99,821.51\n"
+    "II Other income 2,269.45 3,040.01 2,507.41 9,515.60\n"
+    "III Total income (I+II) 91,322.11 84,496.43 73,563.94 3,09,337.11\n"
+    "VII Profit before tax (V-VI) 23,564.20 20,355.58 20,019.15 79,713.96\n"
+    "VIII Total tax expenses 3,401.98 1,665.57 1,921.58 7,333.94\n"
+    "IX Net Profit for the period/year 20,162.22 18,690.01 18,097.57 72,380.02\n"
+)
+
+
+def test_yoy_revenue_growth_derived_from_sebi_quarterly_comparative_column():
+    """(Real BLS International filing structure) — current quarter vs. the
+    same quarter one year earlier (column 3 of 4), not the immediately
+    preceding quarter (column 2) — SEBI's mandated layout puts the
+    sequential-quarter comparator before the year-ago one."""
+    data = PDFExtractor().scrape_figures(_SEBI_QUARTERLY_SNIPPET)
+    # (89,052.66 - 71,056.53) / 71,056.53
+    assert data.revenue_growth == pytest.approx(0.2533, rel=0.01)
+
+
+def test_yoy_operating_margin_and_tax_rate_derived_from_same_table():
+    data = PDFExtractor().scrape_figures(_SEBI_QUARTERLY_SNIPPET)
+    # 23,564.20 / 89,052.66
+    assert data.operating_margin == pytest.approx(0.2646, rel=0.01)
+    # 3,401.98 / 23,564.20
+    assert data.tax_rate == pytest.approx(0.1444, rel=0.01)
+
+
+def test_yoy_derivation_never_overrides_an_explicitly_stated_value():
+    """An explicit "Revenue growth 12%" statement elsewhere in the same
+    document must win over the derived column-comparison figure — the
+    derivation only fills a genuine gap, never second-guesses a number the
+    filing states outright."""
+    text = "Revenue growth 12%\n" + _SEBI_QUARTERLY_SNIPPET
+    data = PDFExtractor().scrape_figures(text)
+    assert data.revenue_growth == pytest.approx(0.12)
+
+
+def test_yoy_derivation_is_a_noop_without_the_sebi_header(synthetic_pdf):
+    """A filing that doesn't match the confirmed SEBI quarterly-results
+    table layout gets no derived growth/margin/tax-rate at all — this
+    technique is not attempted on a filing shape it hasn't been validated
+    against, rather than guessing from an unconfirmed table structure."""
+    data = PDFExtractor().extract(synthetic_pdf)   # a plain 10-K-style PDF
+    assert PDFExtractor._derive_yoy_metrics(data.raw_text) == {}
+
+
+def test_dcf_fcf_synthesis_uses_the_derived_growth_and_margin_not_generic_defaults():
+    """End-to-end: the real 25.3% growth / 26.5% margin (not the generic
+    5%/15%) should be what actually seeds the synthesized FCF trajectory
+    AutoAssumer hands to the DCF model when no explicit FCF line exists."""
+    from src.pipeline.pdf_extractor import ExtractedFinancials
+    data = PDFExtractor().scrape_figures(_SEBI_QUARTERLY_SNIPPET)
+    assert not data.free_cash_flows   # this snippet has no labelled FCF row
+    auto = AutoAssumer()
+    fcfs = auto._synth_fcfs(data, wacc=0.09)
+    generic_fcfs = auto._synth_fcfs(
+        ExtractedFinancials(revenue=data.revenue), wacc=0.09)   # no derived ratios
+    assert fcfs != generic_fcfs
+    expected_base = data.revenue * data.operating_margin
+    assert fcfs[0] == pytest.approx(expected_base * (1 + data.revenue_growth))
+
+
+# --------------------------------------------------------------------------- #
 # 1c. Extraction of the HDEBT owner-earnings fields (D&A, R&D, capex)
 # --------------------------------------------------------------------------- #
 def test_extracts_depreciation_rd_and_capex_for_owner_earnings():
@@ -263,6 +497,72 @@ def test_capex_reported_as_a_parenthesised_outflow_is_still_a_positive_amount():
         "(In millions)\nPurchases of property and equipment (700)\n"
     )
     assert data.capital_expenditures == pytest.approx(700e6, rel=0.01)
+
+
+def test_extracts_interest_expense_for_real_cost_of_debt():
+    ex = PDFExtractor()
+    data = ex.scrape_figures("(Dollars in millions)\nInterest expense $ 40\n")
+    assert data.interest_expense == pytest.approx(40e6, rel=0.01)
+    data2 = ex.scrape_figures("(Rs. in lakhs)\nFinance costs 774.92\n")
+    assert data2.interest_expense == pytest.approx(774.92e5, rel=0.01)
+
+
+# --------------------------------------------------------------------------- #
+# 2b. Real capital structure + cost of debt for WACC
+# --------------------------------------------------------------------------- #
+def test_wacc_uses_real_equity_weight_and_cost_of_debt_when_plausible():
+    """When market cap (price x shares) and total debt are both known, and
+    the implied interest-expense/total-debt ratio is a plausible real cost
+    of debt, WACC should use them instead of the fixed 80/20 + rf+150bp
+    defaults."""
+    from src.pipeline.pdf_extractor import ExtractedFinancials
+    data = ExtractedFinancials(
+        revenue=1_000_000, net_income=100_000, current_price=50.0,
+        shares_outstanding=10_000_000, total_debt=200_000_000,
+        interest_expense=10_000_000,   # 5% of total_debt — plausible
+        free_cash_flows=[80_000, 85_000, 90_000, 95_000, 100_000])
+    a = AutoAssumer().build(data)
+    # market cap = 50 * 10,000,000 = 500,000,000; we = 500M / (500M + 200M)
+    expected_we = 500_000_000 / 700_000_000
+    expected_kd = 10_000_000 / 200_000_000
+    rf = 0.0425
+    expected_wacc = expected_we * (rf + 1.0 * 0.05) + (1 - expected_we) * expected_kd * (1 - 0.25)
+    assert a.market_context["wacc"] == pytest.approx(expected_wacc, rel=1e-6)
+    assert "market cap" in a.rationale[("DCF", "discount_rate")]
+
+
+def test_wacc_falls_back_to_default_when_derived_cost_of_debt_is_implausible():
+    """(Real Tesla 10-K text) — Tesla's own "Total debt" line is a
+    multi-column table ("1,569 6,584 $8,177 $6,429"); the single-column
+    extractor grabs the first (current-portion) figure, not the real
+    total. Naively dividing interest expense by that understated number
+    produces a nonsensical ~21.5% cost of debt — this must be rejected in
+    favour of the existing rf+150bp default, not used to corrupt WACC."""
+    from src.pipeline.pdf_extractor import ExtractedFinancials
+    data = ExtractedFinancials(
+        revenue=1_000_000, net_income=100_000, current_price=50.0,
+        shares_outstanding=10_000_000,
+        total_debt=1_569_000_000, interest_expense=338_000_000,   # ~21.5%, implausible
+        free_cash_flows=[80_000, 85_000, 90_000, 95_000, 100_000])
+    a = AutoAssumer().build(data)
+    rf = 0.0425
+    kd_default = rf + 0.015
+    we_real = (50.0 * 10_000_000) / (50.0 * 10_000_000 + 1_569_000_000)   # weight is unaffected
+    expected_wacc = we_real * (rf + 1.0 * 0.05) + (1 - we_real) * kd_default * (1 - 0.25)
+    assert a.market_context["wacc"] == pytest.approx(expected_wacc, rel=1e-6)
+    assert "rf+150bp default" in a.rationale[("DCF", "discount_rate")]
+
+
+def test_wacc_uses_default_weights_when_market_cap_or_debt_unknown(synthetic_pdf):
+    """No regression for the common case — a filing missing debt or
+    market-cap data (e.g. BLS International's quarterly announcement, which
+    states neither share price nor total debt) still gets the original
+    80/20 default weighting, not a crash or a garbage derived weight."""
+    from src.pipeline.pdf_extractor import ExtractedFinancials
+    data = ExtractedFinancials(revenue=1_000_000, net_income=100_000,
+                               free_cash_flows=[80_000, 85_000, 90_000, 95_000, 100_000])
+    a = AutoAssumer().build(data)
+    assert "80/20 default" in a.rationale[("DCF", "discount_rate")]
 
 
 # --------------------------------------------------------------------------- #
@@ -290,12 +590,109 @@ def test_hdebt_defaults_to_no_adjustment_when_nothing_is_disclosed(synthetic_pdf
     assert kw["lease_discount_rate"] > 0   # must stay positive (model requires it)
 
 
-def test_rdcf_tam_defaults_to_ten_times_base_revenue(synthetic_pdf):
-    """No filing states its own TAM in a form a regex can trust — the
-    auto-assumer's documented placeholder is 10x current revenue."""
+def test_hdebt_marked_partial_when_all_footnote_inputs_are_defaulted(synthetic_pdf):
+    """A $0 hidden-debt adjustment because nothing was ever disclosed reads
+    identically to a $0 adjustment because there's genuinely nothing to
+    adjust — only the second is actually informative. The report layer
+    needs to be able to tell them apart instead of showing "OK $0.00"
+    either way."""
     data = PDFExtractor().extract(synthetic_pdf)
-    kw = AutoAssumer().build(data).kwargs_by_model["Reverse DCF / Market-Implied Expectations"]
-    assert kw["total_addressable_market"] == pytest.approx(10.0 * kw["base_revenue"])
+    hdebt = "Ind AS 116 Hidden-Debt Normalizer"
+    assumptions = AutoAssumer().build(data)
+    assert hdebt in assumptions.partial
+    assert "unassessed" in assumptions.partial[hdebt].lower()
+
+    report = AnalysisRunner(data).run(assumptions, [hdebt], mode="auto")
+    assert hdebt in report.results   # still runs — this only flags the result
+    df = report.summary_frame()
+    assert df.loc[df["Model"] == hdebt, "Status"].iloc[0] == "UNASSESSED"
+
+
+def test_hdebt_not_marked_partial_once_any_footnote_figure_is_supplied(synthetic_pdf):
+    """Supplying even one real footnote figure (not all four) is enough to
+    stop treating the result as unassessed — some real disclosure was
+    actually incorporated."""
+    data = PDFExtractor().extract(synthetic_pdf)
+    hdebt = "Ind AS 116 Hidden-Debt Normalizer"
+    ov = ManualOverrides(annual_lease_payment=50_000_000)
+    assumptions = ManualAssumer().build(data, ov)
+    assert hdebt not in assumptions.partial
+
+
+def test_rdcf_tam_is_not_fabricated_and_blocks_auto_mode(synthetic_pdf):
+    """No filing states its own TAM in a form a regex can trust, and unlike
+    WACC/terminal growth there's no formula-based proxy that's meaningfully
+    better than a guess — a 10x-revenue placeholder looked precise but
+    wasn't. TAM is now a required MANUAL input: left unset (not fabricated)
+    in auto mode, and Reverse DCF is marked unavailable until it's
+    supplied, even when price/shares are both known (as they are in this
+    fixture)."""
+    data = PDFExtractor().extract(synthetic_pdf)
+    assumptions = AutoAssumer().build(data)
+    kw = assumptions.kwargs_by_model["Reverse DCF / Market-Implied Expectations"]
+    assert kw["total_addressable_market"] is None
+    reason = assumptions.unavailable["Reverse DCF / Market-Implied Expectations"]
+    assert "addressable market" in reason
+
+    # Supplying TAM manually (with price/shares already present from the
+    # filing) is enough to make it available again.
+    ov = ManualOverrides(total_addressable_market=200_000_000_000)
+    manual = ManualAssumer().build(data, ov)
+    assert "Reverse DCF / Market-Implied Expectations" not in manual.unavailable
+
+
+def test_rdcf_marked_unavailable_when_price_and_shares_both_undisclosed():
+    """A filing with no cover-page market data (e.g. a quarterly
+    results-only announcement) must not have Reverse DCF silently run on a
+    fabricated $100/1,000,000-share placeholder — the whole model exists to
+    invert the market's *real* current price, so a fake one produces a
+    confident-looking number describing nothing."""
+    from src.pipeline.pdf_extractor import ExtractedFinancials
+    data = ExtractedFinancials(revenue=1_000_000, net_income=100_000,
+                               free_cash_flows=[80_000, 85_000, 90_000, 95_000, 100_000])
+    assert data.current_price is None and data.shares_outstanding is None
+    assumptions = AutoAssumer().build(data)
+    assert "Reverse DCF / Market-Implied Expectations" in assumptions.unavailable
+    reason = assumptions.unavailable["Reverse DCF / Market-Implied Expectations"]
+    assert "share price" in reason and "share count" in reason
+
+    report = AnalysisRunner(data).run(
+        assumptions, ["Reverse DCF / Market-Implied Expectations"], mode="auto")
+    assert "Reverse DCF / Market-Implied Expectations" not in report.results
+    assert "Reverse DCF / Market-Implied Expectations" in report.errors
+    assert report.errors["Reverse DCF / Market-Implied Expectations"] == reason
+
+
+def test_rdcf_marked_unavailable_when_only_one_of_price_or_shares_is_known():
+    """Half a real market cap is still not a real market cap — either
+    missing input should block the model, not just both together."""
+    from src.pipeline.pdf_extractor import ExtractedFinancials
+    price_only = ExtractedFinancials(
+        revenue=1_000_000, net_income=100_000, current_price=42.0,
+        free_cash_flows=[80_000, 85_000, 90_000, 95_000, 100_000])
+    assert "Reverse DCF / Market-Implied Expectations" in AutoAssumer().build(price_only).unavailable
+
+    shares_only = ExtractedFinancials(
+        revenue=1_000_000, net_income=100_000, shares_outstanding=5_000_000,
+        free_cash_flows=[80_000, 85_000, 90_000, 95_000, 100_000])
+    assert "Reverse DCF / Market-Implied Expectations" in AutoAssumer().build(shares_only).unavailable
+
+
+def test_dcf_still_reports_enterprise_value_without_share_data(synthetic_pdf):
+    """DCF is not blocked by missing price/shares — enterprise and equity
+    value don't depend on either, and price_per_share already correctly
+    comes back None (see DiscountedCashFlowModel) rather than being
+    computed against a fabricated share count. Only Reverse DCF, whose
+    entire output IS a market-implied number, needs the harder gate above."""
+    from src.pipeline.pdf_extractor import ExtractedFinancials
+    data = ExtractedFinancials(revenue=1_000_000, net_income=100_000,
+                               free_cash_flows=[80_000, 85_000, 90_000, 95_000, 100_000])
+    assumptions = AutoAssumer().build(data)
+    assert "Discounted Cash Flow" not in assumptions.unavailable
+    report = AnalysisRunner(data).run(assumptions, ["Discounted Cash Flow"], mode="auto")
+    assert "Discounted Cash Flow" not in report.errors
+    assert report.results["Discounted Cash Flow"]["price_per_share"] is None
+    assert isinstance(report.results["Discounted Cash Flow"]["enterprise_value"], float)
 
 
 def test_hdebt_and_rdcf_share_the_same_wacc_and_terminal_growth_as_dcf(synthetic_pdf):
@@ -353,13 +750,25 @@ def test_hdebt_rdcf_manual_overrides_reach_kwargs(synthetic_pdf):
 # 4. Runner executes every model without exceptions
 # --------------------------------------------------------------------------- #
 def test_runner_all_models_produce_results(synthetic_pdf):
+    """Reverse DCF is the sole expected exception in pure auto mode — no
+    filing states a trustworthy TAM, so it's a required manual input (see
+    test_rdcf_tam_is_not_fabricated_and_blocks_auto_mode) and correctly
+    lands in errors, not results, until one is supplied."""
     data = PDFExtractor().extract(synthetic_pdf)
     assumptions = AutoAssumer().build(data)
     report = AnalysisRunner(data).run(assumptions, list(AVAILABLE_MODELS), mode="auto")
-    assert not report.errors, f"models failed: {report.errors}"
-    assert set(report.results) == set(AVAILABLE_MODELS)
+    rdcf = "Reverse DCF / Market-Implied Expectations"
+    assert set(report.errors) == {rdcf}, f"unexpected failures: {report.errors}"
+    assert set(report.results) == set(AVAILABLE_MODELS) - {rdcf}
     for name, res in report.results.items():
         assert res and isinstance(res, dict)
+
+    # Supplying TAM manually unblocks it, and it runs like everything else.
+    ov = ManualOverrides(total_addressable_market=200_000_000_000)
+    manual_assumptions = ManualAssumer().build(data, ov)
+    manual_report = AnalysisRunner(data).run(manual_assumptions, [rdcf], mode="manual")
+    assert not manual_report.errors, f"models failed: {manual_report.errors}"
+    assert rdcf in manual_report.results
 
 
 def test_runner_respects_selection_subset(synthetic_pdf):

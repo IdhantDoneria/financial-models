@@ -24,7 +24,7 @@ from .. import (
 )
 from ..base_model import BaseFinancialModel
 from .assumptions import AssumptionSet
-from .pdf_extractor import ExtractedFinancials
+from .pdf_extractor import ExtractedFinancials, PDFExtractor
 
 logger = logging.getLogger(__name__)
 
@@ -67,18 +67,28 @@ class AnalysisReport:
         """Return a tidy DataFrame — one row per model with headline outputs."""
         import pandas as pd
 
+        currency_symbol = PDFExtractor.CURRENCY_SYMBOLS.get(
+            self.company.currency, "$")
         rows = []
         for name, res in self.results.items():
-            headline = self._headline(name, res)
+            headline = self._headline(name, res, currency_symbol)
+            status = "UNASSESSED" if name in self.assumptions.partial else "OK"
             rows.append({"Model": name, "Headline result": headline,
-                         "Status": "OK"})
+                         "Status": status})
         for name, err in self.errors.items():
             rows.append({"Model": name, "Headline result": "-", "Status": err})
         return pd.DataFrame(rows)
 
     @staticmethod
-    def _headline(name: str, res: dict[str, Any]) -> str:
-        """Pick the single most-useful number per model for the summary row."""
+    def _headline(name: str, res: dict[str, Any], currency_symbol: str = "$") -> str:
+        """Pick the single most-useful number per model for the summary row.
+
+        Args:
+            currency_symbol: Prefix for a "$"-unit headline — the filing's
+                own detected currency (:attr:`ExtractedFinancials.currency`),
+                not necessarily USD. Defaults to "$" so any caller that
+                hasn't been updated to pass it keeps today's behaviour.
+        """
         picks = {
             "Discounted Cash Flow": ("enterprise_value", "$"),
             "Gordon Growth Model": ("price", "$"),
@@ -100,7 +110,7 @@ class AnalysisReport:
                 if unit == "%":
                     return f"{value*100:.2f}%"
                 if unit == "$":
-                    return f"${value:,.2f}"
+                    return f"{currency_symbol}{value:,.2f}"
                 return f"{value:.4f}"
         return str(next(iter(res.values()), "-"))
 
@@ -133,6 +143,14 @@ class AnalysisRunner:
             cls = AVAILABLE_MODELS.get(name)
             if cls is None:
                 report.errors[name] = f"Unknown model: {name}"
+                continue
+            # The assumer itself has already decided this model can't produce
+            # a trustworthy result from what was actually disclosed (see
+            # AssumptionSet.unavailable) — skip it rather than run it on
+            # fabricated inputs.
+            reason = assumptions.unavailable.get(name)
+            if reason is not None:
+                report.errors[name] = reason
                 continue
             try:
                 kwargs = dict(assumptions.kwargs_by_model.get(name, {}))

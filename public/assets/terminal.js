@@ -1489,6 +1489,7 @@ async function onIBUpload() {
 const IB_MONEY_FIELDS = new Set([
   "revenue", "free_cash_flows", "net_income", "total_debt",
   "cash_and_equivalents", "net_debt", "current_price", "dividend_per_share",
+  "interest_expense",
 ]);
 //: Fields with no direct manual override: text/derived/synthesised.
 const IB_NO_OVERRIDE = new Set([
@@ -1689,14 +1690,31 @@ function renderIBReport() {
   html += confidenceBannerHTML();
   html += `<table><tr><th>MODEL</th><th>HEADLINE RESULT</th><th>STATUS</th></tr>`;
   out.summary.forEach((row) => {
-    const ok = !String(row.Status).toLowerCase().includes("error");
+    const status = String(row.Status);
+    // Only "OK" and "UNASSESSED" are real success states the backend ever
+    // sends — anything else is a failure/refusal-to-compute reason (a raw
+    // model validation-error message, or AssumptionSet.unavailable's own
+    // explanatory text, e.g. Reverse DCF declining to run without a real
+    // TAM). Matching this known-good set explicitly, rather than
+    // substring-sniffing the text for the word "error", is what actually
+    // catches that unavailable-model case too: its reason string never
+    // contains "error" at all, so it previously rendered identically to a
+    // genuine OK result.
+    const isOk = status === "OK";
+    // A model that ran but on inputs the filing never actually disclosed
+    // (e.g. HDEBT with no lease/contingent-liability figures to find) is
+    // neither a confirmed-clean OK nor a failure — showing it as green
+    // "OK $0.00" would look identical to a real zero-adjustment finding.
+    const isUnassessed = status === "UNASSESSED";
+    const isError = !isOk && !isUnassessed;
+    const statClass = isUnassessed ? "stat-warn" : isError ? "stat-err" : "stat-ok";
     // row.Status can embed a raw model validation-error message, which in
     // turn can echo attacker-supplied text (e.g. a manual-override value
     // that failed numeric validation) — esc() every field here, not just
     // the ones normally numeric, since "normally numeric" isn't guaranteed.
-    html += `<tr class="${ok ? "" : "err"}"><td>${esc(row.Model)}</td>
+    html += `<tr class="${isError ? "err" : ""}"><td>${esc(row.Model)}</td>
       <td class="num">${esc(String(row["Headline result"]))}</td>
-      <td class="${ok ? "stat-ok" : "stat-err"}">${esc(String(row.Status))}</td></tr>`;
+      <td class="${statClass}">${esc(status)}</td></tr>`;
   });
   html += "</table><h2>ASSUMPTIONS (MARKET CONTEXT)</h2><table>";
   Object.entries(out.market_context).forEach(([key, value]) => {

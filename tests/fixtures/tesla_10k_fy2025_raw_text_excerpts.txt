@@ -1,0 +1,533 @@
+=== EXCERPT 1: cover page (lines 1-100) ===
+UNITED STATES
+SECURITIES AND EXCHANGE COMMISSION
+Washington, D.C. 20549
+FORM 10-K
+(Mark One)
+x ANNUAL REPORT PURSUANT TO SECTION 13 OR 15(d) OF THE SECURITIES EXCHANGE ACT
+OF 1934
+For the fiscal year ended December 31, 2025
+OR
+o TRANSITION REPORT PURSUANT TO SECTION 13 OR 15(d) OF THE SECURITIES EXCHANGE
+ACT OF 1934
+For the transition period from _________ to _________
+Commission File Number: 001-34756
+Tesla, Inc.(Exact name of registrant as specified in its charter)
+Texas 91-2197729
+(State or other jurisdiction of
+incorporation or organization)
+(I.R.S. Employer
+Identification No.)
+1 Tesla Road
+Austin, Texas 78725
+(Address of principal executive offices) (Zip Code)
+(512) 516-8177
+(Registrant’s telephone number, including area code)
+Securities registered pursuant to Section 12(b) of the Act:
+Title of each class Trading Symbol(s) Name of each exchange on which
+registered
+Common stock TSLA The Nasdaq Global Select Market
+Securities registered pursuant to Section 12(g) of the Act:
+None
+Indicate by check mark whether the registrant is a well-known seasoned issuer, as defined in Rule 405 of the Securities Act. Yes x No o
+Indicate by check mark if the registrant is not required to file reports pursuant to Section 13 or 15(d) of the Act. Yes o No x
+Indicate by check mark whether the registrant (1) has filed all reports required to be filed by Section 13 or 15(d) of the Securities
+Exchange Act of 1934 (“Exchange Act”) during the preceding 12 months (or for such shorter period that the registrant was required to file such
+reports), and (2) has been subject to such filing requirements for the past 90 days. Yes x No o
+Indicate by check mark whether the registrant has submitted electronically every Interactive Data File required to be submitted pursuant
+to Rule 405 of Regulation S-T (§232.405 of this chapter) during the preceding 12 months (or for such shorter period that the registrant was
+required to submit such files). Yes x No o
+Indicate by check mark whether the registrant is a large accelerated filer, an accelerated filer, a non-accelerated filer, a smaller reporting
+company, or an emerging growth company. See the definitions of “large accelerated filer,” “accelerated filer,” “smaller reporting company” and
+“emerging growth company” in Rule 12b-2 of the Exchange Act:
+Large accelerated filer x Accelerated filer o
+Non-accelerated filer o Smaller reporting company o
+Emerging growth company o
+If an emerging growth company, indicate by check mark if the registrant has elected not to use the extended transition period for
+complying with any new or revised financial accounting standards provided pursuant to Section 13(a) of the Exchange Act. o
+Indicate by check mark whether the Registrant has filed a report on and attestation to its management’s assessment of the effectiveness of
+its internal control over financial reporting under Section 404(b) of the Sarbanes-Oxley Act (15 U.S.C. 7262(b)) by the registered public
+accounting firm that prepared or issued its audit report. x
+If securities are registered pursuant to Section 12(b) of the Act, indicate by check mark whether the financial statements of the registrant
+included in the filing reflect the correction of an error to previously issued financial statements. o
+Indicate by check mark whether any of those error corrections are restatements that required a recovery analysis of incentive-based
+compensation received by any of the registrant’s executive officers during the relevant recovery period pursuant to §240.10D-1(b). o
+Indicate by check mark whether the registrant is a shell company (as defined in Rule 12b-2 of the Exchange Act). Yes o No x
+The aggregate market value of voting stock held by non-affiliates of the registrant, as of June 30, 2025, the last business day of the
+registrant’s most recently completed second fiscal quarter, was $892.93 billion (based on the closing price for shares of the registrant’s Common
+Stock as reported by the NASDAQ Global Select Market on June 30, 2025). Shares of Common Stock held by each executive officer and director
+have been excluded in that such persons may be deemed to be affiliates. This determination of affiliate status is not necessarily a conclusive
+determination for other purposes.
+As of January 23, 2026, there were 3,752,431,984 shares of the registrant’s common stock outstanding.
+DOCUMENTS INCORPORATED BY REFERENCE
+Portions of the registrant’s Proxy Statement for the 2026 Annual Meeting of Shareholders are incorporated herein by reference in Part III
+of this Annual Report on Form 10-K to the extent stated herein. Such proxy statement will be filed with the Securities and Exchange Commission
+within 120 days of the registrant’s fiscal year ended December 31, 2025.
+TESLA, INC.
+ANNUAL REPORT ON FORM 10-K FOR THE YEAR ENDED DECEMBER 31, 2025
+INDEX
+Page
+PART I.
+Item 1. Business 2
+Item 1A. Risk Factors 12
+Item 1B. Unresolved Staff Comments 27
+Item 1C. Cybersecurity 27
+Item 2. Properties 28
+Item 3. Legal Proceedings 28
+Item 4. Mine Safety Disclosures 28
+PART II.
+Item 5. Market for Registrant's Common Equity, Related Stockholder Matters and Issuer Purchases of
+Equity Securities 29
+Item 6. [Reserved] 30
+Item 7. Management's Discussion and Analysis of Financial Condition and Results of Operations 31
+Item 7A. Quantitative and Qualitative Disclosures about Market Risk 44
+Item 8. Financial Statements and Supplementary Data 45
+Item 9. Changes in and Disagreements with Accountants on Accounting and Financial Disclosure 94
+Item 9A. Controls and Procedures 94
+Item 9B. Other Information 95
+Item 9C. Disclosure Regarding Foreign Jurisdictions that Prevent Inspections 95
+PART III.
+Item 10. Directors, Executive Officers and Corporate Governance 96
+Item 11. Executive Compensation 96
+Item 12. Security Ownership of Certain Beneficial Owners and Management and Related Stockholder
+Matters 96
+Item 13. Certain Relationships and Related Transactions, and Director Independence 96
+Item 14. Principal Accountant Fees and Services 96
+PART IV.
+Item 15. Exhibits and Financial Statement Schedules 97
+Item 16. Form 10-K Summary 101
+Signatures
+Table of Contents
+Forward-Looking Statements
+
+=== EXCERPT 2: MD&A revenue/tax summary (lines 1880-2100) ===
+we believe that it is more likely than not that some of those positions may not be fully sustained upon review by tax
+authorities. We are required to file income tax returns in the U.S. and various foreign jurisdictions, which requires us
+to interpret the applicable tax laws and regulations in effect in such jurisdictions. Such returns are subject to audit by
+the various federal, state and foreign taxing authorities, who may disagree with respect to our tax positions. We
+believe that our consideration is adequate for all open audit years based on our assessment of many factors, including
+past experience and interpretations of tax law. We review and update our estimates in light of changing facts and
+circumstances, such as the closing of a tax audit, the lapse of a statute of limitations or a change in estimate. To the
+extent that the final tax outcome of these matters differs from our expectations, such differences may impact income
+tax expense in the period in which such determination is made.
+Results of Operations
+Revenues
+Year Ended December 31, 2025 vs. 2024 Change 2024 vs. 2023 Change
+(Dollars in millions) 2025 2024 2023 $ % $ %
+Automotive sales $ 65,821 $ 72,480 $ 78,509 $ (6,659) (9)% $ (6,029) (8)%
+Automotive regulatory credits 1,993 2,763 1,790 (770) (28)% 973 54 %
+Automotive leasing 1,712 1,827 2,120 (115) (6)% (293) (14)%
+Total automotive revenues 69,526 77,070 82,419 (7,544) (10)% (5,349) (6)%
+Services and other 12,530 10,534 8,319 1,996 19 % 2,215 27 %
+Total automotive & services and
+other segment revenue 82,056 87,604 90,738 (5,548) (6)% (3,134) (3)%
+Energy generation and storage segment
+revenue 12,771 10,086 6,035 2,685 27 % 4,051 67 %
+Total revenues $ 94,827 $ 97,690 $ 96,773 $ (2,863) (3)% $ 917 1 %
+Automotive & Services and Other Segment
+Automotive sales revenue includes revenues related to cash and financing deliveries of new vehicles,
+including internet connectivity, access to our FSD (Supervised) features and their ongoing maintenance, free
+Supercharging programs and over-the-air software updates. These deliveries are vehicles that are not subject to lease
+accounting. 
+Automotive regulatory credits includes sales of regulatory credits to other automotive manufacturers. Our
+revenue from automotive regulatory credits is directly related to our new vehicle production, sales and pricing
+negotiated with our customers. We monetize them proactively as new vehicles are sold based on standing
+arrangements with buyers of such credits, typically as close as possible to the production and delivery of the vehicle
+or changes in regulation impacting the credits. 
+Automotive leasing revenue includes the amortization of revenue for vehicles under direct operating lease
+agreements and lease buyout revenue. Additionally, automotive leasing revenue includes direct sales-type leasing
+programs where we recognize all revenue associated with the sales-type lease upon delivery to the customer.
+Services and other revenue consists of sales of used vehicles, non-warranty maintenance services and
+collision, paid Supercharging sessions, automotive insurance business revenue, part sales and retail merchandise
+sales.
+2025 compared to 2024
+Automotive sales revenue decreased $6.66 billion, or 9%, in the year ended December 31, 2025 as compared
+to the year ended December 31, 2024, due a decrease of approximately 8% in cash deliveries and a lower average
+selling price per unit driven by sales mix and higher customer incentives such as attractive financing options.
+Automotive regulatory credits revenue decreased $770 million, or 28%, in the year ended December 31, 2025
+as compared to the year ended December 31, 2024. Fluctuations in automotive regulatory credits are impacted by our
+supply of credits, subject to changes in regulation, production and sales. In 2025, governmental and regulatory
+actions, such as OBBBA, have restricted certain regulatory credit programs tied to our products. Furthermore, we are
+impacted by the demand for credits by other automobile manufacturers.
+37
+Services and other revenue increased $2.00 billion, or 19%, in the year ended December 31, 2025 as
+compared to the year ended December 31, 2024, primarily due to increases in paid Supercharging sessions, non-
+warranty maintenance services and collision revenue, used vehicle sales volume and automotive insurance business
+revenue.
+Energy Generation and Storage Segment
+Energy generation and storage revenue includes sales, leasing, and financing of energy generation and storage
+products, services related to such products and sales of energy generation incentives.
+2025 compared to 2024
+Energy generation and storage revenue increased $2.69 billion, or 27%, in the year ended December 31, 2025
+as compared to the year ended December 31, 2024 primarily due to increases in Megapack and Powerwall
+deployments, partially offset by a decrease in average selling price of Megapack.
+Cost of Revenues and Gross Margin
+Year Ended December 31, 2025 vs. 2024 Change 2024 vs. 2023 Change
+(Dollars in millions) 2025 2024 2023 $ % $ %
+Cost of revenues
+Automotive sales $ 56,267 $ 61,870 $ 65,121 $ (5,603) (9)% $ (3,251) (5)%
+Automotive leasing 898 1,003 1,268 (105) (10)% (265) (21)%
+Total automotive cost of
+revenues 57,165 62,873 66,389 (5,708) (9)% (3,516) (5)%
+Services and other 11,599 9,921 7,830 1,678 17 % 2,091 27 %
+Total automotive & services and
+other segment cost of revenues 68,764 72,794 74,219 (4,030) (6)% (1,425) (2)%
+Energy generation and storage
+segment 8,969 7,446 4,894 1,523 20 % 2,552 52 %
+Total cost of revenues $ 77,733 $ 80,240 $ 79,113 $ (2,507) (3)% $ 1,127 1 %
+Gross profit total automotive $ 12,361 $ 14,197 $ 16,030 
+Gross margin total automotive 17.8 % 18.4 % 19.4 %
+Gross profit total automotive &
+services and other segment $ 13,292 $ 14,810 $ 16,519 
+Gross margin total automotive &
+services and other segment 16.2 % 16.9 % 18.2 %
+Gross profit energy generation and
+storage segment $ 3,802 $ 2,640 $ 1,141 
+Gross margin energy generation and
+storage segment 29.8 % 26.2 % 18.9 %
+Total gross profit $ 17,094 $ 17,450 $ 17,660 
+Total gross margin 18.0 % 17.9 % 18.2 %
+Automotive & Services and Other Segment
+Cost of automotive sales revenue includes direct and indirect materials, labor costs, manufacturing overhead,
+including depreciation costs of tooling and machinery, shipping and logistic costs, tariffs, reserves for estimated
+warranty expenses, FSD (Supervised) ongoing maintenance costs, vehicle connectivity costs, and allocations of
+electricity and infrastructure costs related to our free Supercharging programs. Cost of automotive sales revenues also
+includes adjustments to warranty expense and charges to write down the carrying value of our inventory when it
+exceeds its estimated net realizable value and to provide for obsolete and on-hand inventory in excess of forecasted
+demand. Additionally, cost of automotive sales revenue benefits from manufacturing credits recognized.
+38
+Cost of automotive leasing revenue includes the depreciation of operating lease vehicles, cost of goods sold
+associated with lease buyouts and direct sales-type leases, and servicing of leased vehicles.
+Costs of services and other revenue includes cost of used vehicles including refurbishment costs, labor and
+material costs associated with providing non-warranty maintenance services and collision, operating costs of paid
+Supercharging sessions, claim costs associated with providing automotive insurance, and costs associated with our
+part sales and retail merchandise sales.
+2025 compared to 2024
+Cost of automotive sales revenue decreased $5.60 billion, or 9%, in the year ended December 31, 2025 as
+compared to the year ended December 31, 2024 due to the decrease in deliveries year over year as discussed above
+and lower average cost per unit due to sales mix and lower material costs, partially offset by lower fixed cost
+absorption and an increase in tariffs compared to the prior year.
+Cost of services and other revenue increased $1.68 billion, or 17%, in the year ended December 31, 2025 as
+compared to the year ended December 31, 2024, primarily due to increases in used vehicle sales volume and cost,
+cost of paid Supercharging sessions, cost related to our automotive insurance business, and cost related to our non-
+warranty maintenance services and collision revenue.
+Gross margin for total automotive decreased from 18.4% to 17.8% in the year ended December 31, 2025 as
+compared to the year ended December 31, 2024 primarily due to a decrease in regulatory credits revenue as well as
+the changes in automotive sales revenue and cost of automotive sales revenue, as discussed above.
+Gross margin for total automotive & services and other segment decreased from 16.9% to 16.2% in the year
+ended December 31, 2025 as compared to the year ended December 31, 2024 primarily due to a decrease in
+regulatory credits revenue, partially offset by an improvement in services and other margins.
+Energy Generation and Storage Segment
+Cost of energy generation and storage revenue includes direct and indirect material, tariffs, labor costs,
+manufacturing overhead, including depreciation costs of tooling and machinery, shipping and logistic costs, warranty
+expense and cost of servicing. Cost of energy generation and storage revenue also includes charges to write down the
+carrying value of our inventory when it exceeds its estimated net realizable value and to provide for obsolete and on-
+hand inventory in excess of forecasted demand. Additionally, cost of energy generation and storage revenue benefits
+from manufacturing credits earned. In agreements for energy generation and storage systems and PPAs where we are
+the lessor, the cost of revenue is primarily comprised of depreciation of the cost of leased energy generation and
+storage systems, maintenance costs associated with those systems and amortization of any initial direct costs.
+2025 compared to 2024
+Cost of energy generation and storage revenue increased $1.52 billion, or 20%, in the year ended
+December 31, 2025 as compared to the year ended December 31, 2024, primarily from increases in Megapack and
+Powerwall deployments, partially offset by a decrease in average cost per unit for Megapack and Powerwall from
+lower raw material costs, lower manufacturing costs for Megapack in part from the ramp of Shanghai Megafactory,
+partially offset by higher tariffs.
+Gross margin for energy generation and storage increased from 26.2% to 29.8% in the year ended
+December 31, 2025 as compared to the year ended December 31, 2024, primarily due the changes in energy
+generation and storage revenue and cost of energy generation and storage revenue, as discussed above.
+Research and Development Expense
+Year Ended December 31, 2025 vs. 2024 Change 2024 vs. 2023 Change
+(Dollars in millions) 2025 2024 2023 $ % $ %
+Research and development $ 6,411 $ 4,540 $ 3,969 $ 1,871 41 % $ 571 14 %
+As a percentage of revenues 7 % 5 % 4 %
+Research and development (“R&D”) expense consists primarily of personnel costs for our teams in
+engineering and research, facilities costs such as data center depreciation, prototyping expense, and professional and
+contract services.
+39
+R&D expense increased $1.87 billion, or 41%, in the year ended December 31, 2025 as compared to the year
+ended December 31, 2024, primarily due to increases in costs related to AI and other programs as we continue to
+expand our product roadmap and technologies and an increase in stock-based compensation of $500 million. R&D
+expense as a percentage of revenue increased from 5% to 7% in the year ended December 31, 2025 as compared to
+the year ended December 31, 2024, primarily due to higher R&D expense and a decrease in total revenue as
+compared to the prior year.
+Selling, General and Administrative Expense
+Year Ended December 31, 2025 vs. 2024 Change 2024 vs. 2023 Change
+(Dollars in millions) 2025 2024 2023 $ % $ %
+Selling, general and administrative $ 5,834 $ 5,150 $ 4,800 $ 684 13 % $ 350 7 %
+As a percentage of revenues 6 % 5 % 5 %
+Selling, general and administrative (“SG&A”) expense generally consist of personnel and facilities costs
+related to our stores, marketing, sales, executive, finance, human resources, information technology and legal
+organizations, as well as fees for professional and contract services, litigation settlements, bank charges and
+marketing fees.
+SG&A expenses increased $684 million, or 13%, in the year ended December 31, 2025 as compared to the
+year ended December 31, 2024 driven by a $354 million increase in operating expenses including legal charges, a
+$256 million increase in employee and labor costs, including professional services, a $235 million increase in stock-
+based compensation, partially offset by an $83 million decrease in marketing expenses and a $78 million decrease in
+facilities related expenses.
+Restructuring and Other
+Year Ended December 31, 2025 vs. 2024 Change 2024 vs. 2023 Change
+(Dollars in millions) 2025 2024 2023 $ % $ %
+Restructuring and other $ 494 $ 684 $ — $ (190) (28)% $ 684 Not meaningful
+In the second quarter of 2024, we initiated and substantially completed certain restructuring actions to reduce
+costs and improve efficiency. As a result, we recognized $583 million of employee termination expenses in
+Restructuring and other in our consolidated statement of operations.
+In the third quarter of 2025, we initiated certain actions in order to reduce costs and improve efficiency
+through convergence of AI chip design efforts. As a result, we recognized $390 million of expenses within our
+automotive segment in the second half of 2025, related to charges for supercomputer assets, contract terminations
+and employee terminations.
+Interest Income
+Year Ended December 31, 2025 vs. 2024 Change 2024 vs. 2023 Change
+(Dollars in millions) 2025 2024 2023 $ % $ %
+Interest income $ 1,680 $ 1,569 $ 1,066 $ 111 7 % $ 503 47 %
+Interest income increased $111 million, or 7%, in the year ended December 31, 2025 as compared to the year
+ended December 31, 2024, primarily due to higher interest earned on our cash and cash equivalents and short-term
+investments due to an increase in our average portfolio balance, partially offset by a lower average interest rate.
+Other Income (Expense), Net
+Year Ended December 31, 2025 vs. 2024 Change 2024 vs. 2023 Change
+(Dollars in millions) 2025 2024 2023 $ % $ %
+Other (expense) income, net $ (419) $ 695 $ 172 $ (1,114) Not meaningful $ 523 304%
+Other (expense) income, net, consists of foreign exchange gains and losses related to our foreign currency-
+denominated monetary assets and liabilities and fair value remeasurements of our digital assets following the
+adoption of ASU 2023-08 effective January 1, 2024. See Note 2, Summary of Significant Accounting Policies, to the
+consolidated financial statements included elsewhere in this Annual Report on Form 10-K for further details.
+40
+Other (expense) income, net, changed unfavorably by $1.11 billion in the year ended December 31, 2025 as
+compared to the year ended December 31, 2024 primarily due to mark-to-market on our bitcoin digital assets and
+fluctuations in foreign currency exchange rates on our intercompany balances. As our intercompany balances are
+significant in nature and we do not typically hedge foreign currency risk, we can experience significant fluctuations
+in foreign currency exchange rate gains and losses from period to period.
+Provision for (Benefit from) Income Taxes
+Year Ended December 31, 2025 vs. 2024 Change 2024 vs. 2023 Change
+(Dollars in millions) 2025 2024 2023 $ % $ %
+Provision for (benefit from)
+income taxes $ 1,423 $ 1,837 $ (5,001) $ (414) (23)% $ 6,838 Not meaningful
+Effective tax rate 27 % 20 % (50)%
+Our provision for (benefit from) income taxes decreased by $414 million in the year ended December 31,
+2025 as compared to the year ended December 31, 2024, primarily due to a reduction in income before income taxes.
+Our effective tax rate increased from 20% to 27% in the year ended December 31, 2025 as compared to the year
+ended December 31, 2024, primarily due to changes in the mix of our jurisdictional earnings, a decrease in foreign
+income deductions resulting from lower taxable income attributable to the OBBBA and the remeasurement of our
+deferred tax assets related to net controlled foreign corporation tested income (“NCTI”) under the OBBBA.
+See Note 12, Income Taxes, to the consolidated financial statements included elsewhere in this Annual Report
+on Form 10-K for further details.
+Liquidity and Capital Resources
+As discussed in Part II, Item 9B, Other Information—xAI Investment of this Annual Report on Form 10-K,
+the Company entered into an agreement in January 2026 to make a minority equity investment. 
+We generally expect to continue to generate net positive operating cash flow. The cash we generate from our
+core operations enables us to fund ongoing operations and production, our research and development projects for
+new products and technologies including our proprietary battery cells, additional manufacturing ramps at existing
+manufacturing facilities, the construction of future factories, and the continued expansion of our retail and service
+locations, body shops, Mobile Service fleet, Supercharger, energy product installation capabilities and autonomy and
+other artificial intelligence enabled products.
+In addition, because a large portion of our future expenditures will be to fund our growth, we expect that if
+needed we will be able to adjust our capital and operating expenditures by operating segment. For example, if our
+near-term manufacturing operations decrease in scale or ramp more slowly than expected, including due to global
+
+=== EXCERPT 3: income statement, interest expense (lines 2380,2430) ===
+Redeemable noncontrolling interests in subsidiaries 58 63
+Equity
+Stockholders’ equity
+Preferred stock; $0.001 par value; 100 shares authorized; no shares issued and outstanding — —
+Common stock; $0.001 par value; 6,000 shares authorized; 3,751 and 3,216 shares issued
+and outstanding as of December 31, 2025 and 2024, respectively 3 3
+Additional paid-in capital 42,770 38,371
+Accumulated other comprehensive income (loss) 361 (670)
+Retained earnings 39,003 35,209
+Total stockholders’ equity 82,137 72,913
+Noncontrolling interests in subsidiaries 670 704
+Total liabilities and equity $ 137,806 $ 122,070
+The accompanying notes are an integral part of these consolidated financial statements.
+49
+Tesla, Inc.
+Consolidated Statements of Operations
+(in millions, except per share data)
+Year Ended December 31,
+2025 2024 2023
+Revenues
+Automotive sales $ 65,821 $ 72,480 $ 78,509
+Automotive regulatory credits 1,993 2,763 1,790
+Automotive leasing 1,712 1,827 2,120
+Total automotive revenues 69,526 77,070 82,419
+Energy generation and storage 12,771 10,086 6,035
+Services and other 12,530 10,534 8,319
+Total revenues 94,827 97,690 96,773
+Cost of revenues
+Automotive sales 56,267 61,870 65,121
+Automotive leasing 898 1,003 1,268
+Total automotive cost of revenues 57,165 62,873 66,389
+Energy generation and storage 8,969 7,446 4,894
+Services and other 11,599 9,921 7,830
+Total cost of revenues 77,733 80,240 79,113
+Gross profit 17,094 17,450 17,660
+Operating expenses
+Research and development 6,411 4,540 3,969
+Selling, general and administrative 5,834 5,150 4,800
+Restructuring and other 494 684 —
+Total operating expenses 12,739 10,374 8,769
+Income from operations 4,355 7,076 8,891
+Interest income 1,680 1,569 1,066
+Interest expense (338) (350) (156)
+Other (expense) income, net (419) 695 172
+Income before income taxes 5,278 8,990 9,973
+Provision for (benefit from) income taxes 1,423 1,837 (5,001)
+Net income 3,855 7,153 14,974
+Net income (loss) attributable to noncontrolling interests and redeemable
+noncontrolling interests in subsidiaries 61 62 (23)
+Net income attributable to common stockholders $ 3,794 $ 7,091 $ 14,997
+Net income per share of common stock attributable to common
+
+=== EXCERPT 4: revenue by category (lines 2650,2700) ===
+generation systems and leases under our direct vehicle leasing programs. The typical condition for a controlling
+financial interest ownership is holding a majority of the voting interests of an entity; however, a controlling financial
+interest may also exist in entities, such as VIEs, through arrangements that do not involve controlling voting
+interests. ASC 810 requires a variable interest holder to consolidate a VIE if that party has the power to direct the
+activities of the VIE that most significantly impact the VIE’s economic performance and the obligation to absorb
+losses of the VIE that could potentially be significant to the VIE or the right to receive benefits from the VIE that
+could potentially be significant to the VIE. We do not consolidate a VIE in which we have a majority ownership
+interest when we are not considered the primary beneficiary. We have determined that we are the primary beneficiary
+of all the VIEs (see Note 14, Variable Interest Entity Arrangements). We evaluate our relationships with all the VIEs
+on an ongoing basis to ensure that we continue to be the primary beneficiary. All intercompany transactions and
+balances have been eliminated upon consolidation.
+Use of Estimates
+The preparation of financial statements in conformity with GAAP requires management to make estimates and
+assumptions that affect the reported amounts of assets, liabilities, revenues, costs and expenses and related
+disclosures in the accompanying notes. The estimates used for, but not limited to, determining significant economic
+incentive for resale value guarantee arrangements, sales return reserves, resale value guarantee liabilities, income
+taxes, the collectability of accounts and finance receivables, fair value and probability assessments of stock-based
+awards, inventory valuation, warranties, fair value of long-lived assets, fair value of financial instruments, fair value
+and residual value of operating lease vehicles and energy generation and storage systems subject to leases could be
+impacted. We have assessed the impact and are not aware of any specific events or circumstances that required an
+update to our estimates and assumptions or materially affected the carrying value of our assets or liabilities as of the
+date of issuance of this Annual Report on Form 10-K. These estimates may change as new events occur and
+additional information is obtained. Actual results could differ materially from these estimates under different
+assumptions or conditions.
+Reclassifications
+Certain prior period balances have been reclassified to conform to the current period presentation in the
+consolidated financial statements and the accompanying notes.
+54
+Revenue Recognition
+Revenue by source
+The following table disaggregates our revenue by major source (in millions):
+Year Ended December 31,
+2025 2024 2023
+Automotive sales $ 65,821 $ 72,480 $ 78,509
+Automotive regulatory credits 1,993 2,763 1,790
+Energy generation and storage sales 12,270 9,564 5,515
+Services and other 12,530 10,534 8,319
+Total revenues from sales and services 92,614 95,341 94,133
+Automotive leasing 1,712 1,827 2,120
+Energy generation and storage leasing 501 522 520
+Total revenues $ 94,827 $ 97,690 $ 96,773
+Automotive Segment
+Automotive Sales
+Automotive sales revenue includes revenues related to cash and financing deliveries of new vehicles, and
+specific other features and services that meet the definition of a performance obligation under ASC 606, Revenue
+from Contracts with Customers (“ASC 606”), including internet connectivity, access to our FSD (Supervised)
+features and their ongoing maintenance, free Supercharging programs and over-the-air software updates. We
+recognize revenue on automotive sales, net of any discounts or financial subsidies, upon delivery to the customer,
+which is when the control of a vehicle transfers. Payments are typically received at the point control transfers or in
+accordance with payment terms customary to the business, except sales we finance for which payments are collected
+over the contractual loan term. We also recognize a sales return reserve based on historical experience plus
+
+=== EXCERPT 5: debt schedule (lines 3550,3650) ===
+Our accrued liabilities and other current liabilities consisted of the following (in millions):
+December 31,
+2025
+December 31,
+2024
+Accrued purchases (1) $ 2,577 $ 2,253
+Accrued warranty reserve, current portion 2,475 1,917
+Payroll and related costs 1,907 1,532
+Taxes payable (2) 1,594 1,367
+Customer deposits 1,311 993
+Operating lease liabilities, current portion 954 807
+Sales return reserve, current portion 529 305
+Other current liabilities 1,932 1,549
+Total $ 13,279 $ 10,723
+(1) Accrued purchases primarily reflects receipts of goods and services for which we had not yet been invoiced. As
+we are invoiced for these goods and services, this balance will reduce and accounts payable will increase.
+(2) Taxes payable primarily includes value added tax, income tax, sales tax, property tax and use tax payables.
+72
+Note 8 – Other Long-Term Liabilities
+Our other long-term liabilities consisted of the following (in millions):
+December 31,
+2025
+December 31,
+2024
+Accrued warranty reserve $ 6,132 $ 4,799
+Operating lease liabilities 5,389 4,603
+Other non-current liabilities 1,339 1,093
+Total other long-term liabilities $ 12,860 $ 10,495
+Note 9 – Debt
+The following is a summary of our debt and finance leases as of December 31, 2025 (in millions):
+Net Carrying Value
+Unpaid
+Principal
+Balance
+Unused
+Committed
+Amount (1)
+Contractual
+Interest Rates
+Contractual
+Maturity DateCurrent Long-Term
+Recourse debt:
+RCF Credit Agreement — — — 5,000 Not applicable January 2028
+Other 1 2 3 — 4.70-5.75% January 2026-January 2031
+Total recourse debt 1 2 3 5,000
+Non-recourse debt:
+Automotive Asset-backed Notes 1,492 1,745 3,249 — 2.47-6.57% October 2026-June 2035
+China Working Capital Facility — 4,288 4,288 1,429 2.01-2.11% March 2026-December 2026 (2)
+Energy Asset-backed Notes 55 337 397 — 5.08-6.25% June 2050
+Cash Equity Debt 21 212 240 — 5.25-5.81% July 2034-January 2035
+Total non-recourse debt 1,568 6,582 8,174 1,429
+Total debt 1,569 6,584 $ 8,177 $ 6,429
+Finance leases 71 152
+Total debt and finance leases $ 1,640 $ 6,736
+The following is a summary of our debt and finance leases as of December 31, 2024 (in millions):
+Net Carrying Value
+Unpaid
+Principal
+Balance
+Unused
+Committed
+Amount (1)
+Contractual
+Interest Rates
+Contractual
+Maturity DateCurrent Long-Term
+Recourse debt:
+RCF Credit Agreement — — — 5,000 Not applicable January 2028
+Other 4 3 7 — 4.70-5.75% March 2025-January 2031
+Total recourse debt 4 3 7 5,000
+Non-recourse debt:
+Automotive Asset-backed Notes 2,255 2,059 4,329 — 3.45-6.57% September 2025-June 2035
+China Working Capital Facility — 2,740 2,740 — 1.92 % April 2025 (2)
+Energy Asset-backed Notes 54 434 493 — 4.80-6.25% December 2025-June 2050
+Cash Equity Debt 30 299 338 — 5.25-5.81% July 2033-January 2035
+Total non-recourse debt 2,339 5,532 7,900 —
+Total debt 2,343 5,535 $ 7,907 $ 5,000
+Finance leases 113 222
+Total debt and finance leases $ 2,456 $ 5,757
+(1) Refer to the respective sections below for restrictions on draw-down or use for general corporate purposes with
+respect to any available committed funds under our debt facilities, as applicable.
+(2) As we have the intent and ability to refinance the loan on a long-term basis, we recorded it in Debt and finance
+leases, net of current portion in the consolidated balance sheets.
+Recourse debt refers to debt that is recourse to our general assets. Non-recourse debt refers to debt that is
+recourse to only assets of our subsidiaries. The differences between the unpaid principal balances and the net
+carrying values are due to debt discounts or deferred issuance costs. As of December 31, 2025, we were in material
+compliance with all financial debt covenants.
+73
+Credit Agreement
+In January 2023, we entered into a 5-year senior unsecured revolving credit facility (the “RCF Credit
+Agreement”) with a syndicate of banks. The RCF Credit Agreement contains two optional one-year extensions and
+has a total commitment of up to $5.00 billion, which could be increased up to $7.00 billion under certain
+circumstances. The underlying borrowings may be used for general corporate purposes. Borrowed funds accrue
+interest at a variable rate equal to: (i) for dollar-denominated loans, at our election, (a) Term SOFR (the forward-
+looking secured overnight financing rate) plus 0.10%, or (b) an alternate base rate; (ii) for loans denominated in
+pounds sterling, SONIA (the sterling overnight index average reference rate); or (iii) for loans denominated in euros,
+an adjusted EURIBOR (euro interbank offered rate); in each case, plus an applicable margin. The applicable margin
+will be based on the rating assigned to our senior, unsecured long-term indebtedness (the “Credit Rating”) from time
+to time. The fee for undrawn amounts is variable based on the Credit Rating and is currently 0.125% per annum.
+There are no restrictions on draw-down or use for general corporate purposes with respect to any available
+committed funds under our RCF Credit Agreement, except certain specified conditions prior to draw-down.

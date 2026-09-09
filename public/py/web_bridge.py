@@ -275,7 +275,7 @@ def _annualise_quarterly(data: Any) -> None:
     flows (revenue, net income, FCF, dividend) are multiplied by 4 and the
     quarter-over-quarter growth rate is compounded to an annual rate.
     """
-    for field_name in ("revenue", "net_income"):
+    for field_name in ("revenue", "net_income", "interest_expense"):
         value = getattr(data, field_name)
         if value is not None:
             setattr(data, field_name, value * 4.0)
@@ -294,6 +294,7 @@ _OVERRIDABLE_FIELDS = (
     "shares_outstanding", "current_price", "dividend_per_share", "beta",
     "revenue_growth", "operating_margin", "tax_rate",
     "depreciation_amortization", "rd_expense", "capital_expenditures",
+    "interest_expense",
 )
 
 

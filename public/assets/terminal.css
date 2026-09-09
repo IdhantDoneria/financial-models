@@ -386,6 +386,7 @@ input.ibov:focus { outline: none; border-color: var(--amber); }
 #report tr.err td { color: var(--red); }
 #report .stat-ok { color: var(--green); }
 #report .stat-err { color: var(--red); }
+#report .stat-warn { color: var(--amber); }
 
 /* DCF distressed-equity advisory */
 #ogrid tr.advisory td {
