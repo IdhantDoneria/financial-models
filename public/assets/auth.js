@@ -13,6 +13,17 @@
 const LS_ACCOUNTS = "finmodels.accounts";
 const LS_SESSION = "finmodels.session";
 const LS_LAST_EMAIL = "finmodels.lastServerEmail";
+const SS_JUST_SIGNED_UP = "finmodels.justSignedUp";
+
+//: One-shot signal for walkthrough.js, read on the very next boot() and
+//  immediately cleared — set ONLY at the instant a brand-new account is
+//  created (never on a returning sign-in), so the first-run tour auto-
+//  launches exactly once, right after signup. sessionStorage (not
+//  localStorage) because it must survive the finishLogin() navigation to
+//  "./" within this tab, but never replay on a later, unrelated sign-in.
+function markJustSignedUp(uid) {
+  try { sessionStorage.setItem(SS_JUST_SIGNED_UP, uid); } catch { /* private mode — tour just won't auto-launch */ }
+}
 const $ = (s) => document.querySelector(s);
 
 //: Remembered locally (not security-sensitive — an email address, never a
@@ -118,6 +129,7 @@ async function onSignup(e) {
     all[email] = { ...(all[email] || {}), name, salt, hash, iter,
                    provider: "password", created: Date.now() };
     saveAccounts(all);
+    markJustSignedUp(email);
     finishLogin({ uid: email, name, provider: "password" }, true);
   } catch (err) {
     showErr("SIGNUP FAILED: " + err);
@@ -249,6 +261,10 @@ async function onOtpVerify() {
       try { sessionStorage.setItem("finmodels.founderToast", String(out.founder)); } catch { /* ignore */ }
     }
     rememberServerEmail(email);
+    // loginCount is incremented server-side on every successful verify — 1
+    // means this call just created the account (see auth-verify-otp.js),
+    // never true for a returning user re-verifying or re-requesting a code.
+    if (out.user && out.user.loginCount === 1) markJustSignedUp(email);
     finishLogin({ uid: email, name: (out.user && out.user.name) || email,
                   provider: "otp" }, true);
     return;
@@ -393,15 +409,19 @@ async function initGoogle(cfg) {
           const email = (p.email || "").toLowerCase();
           if (!email) return showErr("GOOGLE DID NOT RETURN AN EMAIL ADDRESS");
           const all = accounts();
+          const isNew = !all[email];
           all[email] = { ...(all[email] || {}), name: p.name || email,
                          provider: all[email] && all[email].hash ? "password+google" : "google",
                          created: (all[email] && all[email].created) || Date.now() };
           saveAccounts(all);
+          if (isNew) markJustSignedUp(email);
           finishLogin({ uid: email, name: p.name || email, provider: "google" }, true);
           return;
         }
         // Server verified the Google ID token and issued a real session —
-        // same bearer-token shape the OTP/password paths use.
+        // same bearer-token shape the OTP/password paths use. loginCount
+        // === 1 means this Google sign-in just created the account.
+        if (out.user && out.user.loginCount === 1) markJustSignedUp(out.user.email);
         finishLogin({ uid: out.user.email, name: out.user.name || out.user.email,
                       provider: "google" }, true);
       } catch (err) {

@@ -402,6 +402,11 @@ async function boot() {
     window.TERMINAL_READY = true;   // e2e hook
     selectModel("DCF");   // land new users on valuation first, not derivatives
     $("#cmd").focus();
+    // Isolated on purpose: a bug in the walkthrough must never look like a
+    // failed boot (the app above this point is already fully working).
+    try {
+      if (window.FinmodelsWalkthrough) window.FinmodelsWalkthrough.maybeAutoStart(state.user);
+    } catch (wtErr) { console.error("Walkthrough failed to start:", wtErr); }
   } catch (err) {
     bootLog("BOOT FAILURE: " + err, "err");
     console.error(err);
@@ -1929,7 +1934,8 @@ function renderGuide(body) {
     ["7", "<b>Keep your work.</b> Every company you run through the IB desk is saved to HISTORY here — reopen or remove any past analysis. Your market choice and history persist on this device."],
     ["8", "<b>Your account.</b> Sign in with email, Google, or explore as a guest (bottom-right shows who's signed in; SIGN OUT is at the bottom of this menu). History is kept per account, and credentials never leave this device — passwords are hashed locally, there's no server database."],
   ];
-  body.innerHTML = `<h3>HOW TO USE THIS TERMINAL</h3>` +
+  body.innerHTML = `<button id="wt-guide-start" type="button">▶ START WALKTHROUGH</button>` +
+    `<h3>HOW TO USE THIS TERMINAL</h3>` +
     steps.map(([n, t]) => `<div class="guide-step"><div class="num">${n}</div><div class="txt">${t}</div></div>`).join("") +
     `<h3>WHICH MODEL SHOULD I USE?</h3>
      <div class="guide-step"><div class="txt" style="color:var(--text-dim)">
@@ -1943,6 +1949,11 @@ function renderGuide(body) {
        To reach the founder directly, write to <a href="mailto:doneriaidhant@gmail.com" style="color:var(--cyan)">doneriaidhant@gmail.com</a>.
        All enquiries are reviewed personally and answered within <b style="color:var(--text)">48 business hours</b>.
      </div></div>`;
+  const wtBtn = $("#wt-guide-start");
+  if (wtBtn) wtBtn.onclick = () => {
+    closeMenu();
+    if (window.FinmodelsWalkthrough) window.FinmodelsWalkthrough.start();
+  };
 }
 
 function renderBriefs(body) {
