@@ -717,3 +717,64 @@ input.ibov:focus { outline: none; border-color: var(--amber); }
   #report { padding: 12px 14px; }
   #scen { padding: 12px 14px 20px; }
 }
+
+/* ------------------------------------------------------------ walkthrough -- *
+ * First-run product tour: a spotlight cutout (4 dimmer bars around the real
+ * target element, so clicks on the highlighted element itself still reach
+ * it) plus an amber ring and a small instruction card. z-index sits above
+ * the hamburger menu (200) since a step needs the menu open behind it. */
+/* pointer-events:none on the container is load-bearing: without it this
+   full-viewport box intercepts clicks even over the "hole" left between the
+   four mask bars (an unpainted region of a positioned element still counts
+   for hit-testing) — the .wt-mask bars and .wt-card opt back in below,
+   leaving the spotlighted target itself genuinely clickable through.
+   z-index 150 is deliberately BELOW the app's own popovers (#menu-backdrop
+   190, #menu / #country-drop 200): several tour steps spotlight a button
+   whose whole job is to open one of those — a tour that draws on top of the
+   real popover it just told the user to open makes that popover's own
+   contents unclickable (found by clicking through the country-selector
+   step during adversarial testing). Sitting underneath means an opened
+   popover is fully visible and interactive; the tour itself is simply
+   obscured until the user closes it, which is the correct trade-off. */
+#wt-root { position: fixed; inset: 0; z-index: 150; pointer-events: none; }
+.wt-mask {
+  position: fixed; background: rgba(0, 0, 0, 0.72);
+  display: none; pointer-events: auto;
+}
+.wt-mask-full { display: block; inset: 0; }
+.wt-ring {
+  position: fixed; z-index: 999; display: none; pointer-events: none;
+  border: 2px solid var(--amber); border-radius: 6px;
+  box-shadow: 0 0 0 3px rgba(255, 176, 0, 0.25), 0 0 24px rgba(255, 176, 0, 0.35);
+}
+.wt-card {
+  position: fixed; z-index: 1000; width: 360px; max-width: calc(100vw - 24px);
+  background: var(--panel); border: 1px solid var(--amber-dim);
+  border-radius: 8px; padding: 16px 18px; pointer-events: auto;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.55);
+}
+.wt-step { font-size: 10px; letter-spacing: 0.1em; color: var(--text-dim); margin-bottom: 6px; }
+.wt-title { font-size: 14px; color: var(--amber); margin-bottom: 8px; line-height: 1.35; }
+.wt-body { font-size: 12.5px; color: var(--text); line-height: 1.6; margin-bottom: 14px; }
+.wt-actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.wt-nav { display: flex; gap: 8px; }
+.wt-actions button {
+  font-family: var(--mono); font-size: 11px; letter-spacing: 0.06em; cursor: pointer;
+  border-radius: 4px; padding: 8px 14px; border: 1px solid var(--border);
+  background: var(--panel-alt); color: var(--text-dim);
+}
+.wt-skip:hover { color: var(--red); border-color: var(--red); }
+.wt-back:hover { color: var(--text); border-color: var(--text-dim); }
+.wt-next { background: var(--amber); color: #000; border-color: var(--amber); font-weight: 600; }
+.wt-next:hover { filter: brightness(1.08); }
+
+#wt-guide-start {
+  display: block; width: 100%; margin: 10px 0 18px; padding: 10px 14px;
+  font-family: var(--mono); font-size: 12px; letter-spacing: 0.05em; cursor: pointer;
+  background: var(--amber); color: #000; border: none; border-radius: 5px; font-weight: 600;
+}
+#wt-guide-start:hover { filter: brightness(1.08); }
+
+@media (max-width: 480px) {
+  .wt-card { padding: 14px; }
+}
