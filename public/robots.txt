@@ -1,49 +1,101 @@
 # FINMODELS TERMINAL — crawl policy
 #
-# The API is never a crawl target, and AI/data-scraping bots are disallowed
-# in full. Note: robots.txt is advisory — only well-behaved crawlers honour
-# it. Server-side data and the app's protections do not rely on it.
+# The public pages are open to search and to AI answer engines; we would
+# rather be cited correctly than not cited at all. The serverless API and the
+# operator console are never crawl targets. Note: robots.txt is advisory —
+# only well-behaved crawlers honour it. Server-side data and the app's
+# protections do not rely on it.
 
-# Block the serverless API from all crawlers
+# Default policy — crawl the site, skip the API and the operator console
 User-agent: *
+Allow: /
 Disallow: /api/
+Disallow: /admin
+Disallow: /admin.html
 
-# Disallow known AI / dataset-scraping crawlers entirely
+# AI search / answer-engine crawlers, welcomed by name under the same terms
 User-agent: GPTBot
-Disallow: /
+Allow: /
+Disallow: /api/
+Disallow: /admin
+Disallow: /admin.html
 
 User-agent: OAI-SearchBot
-Disallow: /
+Allow: /
+Disallow: /api/
+Disallow: /admin
+Disallow: /admin.html
 
 User-agent: ChatGPT-User
-Disallow: /
-
-User-agent: CCBot
-Disallow: /
+Allow: /
+Disallow: /api/
+Disallow: /admin
+Disallow: /admin.html
 
 User-agent: ClaudeBot
-Disallow: /
+Allow: /
+Disallow: /api/
+Disallow: /admin
+Disallow: /admin.html
 
 User-agent: Claude-Web
-Disallow: /
+Allow: /
+Disallow: /api/
+Disallow: /admin
+Disallow: /admin.html
 
 User-agent: anthropic-ai
-Disallow: /
-
-User-agent: Google-Extended
-Disallow: /
+Allow: /
+Disallow: /api/
+Disallow: /admin
+Disallow: /admin.html
 
 User-agent: PerplexityBot
-Disallow: /
+Allow: /
+Disallow: /api/
+Disallow: /admin
+Disallow: /admin.html
 
-User-agent: Bytespider
-Disallow: /
+User-agent: Google-Extended
+Allow: /
+Disallow: /api/
+Disallow: /admin
+Disallow: /admin.html
+
+User-agent: Applebot-Extended
+Allow: /
+Disallow: /api/
+Disallow: /admin
+Disallow: /admin.html
+
+User-agent: Bingbot
+Allow: /
+Disallow: /api/
+Disallow: /admin
+Disallow: /admin.html
 
 User-agent: Amazonbot
-Disallow: /
+Allow: /
+Disallow: /api/
+Disallow: /admin
+Disallow: /admin.html
 
 User-agent: Meta-ExternalAgent
-Disallow: /
+Allow: /
+Disallow: /api/
+Disallow: /admin
+Disallow: /admin.html
 
 User-agent: cohere-ai
-Disallow: /
+Allow: /
+Disallow: /api/
+Disallow: /admin
+Disallow: /admin.html
+
+User-agent: CCBot
+Allow: /
+Disallow: /api/
+Disallow: /admin
+Disallow: /admin.html
+
+Sitemap: https://financial-models-six.vercel.app/sitemap.xml

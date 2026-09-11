@@ -6,18 +6,145 @@
   <meta name="theme-color" content="#050608">
   <title>FINMODELS TERMINAL — 12 quant models, live in your browser</title>
   <meta name="description" content="Bloomberg-terminal-style interface running twelve canonical quantitative finance models (Black-Scholes, Heston, DCF, MPT, VaR, Fama-French, plus a hidden-debt normalizer and reverse-DCF solver…) live in the browser via Python/WebAssembly.">
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' fill='%23050608'/><text y='72' x='50' font-size='58' text-anchor='middle' fill='%23ffb000' font-family='monospace'>ƒ</text></svg>">
+  <link rel="canonical" href="https://financial-models-six.vercel.app/">
+
+  <!-- Social / link-preview cards. These matter more here than on a normal
+       page: the terminal's own markup is an empty app shell, so an unfurl in
+       Slack / iMessage / X / LinkedIn is built ENTIRELY from these tags and
+       og.png — those scrapers never execute the JS that fills the page. -->
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="FINMODELS TERMINAL">
+  <meta property="og:title" content="FINMODELS TERMINAL — 12 quant models, live in your browser">
+  <meta property="og:description" content="Twelve canonical quantitative finance models — DCF, Black-Scholes, Heston, MPT, VaR, Fama-French and more — running on real CPython compiled to WebAssembly, entirely inside your browser. Upload a 10-K to the IB Desk for an automated company analysis.">
+  <meta property="og:url" content="https://financial-models-six.vercel.app/">
+  <meta property="og:image" content="https://financial-models-six.vercel.app/og.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="FINMODELS TERMINAL — a dark amber-on-black terminal card reading 12 quant models, CPython to WebAssembly, in your browser.">
+  <meta property="og:locale" content="en_US">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="FINMODELS TERMINAL — 12 quant models, live in your browser">
+  <meta name="twitter:description" content="Twelve canonical quantitative finance models running on CPython/WebAssembly, entirely in your browser. No install, no setup.">
+  <meta name="twitter:image" content="https://financial-models-six.vercel.app/og.png">
+
+  <link rel="icon" href="/favicon.ico" sizes="32x32">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/katex.min.css">
   <link rel="stylesheet" href="assets/terminal.css">
+
+  <!-- Structured data. Two graphs, both describing things a human can also
+       see: the app itself, and the site it belongs to. Deliberately NO
+       aggregateRating and no offers block — we have no review corpus and the
+       plan price moves, and fabricated rich-result markup is the fastest way
+       to earn a manual action from Google. -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "FINMODELS TERMINAL",
+    "url": "https://financial-models-six.vercel.app/",
+    "applicationCategory": "FinanceApplication",
+    "operatingSystem": "Any modern web browser",
+    "browserRequirements": "Requires JavaScript and WebAssembly",
+    "description": "A terminal-style interface running twelve canonical quantitative finance models on real CPython compiled to WebAssembly, entirely client-side in the browser.",
+    "image": "https://financial-models-six.vercel.app/og.png",
+    "featureList": [
+      "Discounted Cash Flow (DCF)",
+      "Gordon Growth / Dividend Discount Model",
+      "Modern Portfolio Theory (Markowitz efficient frontier)",
+      "Value at Risk and Conditional VaR",
+      "Capital Asset Pricing Model (CAPM)",
+      "Fama-French 3-Factor model",
+      "Black-Scholes-Merton option pricing and Greeks",
+      "Binomial tree (Cox-Ross-Rubinstein) option pricing",
+      "Monte Carlo option pricing under geometric Brownian motion",
+      "Heston stochastic volatility model",
+      "Ind AS 116 hidden-debt normalizer",
+      "Reverse DCF growth solver",
+      "IB Desk: automated 10-K / 10-Q PDF analysis with PDF, Word and Excel export",
+      "Risk-free rates and currencies anchored to 15 equity markets"
+    ]
+  }
+  </script>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "WebSite",
+    "name": "FINMODELS TERMINAL",
+    "url": "https://financial-models-six.vercel.app/",
+    "description": "Twelve canonical quantitative finance models, running in the browser via CPython compiled to WebAssembly."
+  }
+  </script>
+
+  <!-- The no-JS fallback below is fixed-position and first in the body so it
+       sits above the boot screen without needing any script to reveal it.
+       With JS enabled a <noscript> renders nothing at all, so this cannot
+       interfere with the terminal. -->
+  <style>
+    #nojs {
+      position: fixed; inset: 0; z-index: 9999; overflow: auto;
+      background: var(--bg, #050608); color: var(--text, #c9d4e0);
+      font: 13px/1.75 "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+      padding: 40px 22px; display: flex; justify-content: center;
+    }
+    #nojs .in { width: min(720px, 100%); }
+    #nojs h2 { color: var(--amber, #ffb000); font-size: 15px; letter-spacing: .18em; font-weight: 500; margin: 26px 0 8px; }
+    #nojs p { margin: 0 0 12px; }
+    #nojs ul { margin: 0 0 12px 18px; }
+    #nojs li { margin-bottom: 4px; }
+    #nojs a { color: var(--cyan, #53c9e0); }
+    #nojs .warn { border: 1px solid var(--amber-dim, #8a6200); color: var(--amber, #ffb000); padding: 10px 13px; margin-bottom: 22px; }
+  </style>
 </head>
 <body>
 
+  <!-- Non-JS fallback: the terminal is a client-rendered app shell, so
+       without this a reader with JS off (or any crawler that doesn't run it)
+       sees a blank page and no description of what this site actually is. -->
+  <noscript>
+    <div id="nojs"><div class="in">
+      <div class="warn">JAVASCRIPT REQUIRED — the terminal runs CPython in WebAssembly in your browser, so it cannot start with scripting disabled.</div>
+      <!-- Not an <h1>: the page's single h1 is the boot-screen brand below,
+           which is in the DOM in both the JS and no-JS states. Two h1s would
+           be a regression, so this heading is deliberately an h2. -->
+      <h2 style="margin-top:0">FINMODELS TERMINAL</h2>
+      <p>Twelve canonical quantitative-finance models, running on real CPython compiled to
+        WebAssembly — entirely inside your browser. Nothing is installed, and the model runs
+        never leave your machine.</p>
+      <h2>THE TWELVE MODELS</h2>
+      <ul>
+        <li><b>Discounted Cash Flow</b> — intrinsic enterprise and equity value from projected free cash flows.</li>
+        <li><b>Gordon Growth (DDM)</b> — dividend-discount valuation of a constantly growing perpetuity.</li>
+        <li><b>Modern Portfolio Theory</b> — Markowitz efficient frontier, min-variance and max-Sharpe portfolios.</li>
+        <li><b>Value at Risk / CVaR</b> — historical, parametric and Monte Carlo VaR and expected shortfall.</li>
+        <li><b>CAPM</b> — expected return from systematic risk, with beta estimated by OLS.</li>
+        <li><b>Fama-French 3-Factor</b> — market, size and value loadings from Ken French's data library.</li>
+        <li><b>Black-Scholes-Merton</b> — European option pricing and the full set of Greeks.</li>
+        <li><b>Binomial Tree (CRR)</b> — European and American options on a recombining lattice.</li>
+        <li><b>Monte Carlo (GBM)</b> — simulation pricing with antithetic variates and convergence diagnostics.</li>
+        <li><b>Heston Stochastic Volatility</b> — semi-analytical pricing that reproduces the volatility smile.</li>
+        <li><b>Ind AS 116 Hidden-Debt Normalizer</b> — capitalises operating leases and contingent liabilities onto the balance sheet. Requires a paid plan.</li>
+        <li><b>Reverse DCF</b> — solves for the free-cash-flow growth rate the market price already implies. Requires a paid plan.</li>
+      </ul>
+      <h2>IB DESK</h2>
+      <p>Upload a 10-K or 10-Q and the terminal extracts the financials, fills the gaps with
+        documented assumptions, runs the models, and exports the result as PDF, Word or Excel.</p>
+      <h2>ELSEWHERE</h2>
+      <ul>
+        <li><a href="/about">About the models</a> — full technical detail, formulas and the self-assessed scorecard.</li>
+        <li><a href="/login">Sign in</a> — email, Google, or guest access.</li>
+      </ul>
+    </div></div>
+  </noscript>
+
   <!-- boot screen -->
   <div id="boot">
-    <div class="brand">FINMODELS TERMINAL<small>12 QUANT MODELS · CPYTHON → WEBASSEMBLY · ZERO SERVER</small></div>
+    <h1 class="brand">FINMODELS TERMINAL<small>12 QUANT MODELS · CPYTHON → WEBASSEMBLY · ZERO SERVER</small></h1>
     <div id="bootlog"></div>
     <div id="bootbar"><div></div></div>
     <div class="hint">FIRST BOOT DOWNLOADS THE SCIENTIFIC PYTHON STACK (~15 S) — CACHED AFTER</div>
