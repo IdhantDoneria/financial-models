@@ -936,6 +936,20 @@ function fmtValue(key, v) {
       return v.map((x) => +x.toFixed(3)).join("  ");
     return `SERIES · ${v.length} PTS`;
   }
+  // A plain dict of scalars (e.g. FF3's per-factor t_stats: {alpha: 1.2,
+  // beta_mkt: 2.5, ...}) — summarize inline instead of falling through to
+  // String(v)'s "[object Object]". Large/nested objects fall back to a
+  // placeholder rather than dumping an unreadable wall of text.
+  if (typeof v === "object") {
+    const entries = Object.entries(v);
+    if (entries.length > 0 && entries.length <= 8
+        && entries.every(([, x]) => typeof x === "number")) {
+      return entries
+        .map(([k2, x]) => `${k2.replace(/_/g, " ").toUpperCase()} ${+x.toFixed(3)}`)
+        .join("  ");
+    }
+    return `OBJECT · ${entries.length} KEYS`;
+  }
   if (typeof v !== "number") return String(v);
   if (PCT_KEY.test(key) && Math.abs(v) <= 1.5 && !/sharpe/i.test(key))
     return (v * 100).toFixed(2) + "%";
