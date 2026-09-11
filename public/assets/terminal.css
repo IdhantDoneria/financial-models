@@ -36,8 +36,13 @@ html, body {
   align-items: center; justify-content: center;
   gap: 24px; padding: 24px;
 }
+/* font-weight is pinned deliberately: this element is an <h1> (the page's
+   only one — the terminal is an app shell with no other heading for a
+   crawler to anchor on), and the UA's default bold for h1 would be
+   synthesized here, because IBM Plex Mono is loaded at 400/500 only. 400
+   reproduces exactly how this read when it was a <div>. */
 #boot .brand {
-  color: var(--amber); font-size: 26px; letter-spacing: 0.35em;
+  color: var(--amber); font-size: 26px; font-weight: 400; letter-spacing: 0.35em;
   text-shadow: 0 0 24px rgba(255, 176, 0, 0.35);
 }
 #boot .brand small { display: block; color: var(--text-dim); font-size: 11px; letter-spacing: 0.2em; margin-top: 8px; }

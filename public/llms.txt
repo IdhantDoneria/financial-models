@@ -1,0 +1,40 @@
+# FINMODELS TERMINAL
+
+> A browser-based quantitative-finance terminal that runs twelve canonical financial models in real CPython compiled to WebAssembly, plus an IB Desk that reads a 10-K or 10-Q PDF and builds the analysis for you.
+
+FINMODELS TERMINAL is a Bloomberg-terminal-style web app. You type a model mnemonic (BSM, DCF, HES, and so on), set the inputs, and the model runs as actual Python — NumPy, SciPy, pandas and Plotly executing inside the browser tab via Pyodide, not on a server. Every model exposes the same interface (`calculate()`, `explain()`, `visualize()`), so each one returns numbers, a written explanation and an interactive chart. Fifteen equity markets are supported; selecting a market repoints the risk-free rate, equity risk premium and currency labels across every model.
+
+## Main pages
+
+- [Terminal](https://financial-models-six.vercel.app/): The app itself — model rail, live input panel, output grid, charts, scenario table and the IB Desk PDF analyzer.
+- [About](https://financial-models-six.vercel.app/about): Product and technical overview — the twelve models with their formulas, the three scoring metrics, and the self-assessed scorecard.
+- [Sign in](https://financial-models-six.vercel.app/login): Email or Google sign-in; account plan and upload quota live here.
+
+## The twelve models
+
+- Discounted Cash Flow (DCF): Intrinsic enterprise and equity value from projected free cash flows plus a Gordon terminal value.
+- Gordon Growth / Dividend Discount Model (DDM): Values a share as a constantly growing dividend perpetuity.
+- Modern Portfolio Theory (MPT): Markowitz efficient frontier, global-minimum-variance and maximum-Sharpe tangency portfolios.
+- Value at Risk / CVaR: Historical, parametric and Monte Carlo VaR with expected shortfall.
+- CAPM: Expected return from systematic risk, with beta estimated by ordinary least squares.
+- Fama-French 3-Factor: Market, size and value loadings regressed against Ken French's factor data.
+- Black-Scholes-Merton (BSM): Closed-form European option prices and the full set of Greeks.
+- Binomial Tree (CRR): European and American options on a recombining Cox-Ross-Rubinstein lattice that converges to Black-Scholes.
+- Monte Carlo (GBM): Geometric-Brownian-motion simulation pricing with antithetic variates and convergence diagnostics.
+- Heston Stochastic Volatility: Semi-analytical pricing via the characteristic function, reproducing the volatility smile.
+- Ind AS 116 Hidden-Debt Normalizer (paid plan): Capitalises operating leases, reverse-factoring exposure and probability-weighted contingent liabilities onto the balance sheet, then recomputes owner earnings.
+- Reverse DCF (paid plan): Inverts the DCF identity — takes the market price and solves numerically for the free-cash-flow growth rate the price already implies.
+
+## Capabilities
+
+- IB Desk PDF analysis: Upload a 10-K or 10-Q, and the desk extracts the financials, auto-fills the model assumptions (or lets you set them by hand), runs the models you select, and exports the result as PDF, .docx (opens in Google Docs or Word) or Excel.
+- Fifteen equity markets: United States, China, Japan, India, Hong Kong, France, United Kingdom, Canada, Saudi Arabia, Germany, Switzerland, Taiwan, Australia, South Korea and the Netherlands. Choosing a market re-anchors the risk-free rate, equity risk premium and currency labels; the US risk-free rate can refresh live from the Treasury FiscalData API.
+- Live market tape: A scrolling quote strip across the top of the terminal, timestamped with its last refresh.
+- In-browser Python (CPython 3.13 on WebAssembly): The model code runs in your own browser tab. Nothing is uploaded to a server for the model runs, and the uploaded filing is parsed client-side too.
+- Interactive analytics: Plotly charts and KaTeX-rendered formulas per model, plus a scenario panel and a written explanation of each result.
+
+## Notes
+
+- The 10/10 model scores shown across the site are SELF-assessed. They are produced by the project's own automated scorer (`src/scorer.py`) from real properties of the code. They are not a third-party audit, an independent certification, or any external validation.
+- Two models — the Ind AS 116 Hidden-Debt Normalizer and the Reverse DCF solver — require a paid Analyst Pro plan. The other ten are available without one.
+- The terminal is a modelling and teaching tool. It is not investment advice, and its inputs are assumptions you choose, not live quoted fundamentals.

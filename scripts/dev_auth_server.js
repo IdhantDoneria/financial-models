@@ -38,6 +38,8 @@ const MIME = {
   ".html": "text/html", ".js": "text/javascript", ".css": "text/css",
   ".json": "application/json", ".csv": "text/csv", ".png": "image/png",
   ".svg": "image/svg+xml", ".py": "text/x-python", ".md": "text/markdown",
+  ".txt": "text/plain; charset=utf-8", ".xml": "application/xml; charset=utf-8",
+  ".ico": "image/x-icon", ".webmanifest": "application/manifest+json",
 };
 
 http.createServer(async (req, res) => {
@@ -60,6 +62,15 @@ http.createServer(async (req, res) => {
   if (!path.extname(p) && fs.existsSync(path.join(ROOT, p + ".html"))) p += ".html"; // cleanUrls
   const file = path.join(ROOT, path.normalize(p).replace(/^([/\\])+/, ""));
   if (!file.startsWith(ROOT) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
+    // Vercel's static hosting serves public/404.html automatically for any
+    // unmatched path, so do the same here — otherwise the branded 404 would
+    // only ever be seen in production and could rot untested.
+    const notFound = path.join(ROOT, "404.html");
+    if (fs.existsSync(notFound)) {
+      res.writeHead(404, { "content-type": "text/html; charset=utf-8" });
+      fs.createReadStream(notFound).pipe(res);
+      return;
+    }
     res.writeHead(404).end("not found");
     return;
   }

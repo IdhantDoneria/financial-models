@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#050608">
+  <title>404 — NO SUCH TERMINAL PAGE | FINMODELS</title>
+  <meta name="description" content="404 — this URL does not exist on the FINMODELS terminal. Jump back to the terminal, the model documentation, or the sign-in page.">
+  <meta name="robots" content="noindex, follow">
+  <link rel="icon" href="/favicon.ico" sizes="32x32">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <!-- Styles are inlined, not linked: a 404 is served at arbitrary path depth
+       (/a/b/c/nope), so any relative asset href would itself 404. Every URL in
+       this file is therefore root-absolute. -->
+  <style>
+    :root {
+      --bg: #050608;
+      --panel: #0b0e12;
+      --border: #1d2530;
+      --amber: #ffb000;
+      --amber-dim: #8a6200;
+      --cyan: #53c9e0;
+      --green: #3dd68c;
+      --text: #c9d4e0;
+      --text-dim: #5c6b7d;
+      --mono: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
+      min-height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--mono);
+      font-size: 13px;
+    }
+
+    ::selection { background: var(--amber); color: #000; }
+
+    body {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px 16px calc(24px + env(safe-area-inset-bottom));
+      min-height: 100vh;
+    }
+
+    main {
+      width: min(620px, 100%);
+      background: var(--panel);
+      border: 1px solid var(--border);
+    }
+
+    header {
+      display: flex; align-items: center; gap: 10px;
+      min-height: 30px; padding: 7px 12px;
+      border-bottom: 1px solid var(--border);
+      color: var(--cyan); font-size: 11px; letter-spacing: 0.14em;
+    }
+    header .meta { color: var(--text-dim); margin-left: auto; letter-spacing: 0.04em; }
+
+    .body { padding: 32px 24px 28px; }
+
+    .code {
+      color: var(--amber);
+      font-size: clamp(64px, 18vw, 104px);
+      font-weight: 500;
+      line-height: 1;
+      letter-spacing: 0.12em;
+      text-shadow: 0 0 24px rgba(255, 176, 0, 0.35);
+    }
+
+    h1 {
+      margin-top: 18px;
+      color: var(--amber);
+      font-size: clamp(13px, 3.6vw, 16px);
+      font-weight: 500;
+      letter-spacing: 0.2em;
+    }
+
+    .sub {
+      margin-top: 14px;
+      max-width: 46em;
+      color: var(--text);
+      font-size: 13px;
+      line-height: 1.75;
+    }
+
+    .rule { margin: 26px 0 18px; border: 0; border-top: 1px solid var(--border); }
+
+    .navlabel {
+      color: var(--text-dim);
+      font-size: 11px;
+      letter-spacing: 0.14em;
+    }
+
+    nav { display: flex; flex-direction: column; gap: 10px; margin-top: 14px; }
+
+    nav a {
+      display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+      padding: 10px 14px;
+      border: 1px solid var(--amber-dim);
+      color: var(--amber);
+      text-decoration: none;
+      font-size: 12px;
+      letter-spacing: 0.15em;
+    }
+    nav a .desc {
+      color: var(--text-dim);
+      letter-spacing: 0.04em;
+      text-transform: none;
+    }
+    nav a:hover, nav a:focus-visible {
+      background: var(--amber);
+      border-color: var(--amber);
+      color: #000;
+      outline: none;
+    }
+    nav a:hover .desc, nav a:focus-visible .desc { color: #000; }
+
+    footer {
+      padding: 0 24px 26px;
+      color: var(--text-dim);
+      font-size: 11px;
+      letter-spacing: 0.1em;
+    }
+    footer .ok { color: var(--green); }
+
+    @media (min-width: 620px) {
+      .body { padding: 40px 32px 32px; }
+      footer { padding: 0 32px 30px; }
+      nav a { font-size: 12.5px; }
+    }
+  </style>
+</head>
+<body>
+
+  <main>
+    <header>
+      <span>STATUS</span>
+      <span class="meta">HTTP 404 · NOT FOUND</span>
+    </header>
+
+    <div class="body">
+      <div class="code">404</div>
+      <h1>SIGNAL LOST — NO SUCH PAGE ON THIS TERMINAL</h1>
+      <p class="sub">The URL you requested does not exist. It may have been mistyped, or the link that brought you here may be out of date.</p>
+
+      <hr class="rule">
+
+      <span class="navlabel">ROUTES</span>
+      <nav>
+        <a href="/">&lt;GO&gt; TERMINAL<span class="desc">Launch the FINMODELS terminal</span></a>
+        <a href="/about">&lt;GO&gt; ABOUT<span class="desc">The 12 models and how they are documented</span></a>
+        <a href="/login">&lt;GO&gt; LOGIN<span class="desc">Sign in to your account</span></a>
+      </nav>
+    </div>
+
+    <footer><span class="ok">&#10003;</span> TERMINAL ONLINE — ROUTE UNRESOLVED</footer>
+  </main>
+
+</body>
+</html>
