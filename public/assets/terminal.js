@@ -2506,15 +2506,24 @@ async function uploadGate() {
 
 /* ------------------------- premium model gate --------------------------- *
  * HDEBT and RDCF (Ind AS hidden-debt normalizer, reverse-DCF solver) need
- * ANALYST PRO or higher. Mirrors uploadGate()'s shape/fail-open behaviour.  */
+ * ANALYST PRO or higher. Mirrors uploadGate()'s shape/fail-open behaviour —
+ * but ONLY for the plan-tier check below, not for sign-in. api/premium.py's
+ * own entitlement check is unconditional: it 401s an unsigned-in caller and
+ * 403s a free-plan one regardless of whether Razorpay is configured on this
+ * deployment (billing:false just means checkout is unavailable, it doesn't
+ * relax server-side enforcement) — so this client-side pre-check must never
+ * report `allowed: true` for a visitor the server would reject outright.
+ * Sign-in is therefore checked FIRST and unconditionally; only once that
+ * passes do we consult billing config / plan, where fail-open-on-hiccup is
+ * still the right call for an already-identified, already-signed-in user. */
 async function premiumModelGate() {
-  const cfg = await getBillingCfg();
-  if (!cfg || !cfg.billing) return { allowed: true };   // billing offline -> open
   const u = state.user;
   if (!isServerBacked(u)) {
     return { allowed: false,
       reason: "This tool needs a server-backed account on ANALYST PRO or higher — sign out and sign in with email or Google, then upgrade." };
   }
+  const cfg = await getBillingCfg();
+  if (!cfg || !cfg.billing) return { allowed: true };   // billing offline -> open
   const us = await refreshUsage();
   if (!us) return { allowed: true };   // fail-open on a network hiccup
   if (us.plan === "free") {
