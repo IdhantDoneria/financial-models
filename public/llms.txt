@@ -25,6 +25,10 @@ FINMODELS TERMINAL is a Bloomberg-terminal-style web app. You type a model mnemo
 - Ind AS 116 Hidden-Debt Normalizer (paid plan): Capitalises operating leases, reverse-factoring exposure and probability-weighted contingent liabilities onto the balance sheet, then recomputes owner earnings.
 - Reverse DCF (paid plan): Inverts the DCF identity — takes the market price and solves numerically for the free-cash-flow growth rate the price already implies.
 
+## For AI agents: MCP endpoint
+
+- [MCP server](https://financial-models-six.vercel.app/api/mcp): Eleven of the twelve models are callable directly as MCP tools over Streamable HTTP, so an AI client can run them itself instead of a human driving the browser UI. Add it in Claude Code with `claude mcp add --transport http finmodels https://financial-models-six.vercel.app/api/mcp`, or in Claude as a custom connector by pasting that URL. Nine models need no credential; the two paid models need an `Authorization: Bearer <session token>` header. Fama-French is not available over MCP (it needs pandas, which does not fit the serverless bundle) — run that one in the browser terminal. The tools compute from parameters you pass and do not fetch live market data.
+
 ## Capabilities
 
 - IB Desk PDF analysis: Upload a 10-K or 10-Q, and the desk extracts the financials, auto-fills the model assumptions (or lets you set them by hand), runs the models you select, and exports the result as PDF, .docx (opens in Google Docs or Word) or Excel.

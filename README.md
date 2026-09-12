@@ -20,6 +20,7 @@ Each model is a self-contained class with a common interface (`calculate()` · `
 - [Architecture](#architecture)
 - [Testing & scoring](#testing--scoring)
 - [Live data](#live-data)
+- [MCP endpoint](#-mcp-endpoint-use-the-models-from-an-ai-client)
 - [Deployment](#deployment)
 - [References](#references)
 - [License](#license)
@@ -509,6 +510,29 @@ risk-free rate follows the chosen country), the IB desk, and reopening a saved a
 network for the first CDN fetch.
 
 The static about page lives at [`/about`](https://financial-models-six.vercel.app/about).
+
+## 🔌 MCP endpoint (use the models from an AI client)
+
+Eleven of the twelve models are also exposed as [Model Context Protocol](https://modelcontextprotocol.io)
+tools at `https://financial-models-six.vercel.app/api/mcp`, so Claude (or any MCP client
+speaking Streamable HTTP) can run them directly instead of a person driving the sliders.
+`api/mcp.py` imports the model classes from `src/` unchanged — the same code the browser
+runs under Pyodide — with no new dependencies, so it stays inside the Python function's
+bundle budget.
+
+```bash
+claude mcp add --transport http finmodels https://financial-models-six.vercel.app/api/mcp
+```
+
+The nine free models need no credential; `finmodels_hidden_debt` and
+`finmodels_reverse_dcf` require an ANALYST PRO plan and an `Authorization: Bearer <session
+token>` header. Fama-French is **not** available over MCP — it needs pandas, which does not
+fit alongside numpy and scipy in the 225 MB bundle limit — so it is declared as unavailable
+rather than silently missing. Every response reports which parameters fell back to defaults,
+so a result built on assumptions the caller never made is never presented as a finding.
+
+Full documentation, including the tool table and a worked request/response, is in
+[`docs/MCP.md`](docs/MCP.md).
 
 ## Deployment
 
