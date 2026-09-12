@@ -115,7 +115,9 @@
       <h2 style="margin-top:0">FINMODELS TERMINAL</h2>
       <p>Twelve canonical quantitative-finance models, running on real CPython compiled to
         WebAssembly — entirely inside your browser. Nothing is installed, and the model runs
-        never leave your machine.</p>
+        never leave your machine. Every result names exactly which inputs it assumed rather
+        than silently filling gaps — no fabricated placeholder is ever returned as if it were
+        a real figure.</p>
       <h2>THE TWELVE MODELS</h2>
       <ul>
         <li><b>Discounted Cash Flow</b> — intrinsic enterprise and equity value from projected free cash flows.</li>
@@ -144,7 +146,7 @@
 
   <!-- boot screen -->
   <div id="boot">
-    <h1 class="brand">FINMODELS TERMINAL<small>12 QUANT MODELS · CPYTHON → WEBASSEMBLY · ZERO SERVER</small></h1>
+    <h1 class="brand">FINMODELS TERMINAL<small>NO HIDDEN ASSUMPTIONS · 12 MODELS · ZERO SERVER</small></h1>
     <div id="bootlog"></div>
     <div id="bootbar"><div></div></div>
     <div class="hint">FIRST BOOT DOWNLOADS THE SCIENTIFIC PYTHON STACK (~15 S) — CACHED AFTER</div>

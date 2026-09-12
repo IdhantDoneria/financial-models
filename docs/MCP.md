@@ -1,5 +1,10 @@
 # MCP endpoint
 
+Every result this endpoint returns names exactly which parameters it defaulted,
+rather than filling gaps silently and handing back a confident-looking number —
+see [Units, defaults, and not lying to you](#units-defaults-and-not-lying-to-you)
+below for why that rule exists and what it cost to learn.
+
 FINMODELS TERMINAL exposes eleven of its twelve quantitative-finance models as
 [Model Context Protocol](https://modelcontextprotocol.io) tools, so an AI client
 can run them directly instead of a person driving the sliders in a browser. It is

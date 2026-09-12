@@ -747,18 +747,18 @@ def _tools() -> list[dict]:
 
 
 INSTRUCTIONS = (
-    "FINMODELS TERMINAL exposes eleven canonical quantitative-finance models as tools. "
-    "They compute from the parameters you pass — they do NOT fetch live market data, "
-    "so any price, growth rate or volatility must come from you or from the user. "
-    "Every parameter is optional and has a documented default; each result reports "
-    "which defaults it fell back on, and you should treat any conclusion that rests "
-    "on a defaulted input as an assumption rather than a finding. Rates, growth rates "
-    "and volatilities are decimal fractions (0.08 = 8%); monetary inputs are in "
-    "millions unless stated otherwise. Nine models are open to anyone. Two "
-    "(finmodels_hidden_debt, finmodels_reverse_dcf) require an ANALYST PRO plan and an "
-    "Authorization: Bearer <session token> header. The Fama-French 3-factor model is "
-    f"NOT available here — see finmodels_list_models — run it at {SITE}. "
-    "This is a modelling tool, not investment advice."
+    "Every result from this server names exactly which parameters it defaulted rather "
+    "than filling gaps silently — treat any conclusion that rests on a defaulted input "
+    "as an assumption, not a finding. Out-of-range input is rejected with the real "
+    "bound, never silently clamped. FINMODELS TERMINAL exposes eleven canonical "
+    "quantitative-finance models as tools; they compute from the parameters you pass — "
+    "they do NOT fetch live market data, so any price, growth rate or volatility must "
+    "come from you or from the user. Rates, growth rates and volatilities are decimal "
+    "fractions (0.08 = 8%); monetary inputs are in millions unless stated otherwise. "
+    "Nine models are open to anyone. Two (finmodels_hidden_debt, finmodels_reverse_dcf) "
+    "require an ANALYST PRO plan and an Authorization: Bearer <session token> header. "
+    "The Fama-French 3-factor model is NOT available here — see finmodels_list_models "
+    f"— run it at {SITE}. This is a modelling tool, not investment advice."
 )
 
 

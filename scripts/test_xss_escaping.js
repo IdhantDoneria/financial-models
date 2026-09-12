@@ -95,9 +95,11 @@ const terminalSinks = [
   /<td class="num">\$\{esc\(String\(row\["Headline result"\]\)\)\}<\/td>/,
   // Refactored from an inline `${ok ? "stat-ok" : "stat-err"}` ternary into
   // the three-way isOk/isUnassessed/statClass variables (see renderIBReport
-  // in terminal.js) when the HDEBT-unassessed distinction was added — the
-  // escaping call itself (what this test actually guards) is unchanged.
-  /\$\{statClass\}">\$\{esc\(status\)\}<\/td>/,
+  // in terminal.js) when the HDEBT-unassessed distinction was added, then
+  // again to wrap the status in a `.badge` pill for visibility — the
+  // escaping call itself (what this test actually guards) is unchanged
+  // through both refactors.
+  /<span class="badge \$\{badgeClass\}">\$\{esc\(status\)\}<\/span>/,
   /md \+= `\| \$\{esc\(key\)\} \| \$\{esc\(text\)\} \|\\n`/,
   /md \+= `- \*\*\$\{esc\(name\)\}\*\*: \$\{esc\(err\)\}\\n`/,
 ];

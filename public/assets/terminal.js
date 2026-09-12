@@ -1682,16 +1682,32 @@ const IB_KEY_FIELD_COUNT = 18;
 //  EXTRACTED DATA panel above (which a user can easily not scroll to).
 function confidenceBannerHTML() {
   const missing = state.ib.extracted?.missing;
-  if (!missing || !missing.length) return "";
+  if (!missing) return "";
   const pct = Math.round((missing.length / IB_KEY_FIELD_COUNT) * 100);
-  if (missing.length < IB_KEY_FIELD_COUNT / 2) return "";
-  return `<div class="pnote warn">⚠ LOW-CONFIDENCE EXTRACTION — ${missing.length} of
-    ${IB_KEY_FIELD_COUNT} fields (${pct}%) could not be found in this filing and were
-    filled with generic auto-assumed defaults, not real figures from the document.
-    Every model below still runs and reports "OK" — that only means the arithmetic is
-    valid, not that the inputs describe this company. Check the EXTRACTED DATA panel's
-    AUTO-ASSUMED badges before trusting these numbers, or switch to MANUAL mode to set
-    them yourself.</div>`;
+  if (missing.length >= IB_KEY_FIELD_COUNT / 2) {
+    return `<div class="pnote warn">⚠ LOW-CONFIDENCE EXTRACTION — ${missing.length} of
+      ${IB_KEY_FIELD_COUNT} fields (${pct}%) could not be found in this filing and were
+      filled with generic auto-assumed defaults, not real figures from the document.
+      Every model below still runs and reports "OK" — that only means the arithmetic is
+      valid, not that the inputs describe this company. Check the EXTRACTED DATA panel's
+      AUTO-ASSUMED badges before trusting these numbers, or switch to MANUAL mode to set
+      them yourself.</div>`;
+  }
+  // The disclosure guarantee is only ever visible on this page when something's
+  // wrong (the warning above) — a run with good extraction gets no banner at
+  // all, so there's nothing here confirming that the numbers below AREN'T
+  // resting on a pile of quiet defaults. State that positively too, every
+  // time, instead of only speaking up when the news is bad.
+  if (!missing.length) {
+    return `<div class="pnote ok">✓ ${IB_KEY_FIELD_COUNT} of ${IB_KEY_FIELD_COUNT} key
+      fields found directly in this filing — none of them fell back to a generic
+      default. (Some individual model parameters beyond these key fields may still
+      use a documented default; each model's own inputs panel shows which.)</div>`;
+  }
+  return `<div class="pnote ok">✓ ${IB_KEY_FIELD_COUNT - missing.length} of
+    ${IB_KEY_FIELD_COUNT} key fields found directly in this filing; ${missing.length}
+    (${pct}%) fell back to a documented default — check the EXTRACTED DATA panel's
+    AUTO-ASSUMED badges to see exactly which.</div>`;
 }
 
 function renderIBReport() {
@@ -1727,13 +1743,19 @@ function renderIBReport() {
     const isUnassessed = status === "UNASSESSED";
     const isError = !isOk && !isUnassessed;
     const statClass = isUnassessed ? "stat-warn" : isError ? "stat-err" : "stat-ok";
+    // Same visual language as the EXTRACTED DATA panel's FOUND/MISSING/
+    // AUTO-ASSUMED badges above, not a plain coloured table cell — this is
+    // the disclosure guarantee's actual per-model verdict, so it gets the
+    // same "impossible to skim past" treatment as everything else here that
+    // says whether a number can be trusted.
+    const badgeClass = isUnassessed ? "assumed" : isError ? "missing" : "found";
     // row.Status can embed a raw model validation-error message, which in
     // turn can echo attacker-supplied text (e.g. a manual-override value
     // that failed numeric validation) — esc() every field here, not just
     // the ones normally numeric, since "normally numeric" isn't guaranteed.
     html += `<tr class="${isError ? "err" : ""}"><td>${esc(row.Model)}</td>
       <td class="num">${esc(String(row["Headline result"]))}</td>
-      <td class="${statClass}">${esc(status)}</td></tr>`;
+      <td class="${statClass}"><span class="badge ${badgeClass}">${esc(status)}</span></td></tr>`;
   });
   html += "</table><h2>ASSUMPTIONS (MARKET CONTEXT)</h2><table>";
   Object.entries(out.market_context).forEach(([key, value]) => {
