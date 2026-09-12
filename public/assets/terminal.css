@@ -588,6 +588,7 @@ input.ibov:focus { outline: none; border-color: var(--amber); }
 #planchip b.paid { color: var(--green); }
 .pnote { color: var(--text-dim); font-size: 10px; line-height: 1.7; margin: 8px 0; max-width: 640px; }
 .pnote.warn { color: var(--amber); border: 1px dashed var(--amber-dim); padding: 8px 10px; }
+.pnote.ok { color: var(--green); border: 1px dashed var(--green); padding: 8px 10px; }
 .pusage { border: 1px solid var(--border); padding: 10px 12px; margin: 10px 0; max-width: 640px; }
 .purow { display: flex; justify-content: space-between; font-size: 11px; margin: 4px 0; }
 .purow span { color: var(--text-dim); letter-spacing: 0.06em; }
