@@ -166,6 +166,93 @@ def _effective_plan(email: str) -> str:
     return plan
 
 
+# --------------------------------------------------------------------------- #
+# Rate limiting / spend cap — every caller here is already signed in and on a
+# paying plan (see do_POST below), so this isn't defending against anonymous
+# abuse the way api/mcp.py's version has to. It's defending against one
+# compromised or careless account running up real Vercel/Redis cost: the
+# monthly upload quota in api/_lib/billing.js only meters the IB-desk PDF
+# path (_run_extracted); the raw slider path (_run_raw) that also reaches
+# these same two models has never had any cap of its own.
+#
+# Same two-tier + daily-cap shape as api/mcp.py's version of this comment
+# block, itself mirroring api/_lib/net.js's withinLimitLayered() (already
+# protecting api/geo.js, api/quotes.js, api/rates.js). Limits are sized
+# looser than mcp.py's, on purpose: this endpoint's whole audience is paying
+# customers, and the cost of wrongly throttling one of them is worse than
+# under-throttling here. Fails OPEN on a Redis outage — an unreachable store
+# already 503s this whole endpoint a few lines up in do_POST, so failing
+# open here just avoids a second, redundant way to break the same request.
+# --------------------------------------------------------------------------- #
+_RL_IP_MAX, _RL_IP_WINDOW_SEC = 40, 60             # one account/IP, one minute
+_RL_GLOBAL_MAX, _RL_GLOBAL_WINDOW_SEC = 200, 60    # every caller, one minute
+_RL_DAILY_MAX, _RL_DAILY_WINDOW_SEC = 2000, 86_400  # every caller, one day — the spend cap
+
+
+def _redis_pipeline(commands: list[list[str]]) -> list | None:
+    """Run several Redis commands in one Upstash REST round trip. Returns the
+    list of raw `result` values in order, or None if the store isn't
+    configured or the call failed outright — callers fail open on None."""
+    if not (REDIS_URL and REDIS_TOKEN):
+        return None
+    try:
+        req = urllib.request.Request(
+            f"{REDIS_URL.rstrip('/')}/pipeline",
+            data=json.dumps(commands).encode("utf-8"),
+            headers={"Authorization": f"Bearer {REDIS_TOKEN}",
+                     "Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=6) as resp:
+            results = json.loads(resp.read().decode("utf-8"))
+        return [r.get("result") for r in results]
+    except (urllib.error.URLError, TimeoutError, ValueError, json.JSONDecodeError,
+            AttributeError, TypeError):
+        return None
+
+
+def _within_limits(counters: list[tuple[str, int, int]]) -> bool:
+    """counters: (key, max_n, window_sec) triples, all incremented together
+    in one pipelined round trip (plus a second, smaller one for any
+    first-hit EXPIREs). A counter whose own command errored inside an
+    otherwise-successful pipeline is treated as unknown (fails open for that
+    tier alone), not as "over limit"."""
+    results = _redis_pipeline([["INCR", key] for key, _, _ in counters])
+    if results is None:
+        return True
+    expire_cmds = [["EXPIRE", key, str(window)]
+                   for (key, _max, window), n in zip(counters, results)
+                   if isinstance(n, int) and n == 1]
+    if expire_cmds:
+        _redis_pipeline(expire_cmds)
+    return all((not isinstance(n, int)) or n <= max_n
+               for (_key, max_n, _window), n in zip(counters, results))
+
+
+def _client_ip(handler: BaseHTTPRequestHandler) -> str:
+    """Mirrors api/_lib/net.js's clientIp(): trust X-Real-Ip (Vercel's edge
+    sets this to the actual connecting client), else the LAST
+    X-Forwarded-For entry (closest to the edge, hardest for a caller to
+    spoof), else the raw socket address."""
+    real = handler.headers.get("X-Real-Ip")
+    if real:
+        return real.strip()
+    xf = handler.headers.get("X-Forwarded-For")
+    if xf:
+        parts = [p.strip() for p in xf.split(",") if p.strip()]
+        if parts:
+            return parts[-1]
+    return handler.client_address[0] if handler.client_address else "unknown"
+
+
+def _rate_limited(handler: BaseHTTPRequestHandler) -> bool:
+    ip = _client_ip(handler)
+    return not _within_limits([
+        (f"premium:rl:ip:{ip}", _RL_IP_MAX, _RL_IP_WINDOW_SEC),
+        ("premium:rl:global", _RL_GLOBAL_MAX, _RL_GLOBAL_WINDOW_SEC),
+        ("premium:rl:daily", _RL_DAILY_MAX, _RL_DAILY_WINDOW_SEC),
+    ])
+
+
 def _run_extracted(mnemonic: str, model_name: str, body: dict) -> dict:
     """IB desk path: build an ExtractedFinancials from the client's own
     earlier PDF extraction, run it through the real auto/manual assumption
@@ -295,11 +382,13 @@ def _run_raw(mnemonic: str, model_name: str, body: dict) -> dict:
 
 
 class handler(BaseHTTPRequestHandler):
-    def _json(self, code: int, obj: dict) -> None:
+    def _json(self, code: int, obj: dict, extra_headers: dict | None = None) -> None:
         payload = json.dumps(obj).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
+        for k, v in (extra_headers or {}).items():
+            self.send_header(k, v)
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
         self.wfile.write(payload)
@@ -341,6 +430,15 @@ class handler(BaseHTTPRequestHandler):
         model_name = PREMIUM_MODELS.get(mnemonic)
         if not model_name:
             return self._json(400, {"ok": False, "error": f"unknown premium model {mnemonic!r}"})
+
+        # Checked here, after the (cheap) plan/model-name validation above and
+        # right before the actual compute call — a request rejected for a bad
+        # model name shouldn't spend rate budget it was never going to use.
+        if _rate_limited(self):
+            return self._json(429, {"ok": False, "error":
+                "RATE LIMIT EXCEEDED — this protects shared compute and Redis "
+                "budget across every caller, not just this request. Wait a "
+                "moment and retry."}, extra_headers={"Retry-After": "30"})
 
         try:
             if "params" in body:
