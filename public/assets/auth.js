@@ -117,6 +117,7 @@ async function onSignup(e) {
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return showErr("ENTER A VALID EMAIL");
   if (p1.length < 8) return showErr("PASSWORD MUST BE AT LEAST 8 CHARACTERS");
   if (p1 !== p2) return showErr("PASSWORDS DO NOT MATCH");
+  if (!$("#su-agree").checked) return showErr("YOU MUST AGREE TO THE TERMS AND PRIVACY POLICY");
   const all = accounts();
   if (all[email] && all[email].hash)
     return showErr("AN ACCOUNT WITH THIS EMAIL EXISTS — SIGN IN INSTEAD");
@@ -250,6 +251,7 @@ async function onOtpVerify() {
   // have one aren't forced to retype it here (the backend only enforces
   // this for accounts with none on file yet), but validate length either way.
   if (pass && pass.length < 8) return showErr("PASSWORD MUST BE AT LEAST 8 CHARACTERS");
+  if (!$("#otp-agree").checked) return showErr("YOU MUST AGREE TO THE TERMS AND PRIVACY POLICY");
   const btn = $("#otp-verify");
   btn.disabled = true; btn.textContent = "VERIFYING…";
   showErr("");

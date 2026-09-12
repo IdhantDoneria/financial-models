@@ -48,6 +48,16 @@ body.authpage { display: flex; align-items: center; justify-content: center; min
 #pmeter div { height: 100%; width: 0%; background: var(--red); transition: width 0.25s, background 0.25s; }
 label.remember { display: flex; gap: 8px; align-items: center; cursor: pointer; font-size: 10px !important; }
 label.remember input { accent-color: var(--amber); }
+label.agree {
+  display: flex; gap: 8px; align-items: flex-start; cursor: pointer;
+  font-size: 10px !important; line-height: 1.6; margin-top: 12px !important;
+}
+label.agree input { accent-color: var(--amber); margin-top: 2px; flex: 0 0 auto; }
+label.agree a { color: var(--cyan); }
+label.agree a:hover { color: var(--amber); }
+.agree-note { margin-top: 10px; font-size: 9.5px; line-height: 1.6; text-align: center; }
+.agree-note a { color: var(--text-dim); }
+.agree-note a:hover { color: var(--amber); }
 #acard .primary {
   margin-top: 16px; background: var(--amber); border: none; color: #000;
   font: 13px var(--mono); letter-spacing: 0.16em; padding: 11px 0; cursor: pointer;

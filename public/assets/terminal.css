@@ -450,6 +450,9 @@ input.ibov:focus { outline: none; border-color: var(--amber); }
 }
 .menu-foot #menu-who { color: var(--text-dim); font-size: 10px; letter-spacing: 0.08em; }
 .menu-foot #menu-who b { color: var(--text); }
+.menu-legal { font-size: 9px; letter-spacing: 0.06em; color: var(--text-dim); white-space: nowrap; }
+.menu-legal a { color: var(--text-dim); text-decoration: none; }
+.menu-legal a:hover { color: var(--amber); }
 #menu-support {
   color: var(--cyan); font-size: 9.5px; letter-spacing: 0.1em; text-decoration: none;
   border: 1px solid var(--cyan); padding: 6px 10px; margin-left: auto;
