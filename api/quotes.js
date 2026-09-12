@@ -51,7 +51,11 @@ async function quote(s) {
     const prev = (typeof m.chartPreviousClose === "number" ? m.chartPreviousClose
                  : typeof m.previousClose === "number" ? m.previousClose : price);
     const pct = prev ? ((price - prev) / prev) * 100 : 0;
-    return { label: s.label, money: !!s.money, price, pct };
+    // Yahoo reports the currency the listing itself trades in (e.g. "INR"
+    // for a .NS symbol, "USD" for a US one) — this is the source of truth
+    // for what the number means, never assumed from which market the caller
+    // happens to have selected in the UI.
+    return { label: s.label, money: !!s.money, price, pct, currency: m.currency || null };
   } catch {
     return null;
   }
@@ -63,6 +67,29 @@ async function quote(s) {
 //  browser still can't reach Yahoo directly), just parameterised by
 //  `?sym=` instead of the hardcoded SYMBOLS list.
 const SYM_RE = /^[A-Za-z0-9.\-^=]{1,16}$/;   // conservative allowlist — no path/query injection
+
+//: Indian listings have no unsuffixed Yahoo symbol at all — "RELIANCE" alone
+//  never resolves; it has to be "RELIANCE.NS" (NSE) or "RELIANCE.BO" (BSE).
+//  Scoped to India only for now, matching what's actually been verified —
+//  extending this to other markets needs the same per-market check, not a
+//  guess, so it isn't done here yet.
+const EXCHANGE_SUFFIXES = { IN: [".NS", ".BO"] };
+
+//: Tries the caller's selected market's exchange suffix(es) first (NSE before
+//  BSE for India — NSE has materially deeper listing coverage), then the bare
+//  symbol as a last resort, so a ticker the user typed with an explicit
+//  suffix (or one where the bare symbol is what actually resolves, e.g. a US
+//  ticker looked up while India is the selected market) still works.
+async function resolveQuote(sym, cc) {
+  const suffixes = (cc && EXCHANGE_SUFFIXES[cc]) || [];
+  const hasSuffix = sym.includes(".");
+  const candidates = hasSuffix ? [sym] : [...suffixes.map((suf) => sym + suf), sym];
+  for (const candidate of candidates) {
+    const q = await quote({ sym: candidate, label: sym, money: true });
+    if (q) return { ...q, resolvedSymbol: candidate };
+  }
+  return null;
+}
 
 const { clientIp, withinLimitLayered } = require("./_lib/net");
 
@@ -89,9 +116,13 @@ module.exports = async (req, res) => {
     if (!(await withinLimitLayered(`quotes:rl:${clientIp(req)}`, 30, 60, "quotes:rl:global", 50, 5))) {
       return res.status(429).json({ ok: false, error: "rate limited" });
     }
-    const q = await quote({ sym, label: sym, money: true });
+    const cc = String(url.searchParams.get("cc") || "").toUpperCase();
+    const q = await resolveQuote(sym, cc);
     if (!q) return res.status(502).json({ ok: false, error: `could not fetch a quote for ${sym}` });
-    return res.status(200).json({ ok: true, symbol: sym, price: q.price, pct: q.pct, ts: Date.now() });
+    return res.status(200).json({
+      ok: true, symbol: sym, resolvedSymbol: q.resolvedSymbol,
+      price: q.price, pct: q.pct, currency: q.currency, ts: Date.now(),
+    });
   }
 
   const settled = await Promise.all(SYMBOLS.map(quote));

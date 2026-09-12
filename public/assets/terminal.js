@@ -249,6 +249,7 @@ const state = {
         period: "auto", mode: "auto", dirty: {}, selected: null },
   rdcf: { mode: "manual", ticker: "" },  // Reverse DCF price-source toggle
   pkgs: { pandasPromise: null },   // lazy-loaded runtime deps beyond boot's core set
+  tape: { raw: null },             // last fetched USD tape quotes — repainted per-country without a refetch
 };
 
 /* ------------------------------------------------------------------------ *
@@ -428,8 +429,9 @@ async function boot() {
     const savedCc = (() => { try { return localStorage.getItem(LS_COUNTRY); } catch { return null; } })();
     state.country = COUNTRIES.find((c) => c.code === savedCc) || COUNTRIES[0];
     applyCountryDefaults(state.country);   // repoint rate defaults before first build
-    applyCountryToIB(state.country);       // IB desk rates follow the saved market
-                                           // from boot — never default to US
+    applyCountryToIB(state.country).then(paintTape);   // IB desk rates (and the tape's
+                                           // currency) follow the saved market from
+                                           // boot — never default to US
 
     buildUI();
     document.getElementById("boot").style.display = "none";
@@ -578,16 +580,66 @@ function setMobileView(mv) {
 }
 
 /* ------------------------------ live ticker ---------------------------- */
+const TROY_OZ_TO_G = 31.1034768;
+
+//: Converts one raw (always-USD) tape quote to the selected country's
+//  currency for display. Deliberately narrow about what it touches:
+//   - Index levels (q.money === false — S&P, NASDAQ, Nikkei, …) are never
+//     FX-multiplied. An index point isn't a dollar amount, so "the S&P in
+//     rupees" produced by naively multiplying by an FX rate would be a
+//     plausible-looking but meaningless number — exactly the kind of wrong-
+//     but-plausible output this platform exists to avoid.
+//   - Without a live FX rate yet (state.ib.fx is null — e.g. right after
+//     switching country, before /api/rates has answered), the quote is left
+//     in USD rather than guessed at.
+//   - Gold and silver get an extra unit conversion for India specifically,
+//     from Yahoo's COMEX futures convention (USD per troy ounce) to what
+//     Indian buyers actually quote: gold per 10 grams (the universal
+//     newspaper/jeweller/MCX convention) and silver per kilogram (MCX's own
+//     contract unit, and what's quoted locally — NOT per 10g; silver and
+//     gold follow different conventions in the Indian market, so applying
+//     the same 10g unit to both would be a real, if minor, inaccuracy). The
+//     label changes alongside the number so the unit is always visible, not
+//     just a silently different figure.
+//   - Every other market's gold/silver stays in troy ounces (just FX-
+//     converted) until each market's own real quoting convention is
+//     verified — not guessed — in a follow-up.
+function convertTapeQuote(q, country) {
+  if (!q.money || !country || country.ccy === "USD" || typeof state.ib.fx !== "number") return q;
+  const fx = state.ib.fx;   // country currency per 1 USD
+  let price = q.price * fx;
+  let label = q.label;
+  if (country.code === "IN" && q.label === "GOLD") {
+    price = (price / TROY_OZ_TO_G) * 10;
+    label = "GOLD (10G)";
+  } else if (country.code === "IN" && q.label === "SILVER") {
+    price = (price / TROY_OZ_TO_G) * 1000;
+    label = "SILVER (KG)";
+  }
+  return { ...q, price, label, ccy: country.ccy };
+}
+
 //: One tape entry: LABEL  PRICE  ▲/▼ ±pct%  (green up, red down).
 function tapeItemHTML(q) {
   const digits = q.price >= 1000 ? 2 : q.price >= 1 ? 2 : 4;
   const num = q.price.toLocaleString("en-US", { minimumFractionDigits: q.price >= 1000 ? 2 : 0, maximumFractionDigits: digits });
-  const val = (q.money ? "$" : "") + num;
+  const sym = q.money ? (q.ccy ? (CCY_SYMBOL[q.ccy] || q.ccy + " ") : "$") : "";
+  const val = sym + num;
   const pct = typeof q.pct === "number" ? q.pct : 0;
   const cls = pct > 0.0001 ? "up" : pct < -0.0001 ? "down" : "flat";
   const arrow = pct > 0.0001 ? "▲" : pct < -0.0001 ? "▼" : "▬";
   const sign = pct >= 0 ? "+" : "";
   return `<b>${q.label}</b> ${val} <i class="${cls}">${arrow} ${sign}${pct.toFixed(2)}%</i>`;
+}
+
+//: Repaints the tape from the last-fetched raw (USD) quotes, converted for
+//  whichever country is currently selected — no network round trip. Called
+//  after every fresh fetch (60s poll) and again whenever the country changes
+//  or its live FX rate finishes loading, so the tape is never more than one
+//  of those events behind the correct currency.
+function paintTape() {
+  if (!state.tape.raw || !state.tape.raw.length) return;
+  renderTape(state.tape.raw.map((q) => tapeItemHTML(convertTapeQuote(q, state.country))));
 }
 
 //: Paint the marquee. Repeating the sequence keeps the loop seamless; the CSS
@@ -619,7 +671,8 @@ async function fetchTapePrimary() {
     if (!r.ok) return false;
     const j = await r.json();
     if (!j.quotes || !j.quotes.length) return false;
-    renderTape(j.quotes.map(tapeItemHTML));
+    state.tape.raw = j.quotes;
+    paintTape();
     updateTapeTimestamp(j.ts || Date.now());
     return true;
   } catch { return false; }
@@ -754,7 +807,7 @@ function buildRDCFPriceSource() {
       <button type="button" data-mode="live">LIVE PRICE</button>
     </div>
     <div class="fetch">
-      <input type="text" placeholder="TICKER — e.g. AAPL, RELIANCE.NS" maxlength="16">
+      <input type="text" placeholder="TICKER — e.g. AAPL, RELIANCE" maxlength="16">
       <button type="button">FETCH LIVE PRICE</button>
     </div>
     <div class="rdcf-disclosure general">
@@ -806,7 +859,8 @@ async function fetchRDCFPrice(ticker) {
   const original = btn.textContent;
   btn.disabled = true; btn.textContent = "FETCHING…";
   try {
-    const r = await fetch(`api/quotes?sym=${encodeURIComponent(ticker)}`,
+    const cc = (state.country && state.country.code) || "";
+    const r = await fetch(`api/quotes?sym=${encodeURIComponent(ticker)}&cc=${encodeURIComponent(cc)}`,
       { cache: "no-store", signal: AbortSignal.timeout(9000) });
     let j = {};
     try { j = await r.json(); } catch { /* non-JSON error body */ }
@@ -818,7 +872,14 @@ async function fetchRDCFPrice(ticker) {
       priceRow.querySelector("input[type=range]").value = j.price;
       priceRow.querySelector(".val").value = fmtParam(priceParam, j.price);
     }
-    btn.textContent = `${ticker} = ${ccySymbol()}${j.price.toFixed(2)} ✓`;
+    // Label with the instrument's OWN currency (Yahoo's m.currency, echoed
+    // back as j.currency) — never the UI's selected market. Those two only
+    // coincide when the resolved listing actually trades in that market;
+    // e.g. looking up "AAPL" while India is selected still correctly shows
+    // $, not ₹, because resolveQuote() fell through to the bare US symbol.
+    const label = (j.currency && CCY_SYMBOL[j.currency]) || (j.currency ? j.currency + " " : ccySymbol());
+    const resolvedNote = j.resolvedSymbol && j.resolvedSymbol !== ticker ? ` (${j.resolvedSymbol})` : "";
+    btn.textContent = `${ticker}${resolvedNote} = ${label}${j.price.toFixed(2)} ✓`;
     scheduleRun(0);
   } catch (err) {
     btn.textContent = "FETCH FAILED";
@@ -1924,7 +1985,11 @@ function selectCountry(code) {
   syncCountryUI();
   // Repoint the IB desk to this market: baseline instantly, live yield + FX
   // from /api/rates async. Every market now gets its own rate — never US-only.
-  applyCountryToIB(c);
+  // The tape rides along: repaint immediately (safe USD fallback — fx is
+  // reset to null inside applyCountryToIB until the fetch resolves) and
+  // again once the live FX rate actually lands.
+  applyCountryToIB(c).then(paintTape);
+  paintTape();
   // A report computed under the previous market's rates is now stale.
   if (state.ib.report && !state.ib.report.restored) {
     state.ib.report = null;
