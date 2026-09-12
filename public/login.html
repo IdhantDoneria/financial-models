@@ -30,6 +30,9 @@
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <!-- Warms the DNS/TLS handshake for the background Pyodide prewarm
+       (assets/boot-prewarm.js) fired later, once the user interacts. -->
+  <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="assets/terminal.css">
   <link rel="stylesheet" href="assets/auth.css">
@@ -174,6 +177,8 @@
     </section>
   </div>
 
+  <script src="assets/boot-packages.js"></script>
   <script src="assets/auth.js"></script>
+  <script src="assets/boot-prewarm.js"></script>
 </body>
 </html>

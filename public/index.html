@@ -250,12 +250,18 @@
   <!-- country dropdown -->
   <div id="country-drop"></div>
 
-  <script src="https://cdn.jsdelivr.net/pyodide/v0.28.2/full/pyodide.js"></script>
-  <script src="https://cdn.plot.ly/plotly-3.3.0.min.js" charset="utf-8"></script>
-  <script src="https://cdn.jsdelivr.net/npm/marked@15.0.12/marked.min.js"></script>
+  <!-- All defer, in this order: fetches happen in parallel, but each still
+       executes only after the ones before it (document order is preserved
+       for deferred scripts), so terminal.js can rely on loadPyodide/Plotly/
+       marked/FINMODELS_CORE_PACKAGES being defined by the time it runs, same
+       as when these were blocking scripts loaded one at a time. -->
+  <script defer src="assets/boot-packages.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/pyodide/v0.28.2/full/pyodide.js"></script>
+  <script defer src="https://cdn.plot.ly/plotly-3.3.0.min.js" charset="utf-8"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/marked@15.0.12/marked.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/katex.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/contrib/auto-render.min.js"></script>
-  <script src="assets/terminal.js"></script>
-  <script src="assets/walkthrough.js"></script>
+  <script defer src="assets/terminal.js"></script>
+  <script defer src="assets/walkthrough.js"></script>
 </body>
 </html>

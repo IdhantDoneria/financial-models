@@ -248,6 +248,7 @@ const state = {
         liveRf: null, rfSource: null, fx: null, fxDate: null,
         period: "auto", mode: "auto", dirty: {}, selected: null },
   rdcf: { mode: "manual", ticker: "" },  // Reverse DCF price-source toggle
+  pkgs: { pandasPromise: null },   // lazy-loaded runtime deps beyond boot's core set
 };
 
 /* ------------------------------------------------------------------------ *
@@ -347,6 +348,44 @@ function bootLog(msg, cls) {
 }
 const bootPct = (p) => { $("#bootbar div").style.width = p + "%"; };
 
+//: Fetches every file in manifest.json plus web_bridge.py and the Fama-French
+//  factor CSV concurrently and writes each straight to the Pyodide FS as it
+//  lands, instead of one file at a time. Each file is self-contained (fetch
+//  -> mkdirTree its own dir -> write), so there's no ordering dependency
+//  between them and nothing is lost by not waiting for the slowest one
+//  before starting the next.
+async function mountSources(FS) {
+  const manifest = await (await fetch("py/manifest.json")).json();
+  FS.mkdirTree("/app/src");
+  FS.mkdirTree("/app/data/cache");
+  await Promise.all([
+    ...manifest.files.map(async (f) => {
+      const text = await (await fetch("py/" + f.path)).text();
+      FS.mkdirTree("/app/" + f.path.split("/").slice(0, -1).join("/"));
+      FS.writeFile("/app/" + f.path, text);
+    }),
+    (async () => {
+      FS.writeFile("/app/web_bridge.py", await (await fetch("py/web_bridge.py")).text());
+    })(),
+    (async () => {
+      FS.writeFile("/app/data/cache/ff_factors.csv", await (await fetch("data/ff_factors.csv")).text());
+    })(),
+  ]);
+  return manifest.files.length;
+}
+
+//: pandas is deliberately not part of boot's core package set (see
+//  boot-packages.js) — only Fama-French needs it, so it's loaded once, on
+//  first use, guarded by a single shared promise so concurrent/repeat FF3
+//  selections all await the same install instead of racing past the guard
+//  (same idiom as ensureAnalyzerPackages() below).
+function ensurePandas() {
+  if (!state.pkgs.pandasPromise) {
+    state.pkgs.pandasPromise = state.pyodide.loadPackage(["pandas"]);
+  }
+  return state.pkgs.pandasPromise;
+}
+
 async function boot() {
   try {
     bootLog("FINMODELS TERMINAL v2 — session start");
@@ -354,33 +393,29 @@ async function boot() {
     state.pyodide = await loadPyodide({ indexURL: "https://cdn.jsdelivr.net/pyodide/v0.28.2/full/" });
     bootLog("pyodide runtime online", "ok"); bootPct(30);
 
-    bootLog("loading numpy · scipy · pandas…");
-    await state.pyodide.loadPackage(["numpy", "scipy", "pandas", "micropip"]);
-    bootLog("scientific stack loaded", "ok"); bootPct(58);
+    bootLog("loading numpy · scipy…");
+    await state.pyodide.loadPackage(window.FINMODELS_CORE_PACKAGES);
+    bootLog("scientific stack loaded", "ok"); bootPct(50);
 
-    bootLog("installing plotly…");
     const micropip = state.pyodide.pyimport("micropip");
     state.micropip = micropip;
-    try { await micropip.install("plotly==6.8.0"); }
-    catch { await micropip.install("plotly"); }
-    bootLog("plotly installed", "ok"); bootPct(74);
 
-    bootLog("mounting model sources from repository…");
-    const manifest = await (await fetch("py/manifest.json")).json();
+    // Every model run tries to render a chart (web_bridge.run_model always
+    // calls visualize()), so plotly has to be ready before the first run —
+    // it just doesn't need to be ready *after* the scientific stack finishes;
+    // running it alongside the source-file mount instead of serially after
+    // both previous stages hides most of its cost under that other work.
+    bootLog("installing plotly · mounting model sources from repository…");
     const FS = state.pyodide.FS;
-    FS.mkdirTree("/app/src");
-    FS.mkdirTree("/app/data/cache");
-    for (const f of manifest.files) {
-      const text = await (await fetch("py/" + f.path)).text();
-      FS.mkdirTree("/app/" + f.path.split("/").slice(0, -1).join("/"));
-      FS.writeFile("/app/" + f.path, text);
-    }
-    FS.writeFile("/app/web_bridge.py", await (await fetch("py/web_bridge.py")).text());
-    bootLog(`mounted ${manifest.files.length + 1} python sources`, "ok"); bootPct(84);
-
-    bootLog("seeding Fama-French factor history (Ken French library snapshot)…");
-    FS.writeFile("/app/data/cache/ff_factors.csv", await (await fetch("data/ff_factors.csv")).text());
-    bootLog("factor data 1926→present ready", "ok"); bootPct(90);
+    const [, fileCount] = await Promise.all([
+      (async () => {
+        try { await micropip.install(window.FINMODELS_PLOTLY_SPEC); }
+        catch { await micropip.install("plotly"); }
+      })(),
+      mountSources(FS),
+    ]);
+    bootLog("plotly installed", "ok");
+    bootLog(`mounted ${fileCount + 2} python sources (incl. factor data)`, "ok"); bootPct(90);
 
     bootLog("importing model package…");
     state.runPy = state.pyodide.runPython(
@@ -877,6 +912,23 @@ async function runCurrent() {
   $("#ostat").textContent = "CALCULATING…";
   $("#ostat").className = "meta calcing";
   await new Promise((r) => setTimeout(r, 15)); // let the status paint
+
+  // FF3 is the one model that needs pandas, loaded lazily (see
+  // ensurePandas()) instead of by every visitor at boot — pay that cost
+  // here, once, with its own status text, rather than a raw
+  // ModuleNotFoundError surfacing through the normal error path below.
+  if (model.mn === "FF3") {
+    try {
+      $("#ostat").textContent = "LOADING PANDAS (ONE-TIME)…";
+      await ensurePandas();
+    } catch (err) {
+      if (seq !== state.seq) return;
+      renderError(new Error("Failed to load pandas: " + (err.message || err)));
+      return;
+    }
+    if (seq !== state.seq) return;
+    $("#ostat").textContent = "CALCULATING…";
+  }
 
   let payload;
   try {
