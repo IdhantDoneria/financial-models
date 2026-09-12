@@ -190,10 +190,22 @@ Other properties:
   model can read the message and retry — which it can, since the message names
   the parameter and its real bound.
 
+### Rate limits
+
+`tools/call` — the only method that actually runs a model — is rate limited on
+three tiers: 30 calls/minute per caller IP, 300/minute across every caller, and
+5,000/day across every caller (the last one is the real cost cap: it bounds a
+sustained abuse pattern that stays under the short-window limits). Discovery
+methods (`server/discover`, `initialize`, `tools/list`, `ping`) are never
+limited. Exceeding a tier returns `429` / `-32000` with a `Retry-After: 30`
+header. An interactive AI-agent session calling a handful of tools is nowhere
+near these numbers; a script calling this endpoint in a tight loop will hit one.
+
 ## Testing
 
 ```bash
 python3 scripts/test_mcp_api.py                  # 75 protocol/behaviour checks over real HTTP
+python3 scripts/test_rate_limit.py                # 12 checks against a real Redis-shaped backend
 .venv/bin/python -m pytest tests/test_mcp_schema.py -q   # drift guards
 node scripts/dev_mcp_server.js 8787              # run it locally
 ```
@@ -201,7 +213,14 @@ node scripts/dev_mcp_server.js 8787              # run it locally
 `scripts/test_mcp_api.py` starts the real handler class on a free port and drives
 it over HTTP. Beyond protocol conformance it cross-checks five models against the
 same classes imported directly from `src/` — that is what proves this endpoint is
-plumbing rather than a second implementation that could drift.
+plumbing rather than a second implementation that could drift. It runs with no
+Redis configured, so its rate-limit checks can only prove the fail-open path.
+
+`scripts/test_rate_limit.py` proves the other half: it stands up a tiny
+in-process Upstash-REST-shaped emulator with real INCR/EXPIRE semantics, points
+real subprocesses of `api.mcp.handler` and `api.premium.handler` at it, and
+bursts past every tier on both endpoints — proving the limiter actually blocks
+at the documented boundary, not just that it compiles.
 
 `tests/test_mcp_schema.py` guards the two hand-maintained mirrors: `PARAMS` in
 `api/mcp.py` against the `MODELS` registry in `public/assets/terminal.js` (so the

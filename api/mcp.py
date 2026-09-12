@@ -118,6 +118,10 @@ ERR_INVALID_PARAMS = -32602
 ERR_INTERNAL = -32603
 ERR_HEADER_MISMATCH = -32020
 ERR_UNSUPPORTED_VERSION = -32022
+#: Plain JSON-RPC 2.0 "Server error" range (-32000 to -32099), not an
+#: MCP-allocated code — rate limiting is this server's own policy, not a
+#: protocol-level concept, so it doesn't belong in the -3202x cluster above.
+ERR_RATE_LIMITED = -32000
 
 
 # --------------------------------------------------------------------------- #
@@ -578,6 +582,103 @@ def _check_entitlement(bearer: str | None) -> str | None:
 
 
 # --------------------------------------------------------------------------- #
+# Rate limiting / spend cap — protects the two real costs a public,
+# credential-free endpoint can incur: Vercel function-invocation time (nine
+# of the eleven tools run real computation, and a couple of them — Monte
+# Carlo, the binomial lattice — are not cheap) and Upstash Redis REST calls.
+# Nothing upstream of this file limits call volume: the nine free tools need
+# zero credential, so this endpoint can be hit by anyone who finds the URL.
+#
+# Same two-tier shape as api/_lib/net.js's withinLimitLayered() (already
+# protecting api/geo.js, api/quotes.js, api/rates.js): a per-caller-IP
+# window catches one abusive source, and an IP-agnostic global window bounds
+# the *total* rate regardless of how many IPs a caller spreads across — see
+# net.js's own comment on why X-Forwarded-For is trivial to rotate against
+# anything but a trusted edge. A third, day-wide global window is this
+# endpoint's actual spend cap: a caller that stays under both short-window
+# limits but keeps calling for hours could still run up real cost, and this
+# is what bounds that worst case to something predictable no matter the
+# burst shape. All three fail OPEN (Redis unconfigured/unreachable ->
+# unmetered, not 429) — same posture net.js documents: a transient outage
+# turning every tool call into a false rate-limit rejection would be a worse
+# failure than a temporarily-unmetered endpoint.
+#
+# Python can't `require()` net.js's module (separate runtime; see the module
+# docstring on why api/premium.py's _redis_get/_effective_plan are
+# duplicated here rather than shared) — this duplicates the same primitive
+# api/premium.py's version of this comment block also duplicates.
+# --------------------------------------------------------------------------- #
+_RL_IP_MAX, _RL_IP_WINDOW_SEC = 30, 60           # one caller, one minute
+_RL_GLOBAL_MAX, _RL_GLOBAL_WINDOW_SEC = 300, 60  # every caller, one minute
+_RL_DAILY_MAX, _RL_DAILY_WINDOW_SEC = 5000, 86_400  # every caller, one day — the spend cap
+
+
+def _redis_pipeline(commands: list[list[str]]) -> list | None:
+    """Run several Redis commands in one Upstash REST round trip. Returns the
+    list of raw `result` values in order, or None if the store isn't
+    configured or the call failed outright — callers fail open on None."""
+    if not (REDIS_URL and REDIS_TOKEN):
+        return None
+    try:
+        req = urllib.request.Request(
+            f"{REDIS_URL.rstrip('/')}/pipeline",
+            data=json.dumps(commands).encode("utf-8"),
+            headers={"Authorization": f"Bearer {REDIS_TOKEN}",
+                     "Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=6) as resp:
+            results = json.loads(resp.read().decode("utf-8"))
+        return [r.get("result") for r in results]
+    except (urllib.error.URLError, TimeoutError, ValueError, json.JSONDecodeError,
+            AttributeError, TypeError):
+        return None
+
+
+def _within_limits(counters: list[tuple[str, int, int]]) -> bool:
+    """counters: (key, max_n, window_sec) triples. Every tier's INCR fires
+    together in this same request — one pipelined round trip, plus a second
+    smaller one for any first-hit EXPIREs — mirroring net.js's
+    withinLimitLayered() extended from two tiers to three. A counter whose
+    own command errored inside an otherwise-successful pipeline is treated
+    as unknown (fails open for that tier alone), not as "over limit"."""
+    results = _redis_pipeline([["INCR", key] for key, _, _ in counters])
+    if results is None:
+        return True
+    expire_cmds = [["EXPIRE", key, str(window)]
+                   for (key, _max, window), n in zip(counters, results)
+                   if isinstance(n, int) and n == 1]
+    if expire_cmds:
+        _redis_pipeline(expire_cmds)
+    return all((not isinstance(n, int)) or n <= max_n
+               for (_key, max_n, _window), n in zip(counters, results))
+
+
+def _client_ip(handler: BaseHTTPRequestHandler) -> str:
+    """Mirrors api/_lib/net.js's clientIp(): trust X-Real-Ip (Vercel's edge
+    sets this to the actual connecting client), else the LAST
+    X-Forwarded-For entry (closest to the edge, hardest for a caller to
+    spoof), else the raw socket address."""
+    real = handler.headers.get("X-Real-Ip")
+    if real:
+        return real.strip()
+    xf = handler.headers.get("X-Forwarded-For")
+    if xf:
+        parts = [p.strip() for p in xf.split(",") if p.strip()]
+        if parts:
+            return parts[-1]
+    return handler.client_address[0] if handler.client_address else "unknown"
+
+
+def _rate_limited(handler: BaseHTTPRequestHandler) -> bool:
+    ip = _client_ip(handler)
+    return not _within_limits([
+        (f"mcp:rl:ip:{ip}", _RL_IP_MAX, _RL_IP_WINDOW_SEC),
+        ("mcp:rl:global", _RL_GLOBAL_MAX, _RL_GLOBAL_WINDOW_SEC),
+        ("mcp:rl:daily", _RL_DAILY_MAX, _RL_DAILY_WINDOW_SEC),
+    ])
+
+
+# --------------------------------------------------------------------------- #
 # Tool definitions
 # --------------------------------------------------------------------------- #
 def _input_schema(mnemonic: str) -> dict:
@@ -850,29 +951,33 @@ class handler(BaseHTTPRequestHandler):
                          "Mcp-Method, Mcp-Name, Mcp-Session-Id, Last-Event-ID")
         self.send_header("Access-Control-Expose-Headers", "MCP-Protocol-Version")
 
-    def _send(self, code: int, payload: bytes | None, ctype: str | None = None) -> None:
+    def _send(self, code: int, payload: bytes | None, ctype: str | None = None,
+              extra_headers: dict | None = None) -> None:
         self.send_response(code)
         if ctype:
             self.send_header("Content-Type", ctype)
         self.send_header("Cache-Control", "no-store")
         self._cors()
+        for k, v in (extra_headers or {}).items():
+            self.send_header(k, v)
         self.send_header("Content-Length", str(len(payload or b"")))
         self.end_headers()
         if payload:
             self.wfile.write(payload)
 
-    def _json(self, code: int, obj: dict) -> None:
+    def _json(self, code: int, obj: dict, extra_headers: dict | None = None) -> None:
         # allow_nan=False: NaN/Infinity are not valid JSON and would break a
         # strict client's parser. _clean() should have removed them already;
         # this is the backstop that turns a silent corruption into an error.
         self._send(code, json.dumps(obj, allow_nan=False).encode("utf-8"),
-                   "application/json; charset=utf-8")
+                   "application/json; charset=utf-8", extra_headers)
 
-    def _rpc_error(self, http: int, rid, code: int, message: str, data=None) -> None:
+    def _rpc_error(self, http: int, rid, code: int, message: str, data=None,
+                    extra_headers: dict | None = None) -> None:
         err = {"code": code, "message": message}
         if data is not None:
             err["data"] = data
-        self._json(http, {"jsonrpc": "2.0", "id": rid, "error": err})
+        self._json(http, {"jsonrpc": "2.0", "id": rid, "error": err}, extra_headers)
 
     # -- methods ---------------------------------------------------------- #
     def do_OPTIONS(self) -> None:                     # noqa: N802
@@ -934,6 +1039,18 @@ class handler(BaseHTTPRequestHandler):
         # A notification (no id) gets 202 and no body, per the transport spec.
         if rid is None and method.startswith("notifications/"):
             return self._send(202, None)
+
+        # Rate limit only the method that actually triggers computation —
+        # tools/list, server/discover, initialize and ping are metadata, free
+        # to answer, and shouldn't cost a legitimate client its budget just
+        # for exploring what this server offers before it calls anything.
+        if method == "tools/call" and _rate_limited(self):
+            return self._rpc_error(
+                429, rid, ERR_RATE_LIMITED,
+                "Rate limit exceeded on this MCP endpoint's compute path (tools/call). "
+                "This protects shared compute and Redis budget across every caller, "
+                "not just this request — wait a moment and retry.",
+                extra_headers={"Retry-After": "30"})
 
         auth = self.headers.get("Authorization") or ""
         bearer = auth[7:].strip() if auth[:7].lower() == "bearer " else None
