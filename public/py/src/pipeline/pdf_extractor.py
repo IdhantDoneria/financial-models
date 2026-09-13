@@ -319,7 +319,18 @@ class PDFExtractor:
         (?<![\w.])
         \$?\s*                              # optional $
         \(?                                 # optional opening ( for negatives
-        (\d{1,3}(?:,\d{3})+|\d+)            # integer part w/ optional thousands sep
+        # Integer part, three groupings in priority order:
+        #   1. Western  "1,234,567"   — 3-digit groups throughout.
+        #   2. Indian   "2,99,821"    — the last group is 3 digits, every
+        #      group before it is 2 (1,00,000 is one lakh). EVERY BSE/NSE
+        #      filing writes its large figures this way, and without this
+        #      branch the western pattern fails to match past the first
+        #      group and the bare \d+ fallback then reads "2,99,821.51" as
+        #      the number 2 — a real 150,000x error found on a live BLS
+        #      full-year revenue column, silent because 2.0 is a perfectly
+        #      parseable number.
+        #   3. Bare     "1234567"
+        (\d{1,3}(?:,\d{3})+|\d{1,2}(?:,\d{2})+,\d{3}|\d+)
         (?:\.(\d+))?                        # optional decimal
         \)?                                 # optional closing )
         \s*(million|billion|thousand|bn|mn|mm|bil|mil|k)?
@@ -631,10 +642,19 @@ class PDFExtractor:
     #: the "Rs" spelling entirely and fall through to the table-row scan,
     #: which then read the FCF and the capex in the following parenthetical
     #: as two consecutive years of cash flow.
+    #: Handles the three ways a filing writes a NEGATIVE free cash flow — a
+    #: leading minus, the accounting parenthesis, and the word "negative"
+    #: before the keyword. A cash-burning quarter is real, disclosed data:
+    #: dropping it (as this pattern originally did, by requiring a leading
+    #: digit) meant the assumer synthesised a POSITIVE free cash flow in its
+    #: place, inventing a number that contradicts what the filing states.
     _FCF_PROSE_RE = re.compile(
-        r"free\s+cash\s+flow[s]?\s*(?:is|of|at|was|stood\s+at|stands\s+at)\s*"
+        r"(negative\s+)?free\s+cash\s+flow[s]?\s*"
+        r"(?:is|of|at|was|stood\s+at|stands\s+at)\s*"
         r"(?:[₹$€£]|\bRs\.?|\bINR)?\s*"
-        r"(\d[\d,]*(?:\.\d+)?)\s*(crores?|cr\b|lakhs?|million|mn|billion|bn)?",
+        r"(\(|-|–|−)?\s*(?:[₹$€£]|\bRs\.?|\bINR)?\s*"
+        r"(\d[\d,]*(?:\.\d+)?)\)?\s*"
+        r"(crores?|cr\b|lakhs?|million|mn|billion|bn)?",
         re.IGNORECASE,
     )
 
@@ -666,13 +686,16 @@ class PDFExtractor:
         """
         prose = cls._FCF_PROSE_RE.search(text)
         if prose:
-            value = float(prose.group(1).replace(",", ""))
-            unit = (prose.group(2) or "").lower().rstrip(".")
+            negated, sign, digits, unit = prose.groups()
+            value = float(digits.replace(",", ""))
+            if negated or sign:
+                value = -value
+            unit = (unit or "").lower().rstrip(".")
             if unit:
                 value *= cls.SCALE_HINTS.get(unit, 1.0)
             elif abs(value) < 1e5:
                 value *= cls._local_scale(text, prose.start())
-            if value > 0:
+            if value != 0:
                 return [value]
 
         # Table-row form. The window now starts at the END OF THE KEYWORD,

@@ -406,3 +406,98 @@ def test_fcf_table_row_still_reads_a_genuine_multi_period_row():
     """The prose fix must not cost the table-row case: a real FCF row with
     several period columns still yields all of them."""
     assert PDFExtractor._scrape_fcf_series("Free Cash Flow  40  53  65  78") == [40, 53, 65, 78]
+
+
+# --------------------------------------------------------------------------- #
+# Negative free cash flow — a real disclosed figure, not a missing one
+#
+# The extractor used to require a leading digit, so "(12) Crores" matched
+# nothing and the assumer synthesised a POSITIVE free cash flow in its place:
+# a fabricated number contradicting what the filing states, which is the exact
+# failure class this pipeline exists to refuse.
+# --------------------------------------------------------------------------- #
+_BURN_FILING = """STATEMENT OF UNAUDITED CONSOLIDATED FINANCIAL RESULTS
+Rs in Crores
+Total Income 500.00
+Net Profit for the period (80.00)
+Free Cash Flow is (12) Crores
+Paid-up equity share capital (Face Value Per Share Rs. 2/-) 20.00
+"""
+
+DCF_MODEL = "Discounted Cash Flow"
+RDCF_MODEL = "Reverse DCF / Market-Implied Expectations"
+
+
+@pytest.mark.parametrize("phrasing", [
+    "Free Cash Flow is (12) Crores",
+    "Free Cash Flow is -12 Crores",
+    "Free Cash Flow is Rs (12) Crores",
+    "Negative Free Cash Flow of Rs 12 Crores",
+])
+def test_negative_fcf_is_extracted_not_discarded(phrasing):
+    assert PDFExtractor._scrape_fcf_series(phrasing) == [pytest.approx(-12 * CR)]
+
+
+def test_negative_fcf_is_never_replaced_by_a_synthesised_positive():
+    """The specific silent failure: dropping the negative let the assumer fall
+    through to revenue x margin, reporting a positive free cash flow for a
+    company that disclosed a burn."""
+    data = PDFExtractor().scrape_figures(_BURN_FILING)
+    assert data.free_cash_flows == [pytest.approx(-12 * CR)]
+    fcfs = AutoAssumer().build(data).kwargs_by_model[DCF_MODEL]["free_cash_flows"]
+    assert all(f < 0 for f in fcfs), "a disclosed burn must not become a positive projection"
+
+
+def test_dcf_and_rdcf_are_gated_with_a_reason_on_a_negative_fcf():
+    """Neither model can honestly close a Gordon perpetuity on a cash burn:
+    TV = FCF_N(1+g)/(r-g) goes negative, which is arithmetic rather than a
+    valuation. ReverseDCFModel already refuses it outright via
+    _require_positive, so without the gate a filing with price/shares/TAM
+    would surface a raw ValidationError instead of an explained one."""
+    assumptions = AutoAssumer().build(PDFExtractor().scrape_figures(_BURN_FILING))
+    assert DCF_MODEL in assumptions.unavailable
+    assert RDCF_MODEL in assumptions.unavailable
+    assert "negative" in assumptions.unavailable[DCF_MODEL].lower()
+
+
+def test_gated_dcf_reports_the_explanation_not_a_raw_exception():
+    data = PDFExtractor().scrape_figures(_BURN_FILING)
+    report = AnalysisRunner(data).run(
+        AutoAssumer().build(data), [DCF_MODEL], mode="auto")
+    status = report.summary_frame().loc[lambda d: d["Model"] == DCF_MODEL, "Status"].iloc[0]
+    assert "perpetuity" in status
+    assert "Traceback" not in status and "ValidationError" not in status
+
+
+def test_a_turnaround_series_ending_positive_is_not_gated():
+    """Burning early and turning cash-positive is an ordinary, valuable
+    company — only the FINAL year drives the terminal perpetuity, so a
+    [-10, -5, 3, 8] path must still produce a real valuation."""
+    data = PDFExtractor().scrape_figures(_BURN_FILING)
+    data.free_cash_flows = [-10 * CR, -5 * CR, 3 * CR, 8 * CR]
+    assumptions = AutoAssumer().build(data)
+    assert DCF_MODEL not in assumptions.unavailable
+    report = AnalysisRunner(data).run(assumptions, [DCF_MODEL], mode="auto")
+    assert report.results[DCF_MODEL]["enterprise_value"] > 0
+
+
+def test_negative_fcf_never_derives_a_negative_revenue():
+    """base_revenue falls back to fcfs[0]/margin when revenue is unknown — a
+    negative base there would imply a company with negative sales."""
+    data = PDFExtractor().scrape_figures("Free Cash Flow is (12) Crores")
+    assert data.revenue is None
+    assumptions = AutoAssumer().build(data)
+    for model_kwargs in assumptions.kwargs_by_model.values():
+        for key in ("base_revenue", "portfolio_value"):
+            if key in model_kwargs and model_kwargs[key] is not None:
+                assert model_kwargs[key] > 0, f"{key} must stay positive"
+
+
+@pytest.mark.parametrize("fixture_name", [
+    "bls_international_q1_fy2026-27_raw_text.txt",
+    "tesla_10k_fy2025_raw_text_excerpts.txt",
+    "caplin_point_q1_fy2026-27_raw_text.txt",
+])
+def test_positive_fcf_filings_are_untouched_by_the_negative_handling(fixture_name):
+    data = PDFExtractor().scrape_figures((FIXTURES / fixture_name).read_text())
+    assert DCF_MODEL not in AutoAssumer().build(data).unavailable
