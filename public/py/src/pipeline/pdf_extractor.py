@@ -116,6 +116,14 @@ class ExtractedFinancials:
     #: recording which one was used is what makes the numbers checkable
     #: against the source instead of merely plausible.
     statement_basis: str = "unsegmented"
+    #: Trailing-twelve-month values for the income-statement flow rows a
+    #: quarterly filing reports, keyed by the field name they correspond to
+    #: above. Populated only when the filing's own column headers *prove*
+    #: the arithmetic is valid — see :meth:`PDFExtractor.scrape_ttm_flows`.
+    #: Empty for an annual filing, and for any quarterly one where the proof
+    #: fails. Consumers use it in place of a x4 run-rate; see
+    #: ``web_bridge._annualise_quarterly``.
+    ttm_flows: dict[str, float] = field(default_factory=dict)
     #: Which backends actually produced text (for debugging in the UI).
     backends_used: list[str] = field(default_factory=list)
     #: Raw text (first ~50k chars) kept for downstream inspection.
@@ -150,6 +158,7 @@ class ExtractedFinancials:
             "currency": self.currency,
             "dividend_is_annual": self.dividend_is_annual,
             "statement_basis": self.statement_basis,
+            "ttm_flows": self.ttm_flows,
             "backends_used": self.backends_used,
         }
 
@@ -822,6 +831,187 @@ class PDFExtractor:
                             for n, inline_unit in nums]
         return None
 
+    #: The column-header date row of a SEBI-format results statement, which
+    #: labels every data column with the period it covers. Reading these is
+    #: what turns the column ordering from an assumption into something the
+    #: filing itself states — see :meth:`_ttm_column_dates`.
+    #:
+    #: Both real spellings are matched, because two real filings of the same
+    #: regulated format disagree: Caplin Point heads its columns
+    #: "30.06.2026 | 31.03.2026 | 30.06.2025 | 31.03.2026" and BLS
+    #: International "June 30, 2026 | March 31, 2026 | June 30, 2025 |
+    #: March 31, 2026". Handling only the numeric form silently withheld the
+    #: TTM from every filing that writes its months out.
+    _COLUMN_DATE_RE = re.compile(
+        r"\b(\d{2})[./-](\d{2})[./-](\d{4})\b"
+        r"|\b(January|February|March|April|May|June|July|August|September"
+        r"|October|November|December)\s+\d{1,2},?\s+(\d{4})\b",
+        re.IGNORECASE,
+    )
+
+    _MONTH_NUMBERS = {
+        "january": 1, "february": 2, "march": 3, "april": 4, "may": 5,
+        "june": 6, "july": 7, "august": 8, "september": 9, "october": 10,
+        "november": 11, "december": 12,
+    }
+
+    @classmethod
+    def _column_month_index(cls, groups: tuple[str, ...]) -> int | None:
+        """A column-header date as a months-since-year-zero ordinal.
+
+        The day is deliberately dropped: these columns are always period
+        ends, so the day is whatever that month's last day happens to be and
+        carries no information the comparison needs.
+        """
+        _day, month, year, month_name, name_year = groups
+        if month_name:
+            return int(name_year) * 12 + cls._MONTH_NUMBERS[month_name.lower()]
+        if year:
+            return int(year) * 12 + int(month)
+        return None
+
+    #: Statement rows a TTM can be built from. Deliberately much narrower
+    #: than the equivalent lists in :meth:`scrape_figures`: those include
+    #: prose fallbacks ("Free Cash reserves are at ...") which state one
+    #: figure for one period and so can never supply the four period columns
+    #: this arithmetic needs. A TTM row has to be an actual statement row.
+    #: Ordered STATUTORY LABEL FIRST, which is the opposite of
+    #: :meth:`scrape_figures` and deliberately so. That method may legitimately
+    #: take a figure from a press-release headline; a TTM may not, because
+    #: only the statutory table carries the four dated period columns this
+    #: arithmetic reads. Two real filings disagree about which label the
+    #: statutory top line even uses — BLS calls it "Income from operations"
+    #: and Caplin Point "Total income", reserving "Total Revenue" for its
+    #: press release and investor deck — so both are tried before the
+    #: narrative wordings. :meth:`scrape_ttm_flows` then verifies the row it
+    #: found reconciles with the extracted quarterly figure.
+    #: How far past the dated header the statutory table is taken to run.
+    #: Generous enough for a full SEBI results statement including its
+    #: segment breakdown, and far short of the press release and investor
+    #: deck that real filings staple on afterwards.
+    _TTM_TABLE_SPAN = 12_000
+
+    _TTM_ROW_PATTERNS: dict[str, list[str]] = {
+        "revenue": [r"income\s+from\s+operations", r"total\s+income",
+                    r"total\s+revenue", r"net\s+revenue"],
+        "net_income": [r"net\s+profit\s+for\s+the\s+\S+",
+                       r"profit\s+for\s+the\s+(?:period|quarter|year)"],
+        "interest_expense": [r"finance\s+costs?", r"interest\s+expense"],
+        # Both conjunctions, as scrape_figures already handles: a real
+        # Caplin Point statement writes "Depreciation & Amortisation
+        # Expense" and a real Tesla 10-K "Depreciation and amortization".
+        "depreciation_amortization": [
+            r"depreciation\s*(?:&|and)\s*amorti[sz]ation(?:\s+expenses?)?"],
+    }
+
+    @classmethod
+    def _ttm_column_dates(cls, text: str) -> int | None:
+        """Does this filing's own header prove a TTM is derivable from it?
+
+        ``TTM = full_year + current_quarter - same_quarter_last_year`` is
+        the standard roll-forward, and it is **only** valid for a FIRST-
+        quarter filing. At Q1 the stated full year is the year that ended
+        immediately before this quarter, so adding this quarter and removing
+        the one it replaces lands exactly on the last twelve months. At Q2
+        the same three columns leave Q1 of the current year unaccounted for
+        entirely, and the result is not a twelve-month figure at all — it
+        merely looks like one, which is the more dangerous outcome.
+
+        Rather than assume which quarter a filing covers, this reads the
+        four dates SEBI requires in the column header and checks the
+        relationship holds: the quarter-end column must fall one to four
+        months after the year-end column, and the comparative quarter must
+        sit twelve months before the current one. A filing whose header does
+        not say so is left on the run-rate path — an unprovable TTM is not a
+        TTM.
+
+        Returns the offset just past the header — where the table it governs
+        begins — so callers can confine themselves to that table, or ``None``.
+        """
+        header = cls._SEBI_QUARTERLY_HEADER_RE.search(text)
+        if not header:
+            return None
+        # From the END of the "Quarter ended ... Year Ended" header, never
+        # its start: the statement's own title ("...FOR THE QUARTER ENDED
+        # JUNE 30, 2026") sits immediately before it and is itself a date.
+        # Counting it shifts every column one place left, so the check then
+        # compares the title against the current quarter and the real
+        # full-year column is never looked at at all.
+        window = text[header.end(): header.end() + 400]
+        months = [i for i in (cls._column_month_index(g)
+                              for g in cls._COLUMN_DATE_RE.findall(window))
+                  if i is not None]
+        if len(months) < 4:
+            return None
+        current_q, _prev_q, year_ago_q, full_year = months[:4]
+        if 1 <= current_q - full_year <= 4 and current_q - year_ago_q == 12:
+            return header.end()
+        return None
+
+    @classmethod
+    def scrape_ttm_flows(
+        cls, text: str, current: dict[str, float | None],
+    ) -> dict[str, float]:
+        """Trailing-twelve-month values for the flow rows this filing states.
+
+        A quarterly filing's flows are otherwise put on an annual footing by
+        multiplying by four, which assumes the other three quarters look
+        like this one. For a real Caplin Point Q1 that assumption is worth
+        ₹162 crore of revenue: the x4 run-rate is ₹2,575.64 Cr against a
+        true TTM of ₹2,413.28 Cr (₹2,302.73 Cr full year + ₹643.91 Cr this
+        quarter - ₹533.36 Cr the same quarter last year).
+
+        Note this is *not* the same as reading the filing's "Year Ended"
+        column directly. That column is the PRIOR COMPLETED financial year,
+        which ended before the quarter being reported — using it would throw
+        away the most recent quarter and report data up to a year stale.
+        Three different numbers, and only the TTM is the last twelve months.
+
+        ``current`` is the already-extracted quarterly value per field. Each
+        row's own current-quarter column must agree with it, or the TTM is
+        discarded: agreement is what proves both numbers came off the same
+        physical statement row. Without that check the two resolve
+        independently, and on a real BLS filing they landed on different
+        lines of the same statement — "Income from operations" against
+        "Total income", which differ by other income — so the annualised
+        figure silently changed what "revenue" meant.
+
+        Returns ``{}`` — meaning "use the run-rate" — unless
+        :meth:`_ttm_column_dates` proves the arithmetic applies.
+        """
+        table_start = cls._ttm_column_dates(text)
+        if table_start is None:
+            return {}
+        # Confined to the table the dated header actually governs. The dates
+        # prove a column layout for THAT table and nothing else, and a real
+        # Caplin Point filing shows why that matters: its press release
+        # states "Total revenue at ₹644 Crores; an increase of 20.7% YoY"
+        # and its PAT on the next line, so an unconfined row scan read
+        # [644, 20.7, 179, 18.8] as four period columns and returned a
+        # "TTM revenue" of ₹483.8 Cr — built from two percentages and a
+        # profit figure, and close enough to a real number to pass every
+        # sanity check downstream.
+        table = text[table_start: table_start + cls._TTM_TABLE_SPAN]
+        out: dict[str, float] = {}
+        for field_name, patterns in cls._TTM_ROW_PATTERNS.items():
+            quarter = current.get(field_name)
+            if quarter is None or quarter == 0:
+                continue
+            cols = cls._scrape_row_columns(table, patterns)
+            # Four columns exactly: fewer means a row this technique cannot
+            # read, and _scrape_row_columns caps at four so more is impossible.
+            if not cols or len(cols) != 4:
+                continue
+            # abs() both sides: an expense row is stored as a positive
+            # magnitude by scrape_figures but may be parenthesised, hence
+            # negative, in the table itself.
+            if abs(abs(cols[0]) - abs(quarter)) > 0.005 * abs(quarter):
+                continue
+            ttm = cols[3] + cols[0] - cols[2]
+            if abs(ttm) > 0:
+                out[field_name] = abs(ttm) if quarter > 0 else ttm
+        return out
+
     @classmethod
     def _derive_yoy_metrics(cls, text: str) -> dict[str, float]:
         """Real same-document YoY revenue growth / PBT margin / effective
@@ -1243,6 +1433,13 @@ class PDFExtractor:
                 data.operating_margin = yoy["operating_margin"]
             if data.tax_rate is None and "tax_rate" in yoy:
                 data.tax_rate = yoy["tax_rate"]
+
+        # Read from the selected statement section for the same reason every
+        # absolute figure is: a TTM built by mixing a consolidated quarter
+        # into a standalone full year is two different companies' arithmetic.
+        data.ttm_flows = self.scrape_ttm_flows(
+            figures_text,
+            {f: getattr(data, f) for f in self._TTM_ROW_PATTERNS})
 
         data.raw_text = text[:50_000]
         return data

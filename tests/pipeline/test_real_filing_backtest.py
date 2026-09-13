@@ -578,3 +578,132 @@ def test_a_share_count_below_the_domain_floor_takes_the_header_unit():
         "Total revenue 2,341,000\n"
         "Shares outstanding 3,210\n")
     assert data.shares_outstanding == pytest.approx(3_210_000)
+
+
+# --------------------------------------------------------------------------
+# Trailing twelve months instead of a x4 run-rate.
+#
+# A run-rate asserts the other three quarters look like this one. TTM reads
+# what the filing actually reports: full year + this quarter - the quarter it
+# replaces. Caplin Point's Q1 FY27 is ₹2,413.28 Cr TTM against ₹2,575.64 Cr
+# run-rated, so the run-rate overstates the DCF's base year by 6.7% before
+# any projection compounds it.
+# --------------------------------------------------------------------------
+
+def _sebi_table(q, prev, year_ago, full_year):
+    """A minimal SEBI-format results table with settable column dates."""
+    return (
+        "STATEMENT OF UNAUDITED CONSOLIDATED FINANCIAL RESULTS\n"
+        f"Quarter Ended \nYear Ended \n{q} \n{prev} \n{year_ago} \n{full_year} \n"
+        ", in Crores \nTotal income \n643.91 \n628.52 \n533.36 \n2,302.73 \n"
+    )
+
+_Q1_DATES = ("30.06.2026", "31.03.2026", "30.06.2025", "31.03.2026")
+
+
+def test_caplin_ttm_revenue_matches_the_filings_own_columns():
+    """2,302.73 (FY26) + 643.91 (Q1 FY27) - 533.36 (Q1 FY26) = 2,413.28."""
+    data = PDFExtractor().scrape_figures(
+        (FIXTURES / "caplin_point_q1_fy2026-27_raw_text.txt").read_text())
+    assert data.ttm_flows["revenue"] == pytest.approx(2_413.28 * CR, rel=1e-4)
+    assert data.ttm_flows["depreciation_amortization"] == pytest.approx(
+        78.10 * CR, rel=1e-4)   # 72.77 + 21.62 - 16.29
+
+
+def test_bls_ttm_revenue_matches_the_filings_own_columns():
+    """The same arithmetic on a filing that writes its dates out in words
+    and labels its top line "Income from operations" rather than "Total
+    income" — the two real filings disagree on both counts."""
+    data = PDFExtractor().scrape_figures(
+        (FIXTURES / "bls_international_q1_fy2026-27_raw_text.txt").read_text())
+    assert data.ttm_flows["revenue"] == pytest.approx(
+        (2_99_821.51 + 89_052.66 - 71_056.00) * 1e5, rel=1e-3)
+
+
+def test_an_annual_filing_gets_no_ttm():
+    data = PDFExtractor().scrape_figures(
+        (FIXTURES / "tesla_10k_fy2025_raw_text_excerpts.txt").read_text())
+    assert data.ttm_flows == {}
+
+
+@pytest.mark.parametrize("dates, label", [
+    (_Q1_DATES, "Q1"),
+    (("30.09.2026", "30.06.2026", "30.09.2025", "31.03.2026"), "Q2"),
+    (("31.12.2026", "30.09.2026", "31.12.2025", "31.03.2026"), "Q3"),
+    (("31.03.2027", "31.12.2026", "31.03.2026", "31.03.2027"), "Q4"),
+    (("30.06.2026", "31.03.2026", "30.06.2024", "31.03.2026"), "2-year gap"),
+])
+def test_ttm_is_derived_only_for_a_first_quarter_filing(dates, label):
+    """`full_year + this_quarter - year_ago_quarter` is a twelve-month figure
+    ONLY at Q1, where the stated full year ended immediately before this
+    quarter. At Q2 the same three columns leave Q1 of the current year out
+    altogether and the result is not a year of anything — it just looks like
+    one, which is worse than declining to compute it."""
+    data = PDFExtractor().scrape_figures(_sebi_table(*dates))
+    assert bool(data.ttm_flows) is (label == "Q1")
+
+
+def test_ttm_reads_long_form_column_dates_too():
+    """BLS heads its columns "June 30, 2026"; Caplin "30.06.2026". Handling
+    only the numeric form silently withheld TTM from half of real filings."""
+    data = PDFExtractor().scrape_figures(_sebi_table(
+        "June 30, 2026", "March 31, 2026", "June 30, 2025", "March 31, 2026"))
+    assert data.ttm_flows["revenue"] == pytest.approx(2_413.28 * CR, rel=1e-4)
+
+
+def test_ttm_ignores_a_press_release_outside_the_dated_table():
+    """Caplin's press release reads "Total revenue at ₹644 Crores; an
+    increase of 20.7% YoY" with PAT on the next line. An unconfined row scan
+    read [644, 20.7, 179, 18.8] as four period columns and produced a "TTM
+    revenue" of ₹483.8 Cr — two percentages and a profit figure, plausible
+    enough to pass everything downstream."""
+    data = PDFExtractor().scrape_figures(
+        (FIXTURES / "caplin_point_q1_fy2026-27_raw_text.txt").read_text())
+    assert data.ttm_flows["revenue"] != pytest.approx(483.8 * CR, rel=1e-3)
+
+
+def test_ttm_is_rejected_when_its_row_disagrees_with_the_quarterly_figure():
+    """The row TTM reads must be the row the quarterly figure came from.
+    Here the table's own current-quarter column contradicts the stated
+    quarterly revenue, so the TTM is discarded rather than reconciled."""
+    text = _sebi_table(*_Q1_DATES).replace(
+        "Total income \n643.91", "Total income \n999.99")
+    data = PDFExtractor().scrape_figures(text)
+    data.revenue = 643.91 * CR
+    assert PDFExtractor.scrape_ttm_flows(text, {"revenue": 643.91 * CR}) == {}
+
+
+# --------------------------------------------------------------------------
+# A growth rate read from a quarterly filing is already year-over-year.
+# --------------------------------------------------------------------------
+
+def _web_bridge():
+    import importlib.util
+    root = FIXTURES.parent.parent
+    spec = importlib.util.spec_from_file_location(
+        "web_bridge_under_test", root / "public" / "py" / "web_bridge.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_a_yoy_growth_rate_is_not_compounded_to_the_fourth_power():
+    """_derive_yoy_metrics divides this quarter by the SAME QUARTER one year
+    earlier, so its output is annual already. Compounding it as if it were a
+    quarter-over-quarter rate turned Caplin's real 20.7% into 112.4% and
+    handed that to the DCF as its growth assumption."""
+    data = PDFExtractor().scrape_figures(
+        (FIXTURES / "caplin_point_q1_fy2026-27_raw_text.txt").read_text())
+    assert data.revenue_growth == pytest.approx(0.2073, abs=1e-3)
+    _web_bridge()._annualise_quarterly(data, dividend_is_periodic=False)
+    assert data.revenue_growth == pytest.approx(0.2073, abs=1e-3)
+
+
+def test_annualisation_prefers_ttm_and_falls_back_to_the_run_rate():
+    data = PDFExtractor().scrape_figures(
+        (FIXTURES / "caplin_point_q1_fy2026-27_raw_text.txt").read_text())
+    quarterly_capex = data.capital_expenditures
+    _web_bridge()._annualise_quarterly(data, dividend_is_periodic=False)
+    assert data.revenue == pytest.approx(2_413.28 * CR, rel=1e-4)
+    if quarterly_capex is not None:   # no period-column row: still x4
+        assert data.capital_expenditures == pytest.approx(quarterly_capex * 4)
