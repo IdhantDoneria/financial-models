@@ -99,6 +99,23 @@ class ExtractedFinancials:
     #: Defaults to "USD" (this pipeline's original, implicit assumption)
     #: when the document gives no more specific signal.
     currency: str = "USD"
+    #: True when ``dividend_per_share`` is a whole-year declaration rather
+    #: than one period's payment — an Indian board resolution recommends a
+    #: "Final Dividend of Rs.4/- per equity share for the financial year
+    #: ended March 31, 2026", which is the ANNUAL dividend, stated inside a
+    #: quarterly results filing. The quarterly-to-annual scaling would
+    #: otherwise multiply it by four and report a ₹16 dividend the company
+    #: never declared — a wrong number that looks more credible than the old
+    #: placeholder precisely because it is built from a real extracted one.
+    dividend_is_annual: bool = False
+    #: Which reporting basis every *figure* above was read from:
+    #: ``"consolidated"``, ``"standalone"``, or ``"unsegmented"`` when the
+    #: document carries no statement-section headers to choose between (a
+    #: US 10-K, a press release on its own). A filing that publishes both
+    #: bases states each figure twice, with genuinely different values —
+    #: recording which one was used is what makes the numbers checkable
+    #: against the source instead of merely plausible.
+    statement_basis: str = "unsegmented"
     #: Which backends actually produced text (for debugging in the UI).
     backends_used: list[str] = field(default_factory=list)
     #: Raw text (first ~50k chars) kept for downstream inspection.
@@ -131,6 +148,8 @@ class ExtractedFinancials:
             "interest_expense": self.interest_expense,
             "disclosed_volatility": self.disclosed_volatility,
             "currency": self.currency,
+            "dividend_is_annual": self.dividend_is_annual,
+            "statement_basis": self.statement_basis,
             "backends_used": self.backends_used,
         }
 
@@ -460,6 +479,30 @@ class PDFExtractor:
         return None
 
     @classmethod
+    def _first_after_widening(
+        cls, section: str, full: str, patterns: list[str], **kwargs: Any,
+    ) -> float | None:
+        """:meth:`_first_after` on the statement section, then the whole document.
+
+        Used for *ratios* only — growth, margin, effective tax rate — and
+        deliberately not for absolute figures. The difference is that the two
+        reporting bases state genuinely different absolute numbers (Caplin
+        Point's quarterly revenue is ₹202.95 Cr standalone and ₹643.9 Cr
+        consolidated), so reading one field from each is a real error; a
+        margin or a growth rate is the same order of thing either way.
+
+        Ratios also routinely live *outside* any statement section: a filing
+        narrates "Revenue growth 12%" in its press release or covering
+        letter, pages before the statement it belongs to. Confining them to
+        the section would discard a figure the filing states outright in
+        favour of one derived, or worse, of a generic default.
+        """
+        found = cls._first_after(section, patterns, **kwargs)
+        if found is not None or section is full:
+            return found
+        return cls._first_after(full, patterns, **kwargs)
+
+    @classmethod
     def _guess_scale_for_text(cls, snippet: str) -> float:
         """Detect an "in $ millions" / "in lakhs" / etc. header within ``snippet``."""
         header = snippet.lower()
@@ -508,19 +551,158 @@ class PDFExtractor:
             return local
         return cls._guess_scale_for_text(text[:6000])
 
+    #: The header every SEBI-format results statement opens with, captured
+    #: per basis — "STATEMENT OF UNAUDITED CONSOLIDATED FINANCIAL RESULTS FOR
+    #: THE QUARTER ENDED ...". Deliberately requires the "statement of" +
+    #: "financial results" frame rather than the bare word "consolidated":
+    #: the word alone appears dozens of times in narrative notes, auditor
+    #: language and segment tables, none of which begin a statement.
+    _STATEMENT_SECTION_RE = re.compile(
+        r"statement\s+of\s+(?:the\s+)?(?:un[\s-]?audited|audited|reviewed)?\s*"
+        r"(consolidated|standalone|stand[\s-]alone)\s+financial\s+results",
+        re.IGNORECASE,
+    )
+
+    @classmethod
+    def _select_statement_section(cls, text: str) -> tuple[str, str]:
+        """Narrow extraction to a single reporting basis, preferring consolidated.
+
+        This is the fix for the failure mode that made a real Caplin Point
+        filing produce an internally contradictory report: every field was
+        resolved by scanning the *whole* document for that field's own
+        keyword, so which basis a figure came from was decided by nothing
+        more principled than where its label happened to fall in the file.
+
+        That is not a stable rule, because document order is not stable. Two
+        real filings order the two statements oppositely:
+
+        * BLS International publishes CONSOLIDATED first, STANDALONE second —
+          so first-match-wins happened to read consolidated throughout, and
+          looked correct.
+        * Caplin Point publishes STANDALONE first, CONSOLIDATED second — so
+          the same logic read revenue from the consolidated press-release
+          table (₹643.9 Cr) but net income (₹120.38 Cr) and D&A (₹6.56 Cr)
+          from the standalone statement, blending two different companies'
+          worth of figures into one statement. Every ratio computed from a
+          mixed pair (margin, D&A/revenue, cost of debt) is then meaningless
+          while still looking entirely reasonable.
+
+        Consolidated is preferred because it is the basis that describes the
+        whole economic entity, which is what a valuation is of; standalone
+        excludes subsidiaries, and for a group like Caplin Point (whose
+        LatAm operating subsidiaries are most of the business) the two differ
+        by roughly 3x.
+
+        Returns:
+            ``(section_text, basis)`` — the slice figures should be read
+            from, and which basis it is. A document with no statement
+            headers at all (a US 10-K, a standalone press release) returns
+            the full text unchanged and ``"unsegmented"``, so nothing about
+            those formats changes.
+        """
+        marks = [(m.start(), m.group(1).lower().replace(" ", "").replace("-", ""))
+                 for m in cls._STATEMENT_SECTION_RE.finditer(text)]
+        if not marks:
+            return text, "unsegmented"
+
+        preferred = next((pos for pos, basis in marks if basis == "consolidated"), None)
+        basis = "consolidated"
+        if preferred is None:
+            preferred = marks[0][0]
+            basis = "standalone"
+
+        # The section runs until the next statement header of the *other*
+        # basis — an auditor's review report on the other statement counts,
+        # since it quotes that statement's figures and would reintroduce
+        # exactly the cross-basis bleed this is preventing.
+        end = next((pos for pos, other in marks
+                    if pos > preferred and other != basis), len(text))
+        return text[preferred:end], basis
+
+    #: Free cash flow as a results announcement states it in prose — "Free
+    #: Cash Flow is ₹40 Crores (after Capex investment of ₹55 Crores)". Bound
+    #: tightly to the keyword's own clause: it must be the number directly
+    #: after "is"/"of"/"at"/"stood at", on the same line, and the pattern
+    #: stops before the parenthetical so the capex figure inside it can never
+    #: be mistaken for the cash flow.
+    #: The currency prefix is optional AND spelled several ways in the same
+    #: corpus — "₹40 Crores" in one section of a filing and "Rs 40 Crores" or
+    #: "Rs.40" in another. Accepting only the ₹ glyph made this pattern miss
+    #: the "Rs" spelling entirely and fall through to the table-row scan,
+    #: which then read the FCF and the capex in the following parenthetical
+    #: as two consecutive years of cash flow.
+    _FCF_PROSE_RE = re.compile(
+        r"free\s+cash\s+flow[s]?\s*(?:is|of|at|was|stood\s+at|stands\s+at)\s*"
+        r"(?:[₹$€£]|\bRs\.?|\bINR)?\s*"
+        r"(\d[\d,]*(?:\.\d+)?)\s*(crores?|cr\b|lakhs?|million|mn|billion|bn)?",
+        re.IGNORECASE,
+    )
+
+    #: A parenthetical that explains what was deducted to reach the figure —
+    #: "(after Capex investment of ₹55 Crores)". Its number qualifies the
+    #: cash flow; it is not another period's cash flow, and the table-row
+    #: scan below has no other way to tell the difference.
+    _CAPEX_ASIDE_RE = re.compile(
+        r"\([^)]*\b(?:capex|capital\s+expenditure)[^)]*\)", re.IGNORECASE)
+
     @classmethod
     def _scrape_fcf_series(cls, text: str) -> list[float]:
-        """Find a Free Cash Flow row and return its multi-year values (in $)."""
+        """Find free cash flow — the prose statement first, then a table row.
+
+        The prose form is tried first because it is unambiguous: it names one
+        figure, for one period, in the same clause as the keyword. The
+        table-row scan below cannot make that guarantee, and on a real Caplin
+        Point filing it demonstrated exactly how badly that fails — its
+        ``[^\\n]*`` skipped over the real "₹40 Crores" sitting on the keyword's
+        own line, then harvested the *following* line, returning
+        ``[65, 78, 22]`` crores. Only the 65 was even a currency figure (a
+        capex number); 78 and 22 were the two halves of a geographic revenue
+        split, "in the range of 78% and 22% respectively". Those three values
+        were then passed to the DCF as its free-cash-flow trajectory.
+
+        Returns a single-element list when the document states one figure for
+        one period — callers must treat that as a *base* to project from, not
+        as a complete multi-year series (see AutoAssumer._synth_fcfs).
+        """
+        prose = cls._FCF_PROSE_RE.search(text)
+        if prose:
+            value = float(prose.group(1).replace(",", ""))
+            unit = (prose.group(2) or "").lower().rstrip(".")
+            if unit:
+                value *= cls.SCALE_HINTS.get(unit, 1.0)
+            elif abs(value) < 1e5:
+                value *= cls._local_scale(text, prose.start())
+            if value > 0:
+                return [value]
+
+        # Table-row form. The window now starts at the END OF THE KEYWORD,
+        # not at the end of its line: a table row states its values on the
+        # label's own line ("Free Cash Flow  40  53  65"), and the previous
+        # `[^\n]*` skipped exactly those before reading anything. Kept at 200
+        # characters, which still spans the label-on-one-line /
+        # values-on-the-next layout that PDF text extraction often produces.
         rows = re.finditer(
-            r"(free\s+cash\s+flow|fcf|cash\s+flow\s+from\s+operations\s*-\s*capex)"
-            r"[^\n]*\n?([\s\S]{0,200})",
+            r"free\s+cash\s+flow[s]?|(?<![a-z])fcf(?![a-z])"
+            r"|cash\s+flow\s+from\s+operations\s*-\s*capex",
             text, re.IGNORECASE,
         )
         for row in rows:
-            tail = row.group(2)
-            # Extract every numeric token; keep 3-7 realistic values.
-            nums = [cls._parse_number(m.group(0)) for m in cls._NUMBER_RE.finditer(tail)]
-            nums = [n for n in nums if n is not None and abs(n) > 0.01]
+            tail = text[row.end(): row.end() + 200]
+            # Blank out capex asides (same length, so no offset shifts) before
+            # scanning — see _CAPEX_ASIDE_RE.
+            tail = cls._CAPEX_ASIDE_RE.sub(lambda m: " " * len(m.group(0)), tail)
+            nums: list[float] = []
+            for m in cls._NUMBER_RE.finditer(tail):
+                # A percentage is never a cash flow. This is the guard that
+                # was missing when a "78% and 22%" revenue split was read as
+                # two years of free cash flow.
+                if tail[m.end(): m.end() + 1] == "%":
+                    continue
+                if cls._DATE_TAIL_RE.match(tail[m.end():]):
+                    continue
+                value = cls._parse_number(m.group(0))
+                if value is not None and abs(value) > 0.01:
+                    nums.append(value)
             if 2 <= len(nums) <= 8:
                 # Scale detected near this specific row, not a single
                 # document-wide guess (see _local_scale).
@@ -627,6 +809,107 @@ class PDFExtractor:
     def _plausible_share_count(value: float) -> bool:
         return value >= 1_000
 
+    #: The paid-up-capital row of a SEBI-format results statement, with the
+    #: face value per share stated inline in the label itself. Two real
+    #: spellings, both handled: Caplin Point's "Paid up Equity Share Capital
+    #: (Face value of shares of Rs 2/- each)" and BLS's "Paid-up equity share
+    #: capital ( Face Value Per Share Re. 1/-)" — note "Rs"/"Re", the
+    #: optional hyphen, the stray inner space, and the "/-" suffix.
+    _PAID_UP_CAPITAL_RE = re.compile(
+        r"paid[\s-]?up\s+equity\s+share\s+capital[^\n]*?"
+        r"(?:face\s+value[^\n]*?)?\bRs?e?\.?\s*(\d+(?:\.\d+)?)\s*/?-?\s*(?:each|per\s+share)?",
+        re.IGNORECASE,
+    )
+
+    #: A board-recommended dividend as Indian filings actually word it:
+    #: "Recommended a Final Dividend of Rs.4/- (200%) per equity share of
+    #: Rs.2/- each". The amount and the face value are both "Rs.N/-" tokens in
+    #: one sentence, so the pattern has to bind to the FIRST (the dividend)
+    #: and stop before the second (the face value) — reading the wrong one
+    #: silently reports a ₹2 dividend that was never declared.
+    _DIVIDEND_PROSE_RE = re.compile(
+        r"dividend\s+of\s+Rs?e?\.?\s*(\d+(?:\.\d+)?)\s*/?-?"
+        r"(?:\s*\([^)]*\))?\s*per\s+(?:equity\s+)?share",
+        re.IGNORECASE,
+    )
+
+    #: Wording that marks a declared dividend as covering a whole financial
+    #: year rather than one reporting period — checked in the sentence around
+    #: the match, not document-wide.
+    _ANNUAL_DIVIDEND_CUES = (
+        r"final\s+dividend",
+        r"for\s+the\s+(?:financial\s+)?year\s+ended",
+        r"per\s+annum",
+    )
+
+    @classmethod
+    def _scrape_dividend_per_share(cls, text: str) -> tuple[float | None, bool]:
+        """Dividend per share, and whether it is an annual declaration.
+
+        The table-row wording ("Dividend per share  4.00") is tried first and
+        unchanged. The prose form is what a results announcement actually
+        carries, in the covering letter rather than any statement — and it is
+        the reason a real Caplin Point filing reported the assumer's ₹2
+        placeholder while the document itself declared ₹4 two pages earlier.
+
+        Returns:
+            ``(dividend_per_share, is_annual)``. ``is_annual`` is what stops
+            a whole-year "Final Dividend" from being quadrupled into an
+            annual rate it already is.
+        """
+        table_form = cls._first_after(
+            text, [r"dividend\s+per\s+share", r"dps\b",
+                   r"declared\s+dividends\s+per\s+share"])
+        if table_form is not None:
+            return table_form, False
+        match = cls._DIVIDEND_PROSE_RE.search(text)
+        if not match:
+            return None, False
+        context = text[max(0, match.start() - 120): match.end() + 160]
+        is_annual = any(re.search(cue, context, re.IGNORECASE)
+                        for cue in cls._ANNUAL_DIVIDEND_CUES)
+        return float(match.group(1)), is_annual
+
+    @classmethod
+    def _scrape_share_count(cls, text: str) -> float | None:
+        """Shares outstanding — read directly, or derived from paid-up capital.
+
+        An Indian quarterly results statement never states a share count. It
+        states paid-up equity share capital and the face value per share, and
+        the count is exactly their quotient — Caplin Point's ₹15.20 Cr of
+        paid-up capital at ₹2 face value is 76,000,000 shares; BLS's ₹4,117.41
+        lakhs at Re.1 is 411,741,000. Without this derivation every Indian
+        filing falls back to the assumer's placeholder share count, which is
+        then divided into a real enterprise value to produce a per-share
+        number that looks precise and means nothing.
+
+        The direct US-style patterns are tried first and unchanged, so a 10-K
+        behaves exactly as before.
+        """
+        direct = cls._first_after(
+            text, [r"shares\s+outstanding",
+                   r"weighted[-\s]average\s+shares\s+outstanding",
+                   r"diluted\s+shares"],
+            apply_scale=True, plausible=cls._plausible_share_count)
+        if direct is not None:
+            return direct
+
+        for match in cls._PAID_UP_CAPITAL_RE.finditer(text):
+            face_value = float(match.group(1))
+            if face_value <= 0:
+                continue
+            capital = cls._parse_number(text[match.end(): match.end() + 120])
+            if capital is None or capital <= 0:
+                continue
+            if abs(capital) < 1e5:
+                capital *= cls._local_scale(text, match.start())
+            shares = capital / face_value
+            # Same floor the direct read uses — a derivation that lands
+            # somewhere implausible is a mis-parse, not a small company.
+            if cls._plausible_share_count(shares):
+                return shares
+        return None
+
     #: Confirms a "Current ... Long-Term" column-header pair precedes a
     #: debt row — e.g. a real Tesla 10-K debt-schedule table's header
     #: ("Net Carrying Value" split into "Current"/"Long-Term" sub-columns,
@@ -709,24 +992,43 @@ class PDFExtractor:
             the assumer stage.
         """
         company = self._extract_company_name(text)
-        # NYSE/NASDAQ/LSE cover-page listings ("NYSE: ACME"), plus the
-        # "NSE Symbol: X" / "BSE Scrip Code: N" wording Indian filings use
-        # instead (scrip codes are numeric, so only the NSE symbol form
-        # yields a ticker here).
+        # NYSE/NASDAQ/LSE cover-page listings ("NYSE: ACME"), plus every
+        # wording an Indian filing uses for the same thing. There is no one
+        # standard form: a real BLS filing writes "NSE Symbol: BLS", while a
+        # real Caplin Point filing writes "NSE: CAPLIPOINT" in its press
+        # release and "Scrip Code: CAPLIPOINT" in its covering letter — the
+        # last of which the first two patterns miss entirely.
+        #
+        # The alphabetic-only constraint on the bare "Scrip Code:" form is
+        # load-bearing, not cosmetic: the SAME label prefixes the numeric BSE
+        # code ("Scrip Code: 524742") directly above it in that same letter,
+        # and a numeric BSE code is an exchange identifier, not a ticker
+        # symbol anyone can look a quote up with.
         ticker_match = (
             re.search(r"\b(?:NYSE|NASDAQ|LSE)\s*:\s*([A-Z]{1,6})\b", text)
             or re.search(r"\bNSE\s+Symbol\s*:\s*([A-Z]{1,10})\b", text, re.IGNORECASE)
+            or re.search(r"\bNSE\s*:\s*([A-Z]{2,15})\b", text)
+            or re.search(r"\bScrip\s+Code\s*:\s*([A-Z]{2,15})\b", text)
         )
         fy_match = re.search(r"(?:fiscal|for the year ended)[^\n]{0,40}(20\d{2})",
                              text, re.IGNORECASE)
+
+        # Identity (company, ticker, fiscal year, currency) stays sourced from
+        # the WHOLE document on purpose — those live in the covering letter
+        # and cover page, which sit outside any financial-statement section.
+        # Only the figures narrow to a single reporting basis; see
+        # _select_statement_section for why mixing bases is the bug.
+        figures_text, basis = self._select_statement_section(text)
+        dividend, dividend_is_annual = self._scrape_dividend_per_share(text)
 
         data = ExtractedFinancials(
             company_name=company,
             ticker=ticker_match.group(1).upper() if ticker_match else None,
             fiscal_year=int(fy_match.group(1)) if fy_match else None,
             currency=self._detect_currency(text),
+            statement_basis=basis,
             revenue=self._first_after(
-                text, [r"total\s+revenue", r"net\s+revenue",
+                figures_text, [r"total\s+revenue", r"net\s+revenue",
                        # Ind AS / BSE-NSE quarterly-results wording: many
                        # Indian filings never use the word "revenue" for the
                        # consolidated top line at all, labelling it "Income
@@ -745,9 +1047,9 @@ class PDFExtractor:
                        # consolidated total.
                        r"(?<!segment )revenues?\b"],
                 apply_scale=True, disqualify=self._FOOTNOTE_SCOPE_DISQUALIFIERS),
-            free_cash_flows=self._scrape_fcf_series(text),
+            free_cash_flows=self._scrape_fcf_series(figures_text),
             net_income=self._first_after(
-                text, [r"net\s+income", r"net\s+earnings",
+                figures_text, [r"net\s+income", r"net\s+earnings",
                        r"profit\s+for\s+the\s+(?:period|quarter|year)",
                        # Tolerant of the "period"/"year" itself being OCR-
                        # corrupted (a real scan turned it into "neriod/vear")
@@ -757,49 +1059,69 @@ class PDFExtractor:
                        r"net\s+profit\s+for\s+the\s+\S+",
                        r"profit\s+after\s+tax", r"\bPAT\b"],
                 apply_scale=True, disqualify=self._FOOTNOTE_SCOPE_DISQUALIFIERS),
-            total_debt=self._scrape_total_debt(text),
+            total_debt=self._scrape_total_debt(figures_text),
             cash_and_equivalents=self._first_after(
-                text, [r"cash\s+and\s+(?:cash\s+)?equivalents"], apply_scale=True),
-            shares_outstanding=self._first_after(
-                text, [r"shares\s+outstanding",
-                       r"weighted[-\s]average\s+shares\s+outstanding",
-                       r"diluted\s+shares"],
-                apply_scale=True, plausible=self._plausible_share_count),
+                figures_text,
+                [r"cash\s+and\s+(?:cash\s+)?equivalents",
+                 # Indian results releases state the cash position in prose
+                 # rather than as a balance-sheet line, and never in the
+                 # US-GAAP wording above — a real Caplin Point filing says
+                 # "Free Cash reserves are at ₹1,502 Crores and Total Liquid
+                 # Assets at ₹2,875 Crores". Cash reserves are listed first
+                 # because they are the narrower, more cash-like measure;
+                 # "liquid assets" includes investments a strict
+                 # cash-and-equivalents line would exclude.
+                 r"(?:free\s+)?cash\s+reserves?\s+(?:are\s+)?(?:at|of)",
+                 r"total\s+liquid\s+assets\s+(?:are\s+)?(?:at|of)?"],
+                apply_scale=True),
+            shares_outstanding=self._scrape_share_count(figures_text),
             # "volatility" excluded: an option-pricing assumption in a stock-
             # comp footnote ("Expected share price volatility 60%"), not the
             # market price, but shares the "share price" keyword.
+            #
+            # The four fields below read the FULL document, not the selected
+            # statement section: a market price, a declared dividend, a beta
+            # and a stock-comp volatility assumption are all properties of
+            # the *equity*, identical under either reporting basis, and are
+            # stated outside the financial statements — a board-recommended
+            # dividend appears in the covering letter, pages before any
+            # statement section begins.
             current_price=self._first_after(
                 text, [r"share\s+price(?!\s+volatility)",
                        r"stock\s+price(?!\s+volatility)", r"closing\s+price"],
                 plausible=lambda v: 0 < v < 1_000_000 and self._not_year_like(v)),
-            dividend_per_share=self._first_after(
-                text, [r"dividend\s+per\s+share", r"dps\b",
-                       r"declared\s+dividends\s+per\s+share"]),
+            dividend_per_share=dividend,
+            dividend_is_annual=dividend_is_annual,
             beta=self._first_after(text, [r"\bbeta\b"], window=30),
-            revenue_growth=self._first_after(
-                text, [r"revenue\s+growth", r"y[/-]?o[/-]?y\s+growth"], window=40,
+            revenue_growth=self._first_after_widening(
+                figures_text, text,
+                [r"revenue\s+growth", r"y[/-]?o[/-]?y\s+growth"], window=40,
                 plausible=self._not_year_like),
-            operating_margin=self._first_after(
-                text, [r"operating\s+margin"], window=40,
+            operating_margin=self._first_after_widening(
+                figures_text, text, [r"operating\s+margin"], window=40,
                 plausible=self._not_year_like),
-            tax_rate=self._first_after(
-                text, [r"effective\s+tax\s+rate", r"tax\s+rate"], window=40,
+            tax_rate=self._first_after_widening(
+                figures_text, text,
+                [r"effective\s+tax\s+rate", r"tax\s+rate"], window=40,
                 plausible=self._not_year_like),
             depreciation_amortization=self._first_after(
-                text, [r"depreciation\s+and\s+amortization",
-                       r"depreciation\s*(?:&|and)\s*amortisation"],
+                figures_text, [r"depreciation\s+and\s+amortization",
+                               r"depreciation\s*(?:&|and)\s*amortisation"],
                 apply_scale=True),
             rd_expense=self._first_after(
-                text, [r"research\s+and\s+development\s+expenses?",
-                       r"research\s*(?:&|and)\s*development"],
+                figures_text, [r"research\s+and\s+development\s+expenses?",
+                               r"research\s*(?:&|and)\s*development"],
                 apply_scale=True),
             capital_expenditures=self._first_after(
-                text, [r"capital\s+expenditures?",
-                       r"purchases?\s+of\s+property(?:,?\s+plant)?"
-                       r"(?:\s*(?:&|and)\s*equipment)?"],
+                figures_text, [r"capital\s+expenditures?",
+                               r"purchases?\s+of\s+property(?:,?\s+plant)?"
+                               r"(?:\s*(?:&|and)\s*equipment)?",
+                               # "after Capex investment of ₹55 Crores" — the
+                               # prose form the same press releases use.
+                               r"capex\s+investment\s+of"],
                 apply_scale=True),
             interest_expense=self._first_after(
-                text, [r"interest\s+expense", r"finance\s+costs?"],
+                figures_text, [r"interest\s+expense", r"finance\s+costs?"],
                 apply_scale=True),
             disclosed_volatility=self._first_after(
                 text, [r"expected\s+(?:share\s+price\s+|stock\s+price\s+)?volatility"],
@@ -826,7 +1148,7 @@ class PDFExtractor:
         # see _derive_yoy_metrics for why this is scoped to a specific,
         # confirmed table layout rather than attempted on every filing.
         if data.revenue_growth is None or data.operating_margin is None or data.tax_rate is None:
-            yoy = self._derive_yoy_metrics(text)
+            yoy = self._derive_yoy_metrics(figures_text)
             if data.revenue_growth is None and "revenue_growth" in yoy:
                 data.revenue_growth = yoy["revenue_growth"]
             if data.operating_margin is None and "operating_margin" in yoy:
@@ -837,25 +1159,56 @@ class PDFExtractor:
         data.raw_text = text[:50_000]
         return data
 
-    @staticmethod
-    def _extract_company_name(text: str) -> str | None:
+    #: A sign-off capture that names a *body* rather than the filer — "For
+    #: and on behalf of the Board" / "...the Board of Directors" is an
+    #: equally standard closing to "For and on behalf of, <Company Name>",
+    #: and a real Caplin Point filing uses exactly that form (its actual
+    #: company-name sign-off, "For Caplin Point Laboratories Limited", omits
+    #: the "on behalf of" entirely). Without this guard the extractor
+    #: reported the company as literally "the Board" — a wrong-but-
+    #: plausible-looking value that then headlined every downstream report.
+    _GENERIC_SIGNOFF_RE = re.compile(
+        r"^(?:the\s+)?(?:board|directors?|board\s+of\s+directors|company|"
+        r"management|above)\b",
+        re.IGNORECASE,
+    )
+
+    #: An ALL-CAPS statement header naming the filer — "CAPLIN POINT
+    #: LABORATORIES LIMITED", "BLS INTERNATIONAL SERVICES LIMITED". Every
+    #: SEBI-format results statement repeats this immediately above the
+    #: financial table, which makes it a stronger and more universal signal
+    #: than any sign-off phrasing. Requires a legal-form suffix so a
+    #: shouted section heading ("STATEMENT OF UNAUDITED RESULTS") can't
+    #: match. Scanned line-wise rather than free-text so an OCR-mangled
+    #: neighbour line can't bleed into the capture.
+    _ALLCAPS_FILER_RE = re.compile(
+        r"^[A-Z][A-Z&.,'()\- ]{4,70}?\s(?:LIMITED|LTD\.?|INC\.?|CORPORATION|CORP\.?|PLC|LLP)\.?$"
+    )
+
+    @classmethod
+    def _extract_company_name(cls, text: str) -> str | None:
         """Locate the filer's actual name, preferring explicit signals over guesswork.
 
-        The previous approach — take the first short non-numeric-leading
+        The original approach — take the first short non-numeric-leading
         line — reliably picks up boilerplate instead of the real name: every
         SEC 10-K cover page starts with the literal line ``UNITED STATES``
         (then ``SECURITIES AND EXCHANGE COMMISSION``, ``FORM 10-K``, ...)
         before the actual company name appears; every BSE/NSE regulatory
-        filing is formatted as a letter starting with the filing date. Two
-        much more reliable, format-specific signals exist instead:
+        filing is formatted as a letter starting with the filing date.
+        Format-specific signals, in descending order of reliability:
 
         1. SEC cover pages state the name immediately before the phrase
            "(Exact name of registrant as specified in its charter)".
         2. Indian board-resolution letters close with "For and on behalf
-           of, <Company Name>".
+           of, <Company Name>" — but only when what follows is actually a
+           name and not a body (see :attr:`_GENERIC_SIGNOFF_RE`).
+        3. The ALL-CAPS filer header every SEBI-format results statement
+           carries directly above its financial table (see
+           :attr:`_ALLCAPS_FILER_RE`) — the signal that rescues a filing
+           whose only "on behalf of" phrasing names the Board.
 
         The original first-short-line heuristic is kept as a last-resort
-        fallback for formats that match neither.
+        fallback for formats that match none of the three.
         """
         sec_cover = re.search(
             r"([A-Z][^\n(]{2,78}?)\s*\(Exact name of registrant",
@@ -864,12 +1217,20 @@ class PDFExtractor:
         if sec_cover:
             return sec_cover.group(1).strip().rstrip(",.")
 
-        signoff = re.search(
-            r"for and on behalf of[,:]?\s+([^\n]{3,80})",
-            text, re.IGNORECASE,
-        )
-        if signoff:
-            return signoff.group(1).strip()
+        # Every occurrence, not just the first: a long filing can carry an
+        # auditor's or a director's "on behalf of" block before the filer's
+        # own, and only the latter names a company.
+        for signoff in re.finditer(
+            r"for and on behalf of[,:]?\s+([^\n]{3,80})", text, re.IGNORECASE,
+        ):
+            candidate = signoff.group(1).strip().rstrip(",.")
+            if candidate and not cls._GENERIC_SIGNOFF_RE.match(candidate):
+                return candidate
+
+        for line in text.splitlines():
+            stripped = line.strip()
+            if cls._ALLCAPS_FILER_RE.match(stripped):
+                return stripped
 
         first_lines = [ln.strip() for ln in text.splitlines()[:15] if ln.strip()]
         return next(

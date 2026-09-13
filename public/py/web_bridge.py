@@ -268,19 +268,52 @@ def _detect_period(text: str) -> str:
     return "quarterly" if q > a else "annual"
 
 
-def _annualise_quarterly(data: Any) -> None:
+#: Every income-statement/cash-flow figure that accrues OVER the reporting
+#: period, and therefore has to be scaled together when a quarter is put on
+#: an annual footing. Depreciation & amortisation, R&D expense and capital
+#: expenditure belong here for exactly the same reason revenue does — a
+#: quarter's worth of each — and their omission was a real bug, not a
+#: deliberate exclusion: the docstring below already claimed to scale
+#: "flows", and these are flows.
+#:
+#: The damage was silent and specific. On a real Caplin Point quarterly
+#: filing, revenue and net income were multiplied by 4 while D&A and R&D
+#: stayed at one quarter, so the object handed to the models mixed two
+#: different time bases. Nothing crashes; every ratio built from a mixed
+#: pair just quietly comes out 4x wrong — D&A/revenue, R&D intensity, and
+#: the interest-expense/total-debt cost of debt that feeds WACC.
+_QUARTERLY_FLOW_FIELDS = (
+    "revenue", "net_income", "interest_expense",
+    "depreciation_amortization", "rd_expense", "capital_expenditures",
+)
+
+#: Point-in-time balances and per-share/market attributes, deliberately NOT
+#: scaled: total debt, cash, share count, price, beta and volatility all
+#: describe a moment or the equity itself, not a period's activity.
+#: Dividend per share is scaled separately below — it IS a per-period flow,
+#: but only when the filing states a quarterly dividend.
+
+
+def _annualise_quarterly(data: Any, dividend_is_periodic: bool = True) -> None:
     """Scale quarterly *flow* figures to annual run-rates, in place.
 
     Stocks (debt, cash, shares, price, beta) are point-in-time and unchanged;
-    flows (revenue, net income, FCF, dividend) are multiplied by 4 and the
+    every flow in :data:`_QUARTERLY_FLOW_FIELDS` is multiplied by 4 and the
     quarter-over-quarter growth rate is compounded to an annual rate.
+
+    Args:
+        data: The extracted financials, mutated in place.
+        dividend_is_periodic: Whether ``dividend_per_share`` represents this
+            quarter's dividend (so ×4 gives the annual rate). A board-
+            recommended FINAL dividend is an annual declaration already and
+            must not be quadrupled — see :func:`analyze_pdf`.
     """
-    for field_name in ("revenue", "net_income", "interest_expense"):
+    for field_name in _QUARTERLY_FLOW_FIELDS:
         value = getattr(data, field_name)
         if value is not None:
             setattr(data, field_name, value * 4.0)
     data.free_cash_flows = [f * 4.0 for f in data.free_cash_flows]
-    if data.dividend_per_share is not None:
+    if dividend_is_periodic and data.dividend_per_share is not None:
         data.dividend_per_share *= 4.0
     if data.revenue_growth is not None:
         data.revenue_growth = (1.0 + data.revenue_growth) ** 4 - 1.0
@@ -394,7 +427,11 @@ def analyze_pdf(pdf_bytes: Any, period_mode: str = "auto") -> str:
     period = period_mode if period_mode in ("annual", "quarterly") \
         else _detect_period(data.raw_text)
     if period == "quarterly":
-        _annualise_quarterly(data)
+        # A "Final Dividend ... for the financial year ended" recommended in
+        # a quarterly filing is already the annual figure; only a genuinely
+        # per-period dividend gets put on an annual footing.
+        _annualise_quarterly(
+            data, dividend_is_periodic=not getattr(data, "dividend_is_annual", False))
 
     _ANALYZER.update(data=data, report=None, period=period)
     fields = _clean(data.to_dict())

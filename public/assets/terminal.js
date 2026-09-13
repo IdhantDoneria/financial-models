@@ -219,6 +219,21 @@ const CCY_SYMBOL = {
 };
 const ccySymbol = () => CCY_SYMBOL[(state.country && state.country.ccy) || "USD"] || "$";
 
+//: Currency symbol for figures read OUT OF AN UPLOADED FILING, which is a
+//  fact about that document rather than about the selected market. Anything
+//  showing an extracted number must use this; anything showing a value the
+//  user typed into a model slider uses ccySymbol() above. Falls back to the
+//  selected market only when the filing itself carried no currency signal.
+function extractedCcyCode() {
+  const code = state.ib.extracted && state.ib.extracted.fields
+    && state.ib.extracted.fields.currency;
+  return code || ((state.country && state.country.ccy) || "USD");
+}
+function extractedCcySymbol() {
+  const code = extractedCcyCode();
+  return CCY_SYMBOL[code] || (code + " ");
+}
+
 //: Shown only if every live source is unreachable — the tape never goes blank.
 const TAPE_FALLBACK = [
   "<b>BSM</b> HULL EX 15.6 CALL <i>4.7594</i>",
@@ -1642,7 +1657,16 @@ function renderIBExtracted() {
     const isMissing = value === null || value === undefined || (Array.isArray(value) && !value.length);
     const tr = document.createElement("tr");
     tr.dataset.key = key;
-    const ccyTag = IB_MONEY_FIELDS.has(key) ? ` <span class="ccytag">${ccySymbol().trim()}</span>` : "";
+    //: The currency of an uploaded filing is a property of the DOCUMENT, not
+    //  of whichever market the terminal's country selector happens to be on
+    //  — PDFExtractor._detect_currency already resolved it from the filing's
+    //  own symbols and lakh/crore wording. Reading ccySymbol() here instead
+    //  labelled a real Indian filing's ₹ figures with "$", which is not a
+    //  cosmetic slip: it restates every number as a ~85x larger amount in a
+    //  different currency. Falls back to the selector only when the document
+    //  gave no currency signal at all.
+    const ccyTag = IB_MONEY_FIELDS.has(key)
+      ? ` <span class="ccytag">${esc(extractedCcySymbol().trim())}</span>` : "";
 
     let shown;
     if (!isMissing) {
@@ -1761,7 +1785,13 @@ async function runIBReport() {
       rf_source: state.ib.rfSource,
       erp: c.erp,                       // country equity risk premium (Damodaran)
       country: c.name, country_code: c.code,
-      currency: c.ccy, currency_symbol: ccySymbol(),
+      //: The figures in this report are denominated in whatever the UPLOADED
+      //  FILING reports in — the country selector drives the cost of capital
+      //  (rf, ERP) applied to them, not what currency they are. Sending the
+      //  selector's currency here put "CURRENCY: USD" in the audit trail of a
+      //  report whose every number was in rupees, which is precisely the row
+      //  a reader checks to find that out.
+      currency: extractedCcyCode(), currency_symbol: extractedCcySymbol(),
       fx_per_usd: state.ib.fx,
       overrides: state.ib.mode === "manual" ? state.ib.dirty : {},
     };
