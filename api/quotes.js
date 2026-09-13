@@ -75,18 +75,36 @@ const SYM_RE = /^[A-Za-z0-9.\-^=]{1,16}$/;   // conservative allowlist — no pa
 //  guess, so it isn't done here yet.
 const EXCHANGE_SUFFIXES = { IN: [".NS", ".BO"] };
 
-//: Tries the caller's selected market's exchange suffix(es) first (NSE before
-//  BSE for India — NSE has materially deeper listing coverage), then the bare
-//  symbol as a last resort, so a ticker the user typed with an explicit
-//  suffix (or one where the bare symbol is what actually resolves, e.g. a US
-//  ticker looked up while India is the selected market) still works.
+//: Tries the bare symbol first — correct for most tickers on most markets,
+//  and the fast path (one call). Only if that fails does it guess at
+//  exchange suffixes, trying every known market's in turn (the caller's
+//  selected market's first, if it has any defined, purely as an ordering
+//  optimisation — never as a gate). That last part matters: `cc` here is
+//  `state.country`, the terminal's market selector for cost-of-capital
+//  defaults, which defaults to the US and has no real relationship to what
+//  ticker someone types — a user can absolutely type an Indian ticker while
+//  the market dropdown is still sitting on its default. Gating suffix
+//  resolution on `cc === "IN"` (an earlier version of this function did)
+//  meant the fix only worked for someone who'd first switched markets for
+//  an unrelated reason, which isn't how anyone actually uses this — it
+//  reproduced the exact original bug for every other caller. Confirmed live:
+//  a bare "RELIANCE" with cc=US (the default) 502'd until this changed.
 async function resolveQuote(sym, cc) {
-  const suffixes = (cc && EXCHANGE_SUFFIXES[cc]) || [];
   const hasSuffix = sym.includes(".");
-  const candidates = hasSuffix ? [sym] : [...suffixes.map((suf) => sym + suf), sym];
-  for (const candidate of candidates) {
-    const q = await quote({ sym: candidate, label: sym, money: true });
-    if (q) return { ...q, resolvedSymbol: candidate };
+  if (hasSuffix) {
+    const q = await quote({ sym, label: sym, money: true });
+    return q ? { ...q, resolvedSymbol: sym } : null;
+  }
+  const bare = await quote({ sym, label: sym, money: true });
+  if (bare) return { ...bare, resolvedSymbol: sym };
+
+  const preferred = (cc && EXCHANGE_SUFFIXES[cc]) || [];
+  const rest = Object.entries(EXCHANGE_SUFFIXES)
+    .filter(([code]) => code !== cc)
+    .flatMap(([, suf]) => suf);
+  for (const suf of [...preferred, ...rest]) {
+    const q = await quote({ sym: sym + suf, label: sym, money: true });
+    if (q) return { ...q, resolvedSymbol: sym + suf };
   }
   return null;
 }

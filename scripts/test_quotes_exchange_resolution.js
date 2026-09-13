@@ -29,7 +29,7 @@ function ok(cond, label, detail) {
 }
 
 (async () => {
-  console.log("· a bare Indian ticker resolves via NSE when cc=IN (the actual bug being fixed)");
+  console.log("· a bare Indian ticker resolves via NSE when cc=IN");
   const r1 = await call("sym=RELIANCE&cc=IN");
   ok(r1.code === 200 && r1.out.ok, "RELIANCE + cc=IN succeeds", JSON.stringify(r1.out));
   if (r1.out.ok) {
@@ -39,9 +39,22 @@ function ok(cond, label, detail) {
     ok(r1.out.symbol === "RELIANCE", "echoes the symbol the user actually typed", r1.out.symbol);
   }
 
-  console.log("· the same bare ticker WITHOUT cc still fails today (proves this isn't just luck)");
-  const r2 = await call("sym=RELIANCE");
-  ok(r2.code === 502 && r2.out.ok === false, "bare RELIANCE with no cc still 502s", JSON.stringify(r2.out));
+  // The actual bug that shipped: cc reflects state.country, the market
+  // selector for cost-of-capital defaults — it defaults to the US and a
+  // real user has no reason to switch it before typing an Indian ticker.
+  // A version of this fix that only worked when cc === "IN" therefore
+  // failed for the realistic case, which the first release of this test
+  // suite didn't check (it only ever sent cc=IN). Resolution must not
+  // depend on the caller's market selection at all.
+  console.log("· the SAME ticker with cc=US (the real default a user hits) still resolves");
+  const r2a = await call("sym=RELIANCE&cc=US");
+  ok(r2a.code === 200 && r2a.out.ok && r2a.out.resolvedSymbol === "RELIANCE.NS",
+    "RELIANCE + cc=US resolves via .NS despite the market selector saying US", JSON.stringify(r2a.out));
+
+  console.log("· and with no cc sent at all (e.g. a bare fetch with no market context)");
+  const r2b = await call("sym=RELIANCE");
+  ok(r2b.code === 200 && r2b.out.ok && r2b.out.resolvedSymbol === "RELIANCE.NS",
+    "RELIANCE with no cc resolves via .NS", JSON.stringify(r2b.out));
 
   console.log("· a non-Indian ticker looked up while India is selected is NOT mislabeled INR");
   const r3 = await call("sym=AAPL&cc=IN");
