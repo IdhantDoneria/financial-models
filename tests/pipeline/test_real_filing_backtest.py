@@ -406,3 +406,304 @@ def test_fcf_table_row_still_reads_a_genuine_multi_period_row():
     """The prose fix must not cost the table-row case: a real FCF row with
     several period columns still yields all of them."""
     assert PDFExtractor._scrape_fcf_series("Free Cash Flow  40  53  65  78") == [40, 53, 65, 78]
+
+
+# --------------------------------------------------------------------------- #
+# Negative free cash flow — a real disclosed figure, not a missing one
+#
+# The extractor used to require a leading digit, so "(12) Crores" matched
+# nothing and the assumer synthesised a POSITIVE free cash flow in its place:
+# a fabricated number contradicting what the filing states, which is the exact
+# failure class this pipeline exists to refuse.
+# --------------------------------------------------------------------------- #
+_BURN_FILING = """STATEMENT OF UNAUDITED CONSOLIDATED FINANCIAL RESULTS
+Rs in Crores
+Total Income 500.00
+Net Profit for the period (80.00)
+Free Cash Flow is (12) Crores
+Paid-up equity share capital (Face Value Per Share Rs. 2/-) 20.00
+"""
+
+DCF_MODEL = "Discounted Cash Flow"
+RDCF_MODEL = "Reverse DCF / Market-Implied Expectations"
+
+
+@pytest.mark.parametrize("phrasing", [
+    "Free Cash Flow is (12) Crores",
+    "Free Cash Flow is -12 Crores",
+    "Free Cash Flow is Rs (12) Crores",
+    "Negative Free Cash Flow of Rs 12 Crores",
+])
+def test_negative_fcf_is_extracted_not_discarded(phrasing):
+    assert PDFExtractor._scrape_fcf_series(phrasing) == [pytest.approx(-12 * CR)]
+
+
+def test_negative_fcf_is_never_replaced_by_a_synthesised_positive():
+    """The specific silent failure: dropping the negative let the assumer fall
+    through to revenue x margin, reporting a positive free cash flow for a
+    company that disclosed a burn."""
+    data = PDFExtractor().scrape_figures(_BURN_FILING)
+    assert data.free_cash_flows == [pytest.approx(-12 * CR)]
+    fcfs = AutoAssumer().build(data).kwargs_by_model[DCF_MODEL]["free_cash_flows"]
+    assert all(f < 0 for f in fcfs), "a disclosed burn must not become a positive projection"
+
+
+def test_dcf_and_rdcf_are_gated_with_a_reason_on_a_negative_fcf():
+    """Neither model can honestly close a Gordon perpetuity on a cash burn:
+    TV = FCF_N(1+g)/(r-g) goes negative, which is arithmetic rather than a
+    valuation. ReverseDCFModel already refuses it outright via
+    _require_positive, so without the gate a filing with price/shares/TAM
+    would surface a raw ValidationError instead of an explained one."""
+    assumptions = AutoAssumer().build(PDFExtractor().scrape_figures(_BURN_FILING))
+    assert DCF_MODEL in assumptions.unavailable
+    assert RDCF_MODEL in assumptions.unavailable
+    assert "negative" in assumptions.unavailable[DCF_MODEL].lower()
+
+
+def test_gated_dcf_reports_the_explanation_not_a_raw_exception():
+    data = PDFExtractor().scrape_figures(_BURN_FILING)
+    report = AnalysisRunner(data).run(
+        AutoAssumer().build(data), [DCF_MODEL], mode="auto")
+    status = report.summary_frame().loc[lambda d: d["Model"] == DCF_MODEL, "Status"].iloc[0]
+    assert "perpetuity" in status
+    assert "Traceback" not in status and "ValidationError" not in status
+
+
+def test_a_turnaround_series_ending_positive_is_not_gated():
+    """Burning early and turning cash-positive is an ordinary, valuable
+    company — only the FINAL year drives the terminal perpetuity, so a
+    [-10, -5, 3, 8] path must still produce a real valuation."""
+    data = PDFExtractor().scrape_figures(_BURN_FILING)
+    data.free_cash_flows = [-10 * CR, -5 * CR, 3 * CR, 8 * CR]
+    assumptions = AutoAssumer().build(data)
+    assert DCF_MODEL not in assumptions.unavailable
+    report = AnalysisRunner(data).run(assumptions, [DCF_MODEL], mode="auto")
+    assert report.results[DCF_MODEL]["enterprise_value"] > 0
+
+
+def test_negative_fcf_never_derives_a_negative_revenue():
+    """base_revenue falls back to fcfs[0]/margin when revenue is unknown — a
+    negative base there would imply a company with negative sales."""
+    data = PDFExtractor().scrape_figures("Free Cash Flow is (12) Crores")
+    assert data.revenue is None
+    assumptions = AutoAssumer().build(data)
+    for model_kwargs in assumptions.kwargs_by_model.values():
+        for key in ("base_revenue", "portfolio_value"):
+            if key in model_kwargs and model_kwargs[key] is not None:
+                assert model_kwargs[key] > 0, f"{key} must stay positive"
+
+
+@pytest.mark.parametrize("fixture_name", [
+    "bls_international_q1_fy2026-27_raw_text.txt",
+    "tesla_10k_fy2025_raw_text_excerpts.txt",
+    "caplin_point_q1_fy2026-27_raw_text.txt",
+])
+def test_positive_fcf_filings_are_untouched_by_the_negative_handling(fixture_name):
+    data = PDFExtractor().scrape_figures((FIXTURES / fixture_name).read_text())
+    assert DCF_MODEL not in AutoAssumer().build(data).unavailable
+
+
+# --------------------------------------------------------------------------
+# Scale headers: "(In millions)" / "(₹ in lakhs)" apply to every figure in
+# the table they head, regardless of how large that figure is.
+#
+# These cover the bug that the magnitude test `abs(value) < 1e5` used to
+# cause at seven call sites: it was standing in for "this token did not
+# already carry its own inline unit suffix", and a genuinely large figure in
+# a scaled table failed the proxy and silently lost its multiplier. The
+# failure scaled with company size — Apple's real FY2024 net sales came out
+# as 391 thousand dollars — so it was invisible on small filers and worst on
+# exactly the ones a user is most likely to try first.
+# --------------------------------------------------------------------------
+
+_APPLE_SCALED_TABLE = """APPLE INC.
+CONSOLIDATED STATEMENTS OF OPERATIONS
+(In millions, except number of shares which are reflected in thousands)
+Total revenue {revenue}
+Interest expense 3,933
+"""
+
+
+@pytest.mark.parametrize("stated, expected", [
+    ("391,035", 391_035e6),   # Apple FY2024 net sales — the regressing case.
+    ("97,690", 97_690e6),     # Same table, small enough to pass the old test.
+    ("100,000", 100_000e6),   # Exactly on the removed 1e5 boundary.
+    ("99,999", 99_999e6),     # One below it.
+])
+def test_a_scale_header_applies_however_large_the_figure(stated, expected):
+    data = PDFExtractor().scrape_figures(
+        _APPLE_SCALED_TABLE.format(revenue=stated))
+    assert data.revenue == pytest.approx(expected)
+
+
+def test_an_inline_unit_is_not_multiplied_by_the_header_as_well():
+    """"$3.2 billion" inside an "(In millions)" section is 3.2e9, not 3.2e15.
+
+    This is what the magnitude test was actually protecting against, and the
+    reason the fix keys off whether a unit suffix was consumed rather than
+    off how big the number is.
+    """
+    data = PDFExtractor().scrape_figures(
+        _APPLE_SCALED_TABLE.format(revenue="3.2 billion"))
+    assert data.revenue == pytest.approx(3.2e9)
+
+
+def test_indian_lakh_header_applies_to_a_full_year_revenue_column():
+    """A real BLS-format full-year figure: Indian digit grouping AND a lakh
+    header, the two together being where the bug bit hardest."""
+    data = PDFExtractor().scrape_figures(
+        "BLS INTERNATIONAL SERVICES LIMITED\n"
+        "STATEMENT OF UNAUDITED CONSOLIDATED FINANCIAL RESULTS FOR THE QUARTER ENDED\n"
+        "(Amount in Rs. in lakhs)\n"
+        "Total revenue 2,99,821.51\n")
+    assert data.revenue == pytest.approx(2_99_821.51 * 1e5)
+
+
+def test_a_share_count_above_the_domain_floor_ignores_a_currency_header():
+    """A share count is not currency: an absolute count must survive intact
+    even when a "(in thousands)" header sits above it."""
+    data = PDFExtractor().scrape_figures(
+        "(in thousands, except per share data)\n"
+        "Total revenue 2,341,000\n"
+        "Shares outstanding 3,210,875,752.\n")
+    assert data.shares_outstanding == pytest.approx(3_210_875_752)
+
+
+def test_a_share_count_below_the_domain_floor_takes_the_header_unit():
+    """...but no listed company has 3,210 shares, so that one IS in
+    thousands. This is the sole surviving magnitude test, and it rests on a
+    real floor rather than on a guess about currency magnitudes."""
+    data = PDFExtractor().scrape_figures(
+        "(in thousands, except per share data)\n"
+        "Total revenue 2,341,000\n"
+        "Shares outstanding 3,210\n")
+    assert data.shares_outstanding == pytest.approx(3_210_000)
+
+
+# --------------------------------------------------------------------------
+# Trailing twelve months instead of a x4 run-rate.
+#
+# A run-rate asserts the other three quarters look like this one. TTM reads
+# what the filing actually reports: full year + this quarter - the quarter it
+# replaces. Caplin Point's Q1 FY27 is ₹2,413.28 Cr TTM against ₹2,575.64 Cr
+# run-rated, so the run-rate overstates the DCF's base year by 6.7% before
+# any projection compounds it.
+# --------------------------------------------------------------------------
+
+def _sebi_table(q, prev, year_ago, full_year):
+    """A minimal SEBI-format results table with settable column dates."""
+    return (
+        "STATEMENT OF UNAUDITED CONSOLIDATED FINANCIAL RESULTS\n"
+        f"Quarter Ended \nYear Ended \n{q} \n{prev} \n{year_ago} \n{full_year} \n"
+        ", in Crores \nTotal income \n643.91 \n628.52 \n533.36 \n2,302.73 \n"
+    )
+
+_Q1_DATES = ("30.06.2026", "31.03.2026", "30.06.2025", "31.03.2026")
+
+
+def test_caplin_ttm_revenue_matches_the_filings_own_columns():
+    """2,302.73 (FY26) + 643.91 (Q1 FY27) - 533.36 (Q1 FY26) = 2,413.28."""
+    data = PDFExtractor().scrape_figures(
+        (FIXTURES / "caplin_point_q1_fy2026-27_raw_text.txt").read_text())
+    assert data.ttm_flows["revenue"] == pytest.approx(2_413.28 * CR, rel=1e-4)
+    assert data.ttm_flows["depreciation_amortization"] == pytest.approx(
+        78.10 * CR, rel=1e-4)   # 72.77 + 21.62 - 16.29
+
+
+def test_bls_ttm_revenue_matches_the_filings_own_columns():
+    """The same arithmetic on a filing that writes its dates out in words
+    and labels its top line "Income from operations" rather than "Total
+    income" — the two real filings disagree on both counts."""
+    data = PDFExtractor().scrape_figures(
+        (FIXTURES / "bls_international_q1_fy2026-27_raw_text.txt").read_text())
+    assert data.ttm_flows["revenue"] == pytest.approx(
+        (2_99_821.51 + 89_052.66 - 71_056.00) * 1e5, rel=1e-3)
+
+
+def test_an_annual_filing_gets_no_ttm():
+    data = PDFExtractor().scrape_figures(
+        (FIXTURES / "tesla_10k_fy2025_raw_text_excerpts.txt").read_text())
+    assert data.ttm_flows == {}
+
+
+@pytest.mark.parametrize("dates, label", [
+    (_Q1_DATES, "Q1"),
+    (("30.09.2026", "30.06.2026", "30.09.2025", "31.03.2026"), "Q2"),
+    (("31.12.2026", "30.09.2026", "31.12.2025", "31.03.2026"), "Q3"),
+    (("31.03.2027", "31.12.2026", "31.03.2026", "31.03.2027"), "Q4"),
+    (("30.06.2026", "31.03.2026", "30.06.2024", "31.03.2026"), "2-year gap"),
+])
+def test_ttm_is_derived_only_for_a_first_quarter_filing(dates, label):
+    """`full_year + this_quarter - year_ago_quarter` is a twelve-month figure
+    ONLY at Q1, where the stated full year ended immediately before this
+    quarter. At Q2 the same three columns leave Q1 of the current year out
+    altogether and the result is not a year of anything — it just looks like
+    one, which is worse than declining to compute it."""
+    data = PDFExtractor().scrape_figures(_sebi_table(*dates))
+    assert bool(data.ttm_flows) is (label == "Q1")
+
+
+def test_ttm_reads_long_form_column_dates_too():
+    """BLS heads its columns "June 30, 2026"; Caplin "30.06.2026". Handling
+    only the numeric form silently withheld TTM from half of real filings."""
+    data = PDFExtractor().scrape_figures(_sebi_table(
+        "June 30, 2026", "March 31, 2026", "June 30, 2025", "March 31, 2026"))
+    assert data.ttm_flows["revenue"] == pytest.approx(2_413.28 * CR, rel=1e-4)
+
+
+def test_ttm_ignores_a_press_release_outside_the_dated_table():
+    """Caplin's press release reads "Total revenue at ₹644 Crores; an
+    increase of 20.7% YoY" with PAT on the next line. An unconfined row scan
+    read [644, 20.7, 179, 18.8] as four period columns and produced a "TTM
+    revenue" of ₹483.8 Cr — two percentages and a profit figure, plausible
+    enough to pass everything downstream."""
+    data = PDFExtractor().scrape_figures(
+        (FIXTURES / "caplin_point_q1_fy2026-27_raw_text.txt").read_text())
+    assert data.ttm_flows["revenue"] != pytest.approx(483.8 * CR, rel=1e-3)
+
+
+def test_ttm_is_rejected_when_its_row_disagrees_with_the_quarterly_figure():
+    """The row TTM reads must be the row the quarterly figure came from.
+    Here the table's own current-quarter column contradicts the stated
+    quarterly revenue, so the TTM is discarded rather than reconciled."""
+    text = _sebi_table(*_Q1_DATES).replace(
+        "Total income \n643.91", "Total income \n999.99")
+    data = PDFExtractor().scrape_figures(text)
+    data.revenue = 643.91 * CR
+    assert PDFExtractor.scrape_ttm_flows(text, {"revenue": 643.91 * CR}) == {}
+
+
+# --------------------------------------------------------------------------
+# A growth rate read from a quarterly filing is already year-over-year.
+# --------------------------------------------------------------------------
+
+def _web_bridge():
+    import importlib.util
+    root = FIXTURES.parent.parent
+    spec = importlib.util.spec_from_file_location(
+        "web_bridge_under_test", root / "public" / "py" / "web_bridge.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_a_yoy_growth_rate_is_not_compounded_to_the_fourth_power():
+    """_derive_yoy_metrics divides this quarter by the SAME QUARTER one year
+    earlier, so its output is annual already. Compounding it as if it were a
+    quarter-over-quarter rate turned Caplin's real 20.7% into 112.4% and
+    handed that to the DCF as its growth assumption."""
+    data = PDFExtractor().scrape_figures(
+        (FIXTURES / "caplin_point_q1_fy2026-27_raw_text.txt").read_text())
+    assert data.revenue_growth == pytest.approx(0.2073, abs=1e-3)
+    _web_bridge()._annualise_quarterly(data, dividend_is_periodic=False)
+    assert data.revenue_growth == pytest.approx(0.2073, abs=1e-3)
+
+
+def test_annualisation_prefers_ttm_and_falls_back_to_the_run_rate():
+    data = PDFExtractor().scrape_figures(
+        (FIXTURES / "caplin_point_q1_fy2026-27_raw_text.txt").read_text())
+    quarterly_capex = data.capital_expenditures
+    _web_bridge()._annualise_quarterly(data, dividend_is_periodic=False)
+    assert data.revenue == pytest.approx(2_413.28 * CR, rel=1e-4)
+    if quarterly_capex is not None:   # no period-column row: still x4
+        assert data.capital_expenditures == pytest.approx(quarterly_capex * 4)

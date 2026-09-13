@@ -294,7 +294,13 @@ class AutoAssumer:
         # is internally consistent with a synthesised FCF path (base_fcf =
         # base_revenue * margin) instead of picking an unrelated placeholder.
         margin = data.operating_margin or 0.15
-        base_revenue = data.revenue if data.revenue is not None else fcfs[0] / margin
+        # abs() on the fallback: a cash-burning filing's real FCF is negative,
+        # and revenue derived from it would come out negative too — a company
+        # with negative sales, which is not a thing. The models this feeds are
+        # gated off for that case below; this only keeps the value sane for
+        # the ones that still run.
+        base_revenue = (data.revenue if data.revenue is not None
+                        else abs(fcfs[0]) / margin)
         reported_equity_value = spot * shares
         lease_discount_rate = rf + 0.015   # same cost-of-debt spread as _wacc
 
@@ -603,6 +609,46 @@ class AutoAssumer:
                 "the real dividend per share manually to run this model."
             )
             rationale[("Gordon Growth", "dividend")] = unavailable["Gordon Growth Model"]
+
+        # A cash-burning company's real, disclosed negative free cash flow is
+        # data worth keeping — the extractor no longer discards it, because
+        # discarding it meant synthesising a POSITIVE figure that contradicts
+        # the filing. But neither DCF nor Reverse DCF can honestly value a
+        # company on it, and for the same reason: both close with a Gordon
+        # perpetuity, TV = FCF_N·(1+g)/(r−g). Feed that a negative FCF_N and
+        # it returns a negative terminal value — arithmetic for "this company
+        # burns cash at a growing rate, forever", which no real company does;
+        # it either turns cash-positive or stops existing. The number computes
+        # cleanly and means nothing, which is the failure mode this pipeline
+        # exists to refuse.
+        #
+        # Reverse DCF already refuses it outright (ReverseDCFModel calls
+        # _require_positive on base_fcf), so without this gate a filing with a
+        # price, a share count and a TAM would newly surface a raw
+        # ValidationError instead of an explained one. This states the same
+        # constraint at the assumption layer, for both models, with a reason.
+        terminal_fcf = fcfs[-1] if fcfs else 0.0
+        if terminal_fcf <= 0:
+            unavailable["Discounted Cash Flow"] = (
+                "The free cash flow this filing discloses is negative, and a "
+                "DCF closes with a perpetuity on the final year's cash flow — "
+                "projecting a cash burn forever produces a negative terminal "
+                "value, which is arithmetic rather than a valuation. This is "
+                "a real disclosed figure, not a missing one: value a "
+                "cash-burning company on a forecast that reaches breakeven, "
+                "by entering the projected free cash flows manually."
+            )
+            rationale[("DCF", "free_cash_flows")] = unavailable["Discounted Cash Flow"]
+        if fcfs and fcfs[0] <= 0:
+            reason = (
+                "Reverse DCF solves for the growth rate that justifies the "
+                "market price by projecting a trailing free cash flow forward "
+                "— a negative base can't be grown into the positive enterprise "
+                "value a share price implies, at any growth rate. Enter a "
+                "normalised or forecast base free cash flow manually to run it."
+            )
+            unavailable.setdefault("Reverse DCF / Market-Implied Expectations", reason)
+            rationale.setdefault(("RDCF", "base_fcf"), reason)
 
         return AssumptionSet(
             kwargs_by_model=kwargs,
