@@ -501,3 +501,80 @@ def test_negative_fcf_never_derives_a_negative_revenue():
 def test_positive_fcf_filings_are_untouched_by_the_negative_handling(fixture_name):
     data = PDFExtractor().scrape_figures((FIXTURES / fixture_name).read_text())
     assert DCF_MODEL not in AutoAssumer().build(data).unavailable
+
+
+# --------------------------------------------------------------------------
+# Scale headers: "(In millions)" / "(₹ in lakhs)" apply to every figure in
+# the table they head, regardless of how large that figure is.
+#
+# These cover the bug that the magnitude test `abs(value) < 1e5` used to
+# cause at seven call sites: it was standing in for "this token did not
+# already carry its own inline unit suffix", and a genuinely large figure in
+# a scaled table failed the proxy and silently lost its multiplier. The
+# failure scaled with company size — Apple's real FY2024 net sales came out
+# as 391 thousand dollars — so it was invisible on small filers and worst on
+# exactly the ones a user is most likely to try first.
+# --------------------------------------------------------------------------
+
+_APPLE_SCALED_TABLE = """APPLE INC.
+CONSOLIDATED STATEMENTS OF OPERATIONS
+(In millions, except number of shares which are reflected in thousands)
+Total revenue {revenue}
+Interest expense 3,933
+"""
+
+
+@pytest.mark.parametrize("stated, expected", [
+    ("391,035", 391_035e6),   # Apple FY2024 net sales — the regressing case.
+    ("97,690", 97_690e6),     # Same table, small enough to pass the old test.
+    ("100,000", 100_000e6),   # Exactly on the removed 1e5 boundary.
+    ("99,999", 99_999e6),     # One below it.
+])
+def test_a_scale_header_applies_however_large_the_figure(stated, expected):
+    data = PDFExtractor().scrape_figures(
+        _APPLE_SCALED_TABLE.format(revenue=stated))
+    assert data.revenue == pytest.approx(expected)
+
+
+def test_an_inline_unit_is_not_multiplied_by_the_header_as_well():
+    """"$3.2 billion" inside an "(In millions)" section is 3.2e9, not 3.2e15.
+
+    This is what the magnitude test was actually protecting against, and the
+    reason the fix keys off whether a unit suffix was consumed rather than
+    off how big the number is.
+    """
+    data = PDFExtractor().scrape_figures(
+        _APPLE_SCALED_TABLE.format(revenue="3.2 billion"))
+    assert data.revenue == pytest.approx(3.2e9)
+
+
+def test_indian_lakh_header_applies_to_a_full_year_revenue_column():
+    """A real BLS-format full-year figure: Indian digit grouping AND a lakh
+    header, the two together being where the bug bit hardest."""
+    data = PDFExtractor().scrape_figures(
+        "BLS INTERNATIONAL SERVICES LIMITED\n"
+        "STATEMENT OF UNAUDITED CONSOLIDATED FINANCIAL RESULTS FOR THE QUARTER ENDED\n"
+        "(Amount in Rs. in lakhs)\n"
+        "Total revenue 2,99,821.51\n")
+    assert data.revenue == pytest.approx(2_99_821.51 * 1e5)
+
+
+def test_a_share_count_above_the_domain_floor_ignores_a_currency_header():
+    """A share count is not currency: an absolute count must survive intact
+    even when a "(in thousands)" header sits above it."""
+    data = PDFExtractor().scrape_figures(
+        "(in thousands, except per share data)\n"
+        "Total revenue 2,341,000\n"
+        "Shares outstanding 3,210,875,752.\n")
+    assert data.shares_outstanding == pytest.approx(3_210_875_752)
+
+
+def test_a_share_count_below_the_domain_floor_takes_the_header_unit():
+    """...but no listed company has 3,210 shares, so that one IS in
+    thousands. This is the sole surviving magnitude test, and it rests on a
+    real floor rather than on a guess about currency magnitudes."""
+    data = PDFExtractor().scrape_figures(
+        "(in thousands, except per share data)\n"
+        "Total revenue 2,341,000\n"
+        "Shares outstanding 3,210\n")
+    assert data.shares_outstanding == pytest.approx(3_210_000)

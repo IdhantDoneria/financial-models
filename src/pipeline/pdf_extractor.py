@@ -384,7 +384,29 @@ class PDFExtractor:
 
     @classmethod
     def _parse_number(cls, match_text: str) -> float | None:
+        """:meth:`_parse_number_scaled` without the inline-unit flag."""
+        value, _ = cls._parse_number_scaled(match_text)
+        return value
+
+    @classmethod
+    def _parse_number_scaled(cls, match_text: str) -> tuple[float | None, bool]:
         """Parse the first *plausible* numeric token, honouring $, (), commas and scale suffix.
+
+        Returns ``(value, inline_unit_applied)``. The second element says
+        whether the token carried its own scale suffix ("$3.2 billion") that
+        has already been multiplied in, and it is the *only* correct signal
+        for whether a surrounding "(In millions)" table header should be
+        applied on top — applying both double-scales, applying neither
+        under-scales by the header's full factor.
+
+        That question used to be answered by a magnitude test (``abs(value)
+        < 1e5`` ⇒ assume no unit was applied). The proxy holds for small
+        figures and fails completely for large ones: an Apple-scale
+        ``"Total revenue 391,035"`` under ``(In millions)`` sailed past the
+        test and was reported as 391 *thousand* dollars rather than $391
+        billion — a 1,000,000x understatement — while the same table's
+        ``97,690`` scaled correctly, so the bug was invisible in aggregate
+        and appeared only on the largest filers.
 
         The "wrapped in parentheses means negative" accounting convention is
         checked against the matched token itself (``m.group(0)``, which the
@@ -421,8 +443,8 @@ class PDFExtractor:
                 value = -value
             if unit:
                 value *= cls.SCALE_HINTS.get(unit.lower(), 1.0)
-            return value
-        return None
+            return value, bool(unit)
+        return None, False
 
     #: Boilerplate SEBI/ICAI auditor-report language that scopes a nearby
     #: figure to a *subset* of the company (unreviewed subsidiaries, a
@@ -446,6 +468,7 @@ class PDFExtractor:
     def _first_after(
         cls, text: str, patterns: list[str], window: int = 120,
         apply_scale: bool = False,
+        scale_below: float | None = None,
         plausible: Callable[[float], bool] | None = None,
         disqualify: tuple[str, ...] | None = None,
     ) -> float | None:
@@ -461,7 +484,19 @@ class PDFExtractor:
             window: How many characters after the keyword to search for a number.
             apply_scale: When set, multiply the value by the scale ("in
                 millions"/"in lakhs"/etc.) detected near *this* match (see
-                :meth:`_local_scale`) rather than leaving it in raw document units.
+                :meth:`_local_scale`) rather than leaving it in raw document
+                units — unless the token already carried its own inline unit
+                suffix, which :meth:`_parse_number_scaled` reports and which
+                would otherwise be counted twice. Set it for monetary fields
+                only: a scale header declares a *currency* unit ("₹ in
+                lakhs"), so it says nothing about a share count.
+            scale_below: Additionally require the raw value to be under this
+                threshold before scaling it. Only meaningful for a
+                non-currency field where a real domain floor exists — see
+                :meth:`_scrape_share_count`, the sole caller. Leave unset
+                for money: there is no lower bound on what a company can
+                legitimately report, so a magnitude test there silently
+                drops the multiplier off the largest figures in the filing.
             plausible: Optional predicate a candidate value must satisfy to be
                 accepted; an implausible candidate (e.g. a percentage that's
                 actually a bare calendar year, a share count in the tens) is
@@ -479,10 +514,11 @@ class PDFExtractor:
                 trailing = text[match.end() : match.end() + window]
                 if disqualify and any(re.search(dq, trailing, re.IGNORECASE) for dq in disqualify):
                     continue
-                value = cls._parse_number(trailing)
+                value, inline_unit = cls._parse_number_scaled(trailing)
                 if value is None:
                     continue
-                if apply_scale and abs(value) < 1e5:
+                if (apply_scale and not inline_unit
+                        and (scale_below is None or abs(value) < scale_below)):
                     value *= cls._local_scale(text, match.start())
                 if plausible is not None and not plausible(value):
                     continue
@@ -693,7 +729,10 @@ class PDFExtractor:
             unit = (unit or "").lower().rstrip(".")
             if unit:
                 value *= cls.SCALE_HINTS.get(unit, 1.0)
-            elif abs(value) < 1e5:
+            else:
+                # No magnitude test: the if/elif already guarantees the
+                # header scale is applied only when the prose stated no
+                # unit of its own — see _parse_number_scaled.
                 value *= cls._local_scale(text, prose.start())
             if value != 0:
                 return [value]
@@ -723,14 +762,17 @@ class PDFExtractor:
                     continue
                 if cls._DATE_TAIL_RE.match(tail[m.end():]):
                     continue
-                value = cls._parse_number(m.group(0))
+                value, inline_unit = cls._parse_number_scaled(m.group(0))
                 if value is not None and abs(value) > 0.01:
-                    nums.append(value)
+                    nums.append((value, inline_unit))
             if 2 <= len(nums) <= 8:
                 # Scale detected near this specific row, not a single
-                # document-wide guess (see _local_scale).
+                # document-wide guess (see _local_scale). Applied per value
+                # to whichever ones didn't state their own unit — see
+                # _parse_number_scaled for why this is not a magnitude test.
                 local_scale = cls._local_scale(text, row.start())
-                scaled = [n * local_scale if abs(n) < 1e5 else n for n in nums]
+                scaled = [n if inline_unit else n * local_scale
+                          for n, inline_unit in nums]
                 return scaled[:6]
         return []
 
@@ -771,12 +813,13 @@ class PDFExtractor:
                         value = -value
                     if unit:
                         value *= cls.SCALE_HINTS.get(unit.lower(), 1.0)
-                    nums.append(value)
+                    nums.append((value, bool(unit)))
                     if len(nums) >= max_cols:
                         break
                 if len(nums) >= 3:   # need at least [current, ..., yoy] to be useful
                     local_scale = cls._local_scale(text, match.start())
-                    return [n * local_scale if abs(n) < 1e5 else n for n in nums]
+                    return [n if inline_unit else n * local_scale
+                            for n, inline_unit in nums]
         return None
 
     @classmethod
@@ -831,6 +874,14 @@ class PDFExtractor:
     @staticmethod
     def _plausible_share_count(value: float) -> bool:
         return value >= 1_000
+
+    #: Below this, a number cannot be a literal share count for a listed
+    #: company and must therefore be stated in a table header's unit (a US
+    #: filing's "(in thousands, except per share data)"). Above it, the
+    #: number already is a count and no header applies — see
+    #: :meth:`_scrape_share_count`. Deliberately well under the smallest
+    #: real free float rather than tuned to any one filing.
+    _MIN_LISTED_SHARE_COUNT = 1e5
 
     #: The paid-up-capital row of a SEBI-format results statement, with the
     #: face value per share stated inline in the label itself. Two real
@@ -909,11 +960,23 @@ class PDFExtractor:
         The direct US-style patterns are tried first and unchanged, so a 10-K
         behaves exactly as before.
         """
+        # scale_below, uniquely, because this is the one field that is not
+        # currency. A scale header declares a *currency* unit ("₹ in
+        # lakhs", "$ in millions"): a US filing's "(in thousands, except
+        # per share data)" does cover its share-count row, but an Indian
+        # "(₹ in lakhs)" emphatically does not. A magnitude test is the
+        # only signal that separates them, and here — unlike on the
+        # monetary path it was just removed from — it rests on a real
+        # domain floor rather than a guess: no listed company has fewer
+        # than 100,000 shares outstanding, so a smaller value cannot be a
+        # literal count and must be in the header's unit, while a larger
+        # one already is a count whatever the header says.
         direct = cls._first_after(
             text, [r"shares\s+outstanding",
                    r"weighted[-\s]average\s+shares\s+outstanding",
                    r"diluted\s+shares"],
-            apply_scale=True, plausible=cls._plausible_share_count)
+            apply_scale=True, scale_below=cls._MIN_LISTED_SHARE_COUNT,
+            plausible=cls._plausible_share_count)
         if direct is not None:
             return direct
 
@@ -921,10 +984,13 @@ class PDFExtractor:
             face_value = float(match.group(1))
             if face_value <= 0:
                 continue
-            capital = cls._parse_number(text[match.end(): match.end() + 120])
+            capital, inline_unit = cls._parse_number_scaled(
+                text[match.end(): match.end() + 120])
             if capital is None or capital <= 0:
                 continue
-            if abs(capital) < 1e5:
+            # Paid-up capital is a currency amount, so the table's scale
+            # header applies to it (unlike the share count derived from it).
+            if not inline_unit:
                 capital *= cls._local_scale(text, match.start())
             shares = capital / face_value
             # Same floor the direct read uses — a derivation that lands
@@ -984,21 +1050,20 @@ class PDFExtractor:
                             v = -v
                         if unit:
                             v *= cls.SCALE_HINTS.get(unit.lower(), 1.0)
-                        nums.append(v)
+                        nums.append((v, bool(unit)))
                         if len(nums) >= 2:
                             break
                     if len(nums) == 2:
-                        total = nums[0] + nums[1]
-                        if abs(total) < 1e5:
-                            total *= cls._local_scale(text, match.start())
-                        return total
+                        local_scale = cls._local_scale(text, match.start())
+                        return sum(v if inline_unit else v * local_scale
+                                   for v, inline_unit in nums)
                 # No confirmed Current/Long-Term breakdown for this
                 # occurrence — read it the same way any other field is.
                 trailing = text[match.end():match.end() + 120]
-                value = cls._parse_number(trailing)
+                value, inline_unit = cls._parse_number_scaled(trailing)
                 if value is None:
                     continue
-                if abs(value) < 1e5:
+                if not inline_unit:
                     value *= cls._local_scale(text, match.start())
                 return value
         return None
