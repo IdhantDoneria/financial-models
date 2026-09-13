@@ -259,7 +259,16 @@ class AutoAssumer:
                else data.disclosed_volatility if data.disclosed_volatility is not None
                else self.default_vol)
         # Fabricated FCF trajectory: revenue × margin × (1+g)^t when actual FCFs missing.
+        # A filing that discloses ONE free-cash-flow figure (a quarterly
+        # results announcement states the period's FCF in prose, not a
+        # multi-year row) gives a base, not a trajectory — projecting from it
+        # is what that number supports. Handing the DCF a one-element list
+        # instead would silently reduce it to a single explicit year plus
+        # terminal value, which is a different and much cruder model than the
+        # five-year path every other input here assumes.
         fcfs = data.free_cash_flows or self._synth_fcfs(data, wacc)
+        if len(fcfs) == 1:
+            fcfs = self._project_fcfs(fcfs[0], data)
         spot = data.current_price or 100.0  # normalised units when unknown
         strike = o.strike_ratio * spot if o.strike_ratio else spot
         # Gordon Growth requires dividend > 0 — unlike DCF (which happily
@@ -605,6 +614,16 @@ class AutoAssumer:
             partial=partial,
         )
 
+    def _project_fcfs(self, base: float, data: ExtractedFinancials) -> list[float]:
+        """Grow a known base FCF into the 5-year path the DCF expects.
+
+        Same growth rate :meth:`_synth_fcfs` uses, so a projection seeded from
+        a real disclosed figure and one seeded from revenue × margin behave
+        identically apart from the base itself being real.
+        """
+        g = data.revenue_growth or 0.05                      # 5% growth default
+        return [base * (1 + g) ** t for t in range(1, 6)]
+
     def _synth_fcfs(self, data: ExtractedFinancials, wacc: float) -> list[float]:
         """Fabricate a 5-year FCF projection when the PDF has none."""
         if data.revenue is None:
@@ -612,8 +631,7 @@ class AutoAssumer:
         else:
             margin = data.operating_margin or 0.15           # 15% FCF margin default
             base = data.revenue * margin
-        g = data.revenue_growth or 0.05                      # 5% growth default
-        return [base * (1 + g) ** t for t in range(1, 6)]
+        return self._project_fcfs(base, data)
 
 
 # --------------------------------------------------------------------------- #
