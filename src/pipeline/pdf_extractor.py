@@ -124,6 +124,15 @@ class ExtractedFinancials:
     #: fails. Consumers use it in place of a x4 run-rate; see
     #: ``web_bridge._annualise_quarterly``.
     ttm_flows: dict[str, float] = field(default_factory=dict)
+    #: One of the ~31 industry categories :meth:`PDFExtractor._classify_sector`
+    #: recognises (matching Damodaran's own NYU Stern taxonomy — see
+    #: :data:`src.pipeline.assumptions.SECTOR_BASELINES`), or ``None`` when
+    #: the filing's own text does not clear the confidence bar that method
+    #: requires. Used only to pick a better FALLBACK than a flat generic
+    #: default (beta, margin, growth) when the filing itself discloses
+    #: nothing more specific — never overrides a real extracted or
+    #: filing-stated value.
+    sector: str | None = None
     #: Which backends actually produced text (for debugging in the UI).
     backends_used: list[str] = field(default_factory=list)
     #: Raw text (first ~50k chars) kept for downstream inspection.
@@ -159,6 +168,7 @@ class ExtractedFinancials:
             "dividend_is_annual": self.dividend_is_annual,
             "statement_basis": self.statement_basis,
             "ttm_flows": self.ttm_flows,
+            "sector": self.sector,
             "backends_used": self.backends_used,
         }
 
@@ -1258,6 +1268,176 @@ class PDFExtractor:
                 return value
         return None
 
+    #: Phrase-level signal vocabulary per industry, keyed by the exact
+    #: category name Damodaran's NYU Stern dataset uses (so
+    #: :data:`src.pipeline.assumptions.SECTOR_BASELINES` can key off the
+    #: same string with no translation layer). Every phrase is a multi-word
+    #: or otherwise distinctive term — deliberately NOT bare generic nouns
+    #: like "bank" or "insurance", which show up as incidental context in
+    #: nearly any filing (a real BLS International filing mentions "term
+    #: deposit ... with scheduled bank" while parking IPO proceeds; it is
+    #: not a bank). :meth:`_classify_sector` additionally requires a real
+    #: margin over the runner-up before committing to any of these — a
+    #: single stray match is not enough on its own regardless.
+    _SECTOR_KEYWORDS: dict[str, tuple[str, ...]] = {
+        "Drugs (Pharmaceutical)": (
+            r"pharmaceutical", r"\bformulations?\b", r"active pharmaceutical ingredient",
+            r"\bAPI\s+manufactur", r"\bANDA\b", r"\bUSFDA\b", r"generic drugs?",
+        ),
+        "Healthcare Products": (
+            r"medical devices?", r"diagnostic kits?", r"healthcare products?",
+            r"surgical instruments?", r"hospital equipment",
+        ),
+        "Software (System & Application)": (
+            r"software product", r"\bSaaS\b", r"enterprise software",
+            r"application software", r"software licen[cs]e",
+        ),
+        "Software (Internet)": (
+            r"e-?commerce platform", r"internet-based", r"online marketplace",
+            r"digital platform business",
+        ),
+        "Computer Services": (
+            r"\bIT services\b", r"information technology services",
+            r"software development services", r"system integration services",
+            r"managed (?:IT )?services",
+        ),
+        "Business & Consumer Services": (
+            r"outsourcing services", r"business process outsourcing", r"\bBPO\b",
+            r"consular services", r"visa (?:outsourcing|application) services",
+            r"staffing services", r"facility management services", r"\bconsular\b",
+        ),
+        "Bank (Money Center)": (
+            r"scheduled commercial bank", r"banking company", r"net interest income",
+            r"non-?performing assets?", r"\bCASA ratio\b", r"\bNBFC\b",
+        ),
+        "Insurance (General)": (
+            r"insurance company", r"\bunderwriting\b", r"premium income",
+            r"policyholders?", r"\bIRDAI\b",
+        ),
+        "Retail (General)": (
+            r"retail stores?", r"apparel retail", r"department stores?",
+            r"e-?commerce retail",
+        ),
+        "Retail (Grocery and Food)": (
+            r"supermarkets?", r"grocery retail", r"hypermarkets?", r"food retail chain",
+        ),
+        "Auto & Truck": (
+            r"automotive", r"electric vehicles?", r"automobile manufactur",
+            r"vehicle production", r"passenger cars?",
+        ),
+        "Steel": (
+            r"steel manufactur", r"steel plant", r"crude steel", r"blast furnace",
+        ),
+        "Metals & Mining": (
+            r"mining operations", r"metals? and mining", r"ore extraction",
+            r"mineral resources",
+        ),
+        "Real Estate (General/Diversified)": (
+            r"real estate developer", r"residential projects?", r"commercial real estate",
+            r"property development",
+        ),
+        "Telecom Services": (
+            r"telecommunications services", r"telecom operator", r"fixed-?line",
+            r"broadband services",
+        ),
+        "Telecom (Wireless)": (
+            r"wireless carrier", r"mobile network operator", r"cellular services",
+            r"\b5G network\b",
+        ),
+        "Power": (
+            r"power generation", r"electricity distribution", r"power plants?",
+            r"renewable energy generation",
+        ),
+        "Oil/Gas (Integrated)": (
+            r"oil and gas exploration", r"refining and marketing",
+            r"integrated oil compan", r"crude oil production",
+        ),
+        "Oil/Gas Production and Exploration": (
+            r"exploration and production", r"upstream oil", r"oilfields?",
+        ),
+        "Chemical (Specialty)": (
+            r"specialty chemicals?", r"chemical manufactur", r"industrial chemicals?",
+        ),
+        "Food Processing": (
+            r"food processing", r"packaged foods?", r"food and beverage manufactur",
+        ),
+        "Building Materials": (
+            r"cement manufactur", r"building materials", r"construction materials",
+        ),
+        "Engineering/Construction": (
+            r"engineering,?\s*procurement\s*and\s*construction", r"\bEPC contracts?\b",
+            r"infrastructure construction", r"civil construction",
+        ),
+        "Machinery": (
+            r"industrial machinery", r"capital equipment manufactur", r"machine tools?",
+        ),
+        "Semiconductor": (
+            r"semiconductors?", r"chip manufactur", r"wafer fabrication",
+            r"integrated circuits?",
+        ),
+        "Apparel": (
+            r"apparel manufactur", r"garments?", r"textile and apparel", r"clothing brand",
+        ),
+        "Hotel/Gaming": (
+            r"hotel operations", r"hospitality business", r"casinos?", r"resort properties",
+        ),
+        "Air Transport": (
+            r"airlines?", r"air transport services", r"aviation services",
+        ),
+        "Transportation": (
+            r"logistics services", r"freight transport", r"shipping and logistics",
+            r"transportation services",
+        ),
+        "Publishing & Newspapers": (
+            r"newspaper publishing", r"media publishing", r"print media",
+        ),
+        "Shipbuilding & Marine": (
+            r"shipbuilding", r"shipyards?", r"marine vessel construction",
+        ),
+    }
+
+    @classmethod
+    def _classify_sector(cls, text: str) -> str | None:
+        """A real, if approximate, industry classification — or ``None``.
+
+        Scored by total occurrence count of each sector's phrase vocabulary
+        (:attr:`_SECTOR_KEYWORDS`), not distinct-pattern count, so a filing
+        that genuinely narrates its business ("the Company manufactures
+        pharmaceutical formulations...", repeated across the cover page and
+        MD&A) scores higher than one with a single incidental mention.
+
+        Deliberately conservative in both directions this can fail: a
+        misclassification is a WORSE failure than declining, because a
+        wrong sector produces a wrong-but-authoritative-looking beta/margin/
+        growth default (see :data:`src.pipeline.assumptions.SECTOR_BASELINES`)
+        instead of an obviously-generic one. Two independent gates before
+        committing to any classification:
+
+        * The winning sector must accumulate at least 3 total keyword hits.
+          A single incidental match (a real BLS International filing
+          mentions parking IPO proceeds "with scheduled bank") never clears
+          this on its own.
+        * The winner must lead the runner-up by at least 2x (or the
+          runner-up must have zero hits). A filing that genuinely discusses
+          two businesses, or one whose real business isn't in this list at
+          all and instead trips a few near-misses across several
+          categories, is exactly the case this margin requirement declines
+          rather than guesses through.
+        """
+        scores: dict[str, int] = {}
+        for sector, patterns in cls._SECTOR_KEYWORDS.items():
+            total = sum(len(re.findall(pat, text, re.IGNORECASE)) for pat in patterns)
+            if total:
+                scores[sector] = total
+        if not scores:
+            return None
+        ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
+        winner, top = ranked[0]
+        runner_up = ranked[1][1] if len(ranked) > 1 else 0
+        if top >= 3 and (runner_up == 0 or top >= 2 * runner_up):
+            return winner
+        return None
+
     def scrape_figures(self, text: str) -> ExtractedFinancials:
         """Apply regex heuristics to a raw text blob and populate a report.
 
@@ -1440,6 +1620,12 @@ class PDFExtractor:
         data.ttm_flows = self.scrape_ttm_flows(
             figures_text,
             {f: getattr(data, f) for f in self._TTM_ROW_PATTERNS})
+
+        # The FULL document, not figures_text: a business description ("the
+        # Company is engaged in the manufacture of pharmaceutical
+        # formulations...") is narrative, not a statement-section figure,
+        # and routinely sits on the cover page before any statement begins.
+        data.sector = self._classify_sector(text)
 
         data.raw_text = text[:50_000]
         return data

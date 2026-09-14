@@ -124,6 +124,87 @@ _MPT_MARKET_VOL = 0.18
 _MPT_CORRELATION = 0.6
 
 
+#: Per-industry beta / operating-margin / revenue-growth baselines, keyed by
+#: the same category names :meth:`src.pipeline.pdf_extractor.PDFExtractor.
+#: _classify_sector` recognises. Sourced from Aswath Damodaran's public NYU
+#: Stern industry datasets (levered beta + WACC, operating/net margins, and
+#: 5-year historical revenue CAGR — all dated January 2026):
+#:   https://pages.stern.nyu.edu/~adamodar/New_Home_Page/datafile/wacc.html
+#:   https://pages.stern.nyu.edu/~adamodar/New_Home_Page/datafile/margin.html
+#:   https://pages.stern.nyu.edu/~adamodar/New_Home_Page/datafile/histgr.html
+#:
+#: ``beta`` is the LEVERED figure the source publishes — used as-is, since
+#: :meth:`AutoAssumer._wacc` already wants a levered equity beta (``cost_of_
+#: equity = rf + beta * erp``), not an unlevered one requiring re-levering.
+#:
+#: ``operating_margin`` is Damodaran's pre-tax operating (EBIT) margin. In
+#: THIS codebase it is used as the FCF-margin proxy when a filing discloses
+#: no cash-flow statement (:meth:`AutoAssumer._synth_fcfs`: ``base = revenue
+#: * margin``) — an approximation the flat 15% default already made; a real
+#: sector's EBIT margin is a strictly better proxy for that same purpose,
+#: not a different one.
+#:
+#: ``revenue_growth`` is the 5-YEAR HISTORICAL CAGR, used as a forward
+#: near-term growth assumption. This mirrors an existing, deliberate choice
+#: elsewhere in this pipeline: PDFExtractor._derive_yoy_metrics already
+#: prefers a company's own real historical YoY growth over the flat 5%
+#: default for the identical reason (a real number beats a generic one) —
+#: this is that same substitution at sector granularity, for filings where
+#: no company-specific growth could be read. Some sectors' 5-year figures
+#: are volatile (Software (Internet) 29%, Retail (Grocery and Food) -2.6%)
+#: because the underlying businesses genuinely are; using the real published
+#: figure rather than clamping it to "look normal" is the same posture this
+#: pipeline already takes with real negative FCF (see the DCF/RDCF gating
+#: in :meth:`AutoAssumer.build`) — an unusual real number is disclosed as
+#: real, not silently smoothed into something more comfortable.
+#:
+#: This is a fallback layer only: it fills a gap the code would otherwise
+#: fill with the flat generic default (beta=1.0, margin=15%, growth=5%),
+#: and only when :meth:`PDFExtractor._classify_sector` confidently
+#: identified the filing's industry. It never overrides a real value the
+#: filing itself discloses or a value the pipeline already derived from it.
+#:
+#: Not refreshed at runtime — this pipeline runs client-side in Pyodide/
+#: WebAssembly, where a live fetch to a third-party site on every analysis
+#: would be a real reliability and staleness-detection risk for no benefit
+#: over a periodically-updated constant; the existing risk-free-rate and
+#: equity-risk-premium defaults in this same class take the identical
+#: compiled-constant posture already.
+SECTOR_BASELINES: dict[str, dict[str, float]] = {
+    "Drugs (Pharmaceutical)":            {"beta": 0.98, "operating_margin": 0.3124, "revenue_growth": 0.1845},
+    "Healthcare Products":               {"beta": 0.91, "operating_margin": 0.1740, "revenue_growth": 0.1841},
+    "Software (System & Application)":   {"beta": 1.28, "operating_margin": 0.4081, "revenue_growth": 0.1956},
+    "Software (Internet)":               {"beta": 1.69, "operating_margin": 0.1855, "revenue_growth": 0.2918},
+    "Computer Services":                 {"beta": 1.09, "operating_margin": 0.0741, "revenue_growth": 0.2710},
+    "Business & Consumer Services":      {"beta": 0.89, "operating_margin": 0.1227, "revenue_growth": 0.0580},
+    "Bank (Money Center)":               {"beta": 0.76, "operating_margin": 0.0230, "revenue_growth": 0.0906},
+    "Insurance (General)":               {"beta": 0.67, "operating_margin": 0.2307, "revenue_growth": 0.1183},
+    "Retail (General)":                  {"beta": 0.81, "operating_margin": 0.0815, "revenue_growth": 0.0992},
+    "Retail (Grocery and Food)":         {"beta": 1.12, "operating_margin": 0.0255, "revenue_growth": -0.0263},
+    "Auto & Truck":                      {"beta": 1.46, "operating_margin": 0.0316, "revenue_growth": 0.0864},
+    "Steel":                             {"beta": 1.06, "operating_margin": 0.0450, "revenue_growth": 0.1137},
+    "Metals & Mining":                   {"beta": 1.04, "operating_margin": 0.2385, "revenue_growth": 0.0867},
+    "Real Estate (General/Diversified)": {"beta": 0.81, "operating_margin": 0.2361, "revenue_growth": 0.0960},
+    "Telecom Services":                  {"beta": 0.63, "operating_margin": 0.2105, "revenue_growth": 0.1357},
+    "Telecom (Wireless)":                {"beta": 0.54, "operating_margin": 0.2198, "revenue_growth": 0.0370},
+    "Power":                             {"beta": 0.48, "operating_margin": 0.2190, "revenue_growth": 0.0674},
+    "Oil/Gas (Integrated)":              {"beta": 0.30, "operating_margin": 0.1156, "revenue_growth": 0.0462},
+    "Oil/Gas Production and Exploration":{"beta": 0.72, "operating_margin": 0.2632, "revenue_growth": 0.1761},
+    "Chemical (Specialty)":              {"beta": 0.97, "operating_margin": 0.1285, "revenue_growth": 0.0804},
+    "Food Processing":                   {"beta": 0.61, "operating_margin": 0.1100, "revenue_growth": 0.0716},
+    "Building Materials":                {"beta": 1.11, "operating_margin": 0.1328, "revenue_growth": 0.0414},
+    "Engineering/Construction":          {"beta": 1.21, "operating_margin": 0.0704, "revenue_growth": 0.1170},
+    "Machinery":                         {"beta": 0.96, "operating_margin": 0.1678, "revenue_growth": 0.1037},
+    "Semiconductor":                     {"beta": 1.52, "operating_margin": 0.4037, "revenue_growth": 0.1118},
+    "Apparel":                           {"beta": 0.94, "operating_margin": 0.0911, "revenue_growth": 0.0810},
+    "Hotel/Gaming":                      {"beta": 1.08, "operating_margin": 0.1939, "revenue_growth": 0.2182},
+    "Air Transport":                     {"beta": 1.19, "operating_margin": 0.0532, "revenue_growth": 0.4779},
+    "Transportation":                    {"beta": 0.86, "operating_margin": 0.0757, "revenue_growth": 0.0912},
+    "Publishing & Newspapers":           {"beta": 0.56, "operating_margin": 0.0998, "revenue_growth": 0.0004},
+    "Shipbuilding & Marine":             {"beta": 0.75, "operating_margin": 0.1260, "revenue_growth": -0.0012},
+}
+
+
 class AutoAssumer:
     """Fill every missing model input with a practitioner-style default.
 
@@ -195,8 +276,16 @@ class AutoAssumer:
         """
         o = overrides or ManualOverrides()
         rf = o.risk_free_rate if o.risk_free_rate is not None else self.rf
+        sector_baseline = SECTOR_BASELINES.get(data.sector) if data.sector else None
+        # A real, filing-disclosed beta always wins; failing that, a real
+        # sector-median beta (Damodaran, see SECTOR_BASELINES) beats the flat
+        # 1.0 "sector-neutral" default this class's docstring already
+        # described as an aspiration — betas genuinely spread from 0.30
+        # (Oil/Gas Integrated) to 1.69 (Software Internet), so 1.0 was never
+        # a neutral choice for most real companies, just an uninformed one.
         beta = o.beta if o.beta is not None else (
-            data.beta if data.beta is not None else self.default_beta)
+            data.beta if data.beta is not None else (
+                sector_baseline["beta"] if sector_baseline else self.default_beta))
         erm = o.expected_market_return if o.expected_market_return is not None \
             else rf + self.erp
         # The filing's own effective tax rate (when confidently scraped) is a
@@ -290,10 +379,14 @@ class AutoAssumer:
         g_div = o.dividend_growth if o.dividend_growth is not None else 0.03
         shares = data.shares_outstanding or 1_000_000.0
         net_debt = data.net_debt if data.net_debt is not None else 0.0
-        # Same margin fallback _synth_fcfs uses, so a synthesised base_revenue
-        # is internally consistent with a synthesised FCF path (base_fcf =
+        # Same margin fallback _synth_fcfs uses (including its sector-baseline
+        # preference — see SECTOR_BASELINES), so a synthesised base_revenue is
+        # internally consistent with a synthesised FCF path (base_fcf =
         # base_revenue * margin) instead of picking an unrelated placeholder.
-        margin = data.operating_margin or 0.15
+        # `or`, not `is not None`, matching _synth_fcfs's own check — kept
+        # identical rather than tightened here as an unrelated side effect.
+        margin = data.operating_margin or (
+            sector_baseline["operating_margin"] if sector_baseline else None) or 0.15
         # abs() on the fallback: a cash-burning filing's real FCF is negative,
         # and revenue derived from it would come out negative too — a company
         # with negative sales, which is not a thing. The models this feeds are
@@ -451,8 +544,26 @@ class AutoAssumer:
         rationale[("DCF", "terminal_growth")] = (
             f"Capped at min(rf={rf:.2%}, 2.5%) — Gordon constraint g < r."
         )
+        if not data.free_cash_flows:
+            growth_src = ("filing" if data.revenue_growth else
+                          f"{data.sector} sector" if sector_baseline else "generic 5%")
+            if data.revenue is None:
+                rationale[("DCF", "free_cash_flows")] = (
+                    "No FCF or revenue disclosed — synthesised from a placeholder "
+                    f"base, grown at {growth_src} default."
+                )
+            else:
+                margin_src = ("filing" if data.operating_margin else
+                              f"{data.sector} sector" if sector_baseline else "generic 15%")
+                rationale[("DCF", "free_cash_flows")] = (
+                    f"No FCF disclosed — synthesised as revenue × operating margin "
+                    f"({margin_src} default), grown at {growth_src} default."
+                )
         rationale[("CAPM", "beta")] = (
-            "Scraped from PDF." if data.beta else f"Sector-neutral default = {beta}."
+            "Scraped from PDF." if data.beta
+            else (f"{data.sector} sector median (Damodaran, Jan 2026) = {beta}."
+                  if not data.beta and sector_baseline
+                  else f"Sector-neutral default = {beta}.")
         )
         rationale[("Options/MPT/VaR", "volatility")] = (
             f"Scraped from the filing's stock-comp footnote ('expected "
@@ -666,8 +777,16 @@ class AutoAssumer:
         Same growth rate :meth:`_synth_fcfs` uses, so a projection seeded from
         a real disclosed figure and one seeded from revenue × margin behave
         identically apart from the base itself being real.
+
+        Growth prefers, in order: the filing's own disclosed/derived rate,
+        then its sector's real 5-year historical CAGR (SECTOR_BASELINES —
+        the same "a real number beats a generic one" substitution
+        PDFExtractor._derive_yoy_metrics already makes at company level),
+        then the flat 5% default.
         """
-        g = data.revenue_growth or 0.05                      # 5% growth default
+        sector_baseline = SECTOR_BASELINES.get(data.sector) if data.sector else None
+        g = data.revenue_growth or (
+            sector_baseline["revenue_growth"] if sector_baseline else None) or 0.05
         return [base * (1 + g) ** t for t in range(1, 6)]
 
     def _synth_fcfs(self, data: ExtractedFinancials, wacc: float) -> list[float]:
@@ -675,7 +794,11 @@ class AutoAssumer:
         if data.revenue is None:
             base = 100.0                                     # placeholder units
         else:
-            margin = data.operating_margin or 0.15           # 15% FCF margin default
+            sector_baseline = SECTOR_BASELINES.get(data.sector) if data.sector else None
+            # Same margin fallback build() uses for base_revenue's own
+            # abs(fcfs[0])/margin path — see SECTOR_BASELINES.
+            margin = data.operating_margin or (
+                sector_baseline["operating_margin"] if sector_baseline else None) or 0.15
             base = data.revenue * margin
         return self._project_fcfs(base, data)
 
