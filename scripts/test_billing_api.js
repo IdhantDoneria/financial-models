@@ -75,12 +75,19 @@ async function buy(token, plan, period = "monthly") {
   const cfg = await call(handlers.billingConfig);
   check("config: billing on (dev-fake)", cfg.body.billing === true && cfg.body.devFake === true);
   const byId = Object.fromEntries(cfg.body.plans.map((p) => [p.id, p]));
-  check("config: PRO is ₹299/mo or ₹2,499/yr, 50 uploads",
-    byId.pro.periods.monthly.priceInr === 299 && byId.pro.periods.annual.priceInr === 2499
+  check("config: PRO is $29/mo or $299/yr (₹2,552/₹26,312 at the fixed rate), 50 uploads",
+    byId.pro.periods.monthly.priceUsd === 29 && byId.pro.periods.annual.priceUsd === 299
+    && byId.pro.periods.monthly.priceInr === 2552 && byId.pro.periods.annual.priceInr === 26312
     && byId.pro.uploads === 50);
-  check("config: UNLIMITED is ₹599/mo or ₹4,999/yr, unlimited uploads",
-    byId.unlimited.periods.monthly.priceInr === 599 && byId.unlimited.periods.annual.priceInr === 4999
+  check("config: UNLIMITED is $59/mo or $599/yr (₹5,192/₹52,712), unlimited uploads",
+    byId.unlimited.periods.monthly.priceUsd === 59 && byId.unlimited.periods.annual.priceUsd === 599
+    && byId.unlimited.periods.monthly.priceInr === 5192 && byId.unlimited.periods.annual.priceInr === 52712
     && byId.unlimited.uploads === null);
+  check("config: BOUTIQUE FUND is $249/mo or $2,499/yr, unlimited uploads, 5 seats",
+    byId.boutique.periods.monthly.priceUsd === 249 && byId.boutique.periods.annual.priceUsd === 2499
+    && byId.boutique.uploads === null && byId.boutique.seats === 5);
+  check("config: USD/INR rate is the same for every plan (no geo discount)",
+    cfg.body.usdToInr === 88);
   check("config: FREE tier is 3 uploads", byId.free.uploads === 3 && byId.free.periods === null);
 
   // -- auth requirements ---------------------------------------------------
@@ -113,7 +120,8 @@ async function buy(token, plan, period = "monthly") {
   // -- purchase PRO (monthly) ----------------------------------------------
   const order = await call(handlers.billingOrder,
     { method: "POST", token, body: { plan: "pro", period: "monthly" } });
-  check("order: created with authoritative amount 29900", order.body.ok && order.body.amount === 29900);
+  check("order: created with authoritative amount 255200 (29 USD at the fixed 88 rate, in paise)",
+    order.body.ok && order.body.amount === 255200);
   const badSig = await call(handlers.billingVerify, {
     method: "POST", token,
     body: { razorpay_order_id: order.body.orderId, razorpay_payment_id: "pay_x",
@@ -156,6 +164,13 @@ async function buy(token, plan, period = "monthly") {
     Date.parse(up.body.subscription.expiresAt) - Date.now() > 59 * 86_400_000);
   const unlUse = await call(handlers.usage, { method: "POST", token });
   check("usage: UNLIMITED has no cap", unlUse.code === 200 && unlUse.body.limit === null);
+
+  // -- BOUTIQUE FUND is purchasable and unmetered like UNLIMITED -----------
+  const boutiqueToken = await login("fund-buyer@example.com");
+  const boutiquePurchase = await buy(boutiqueToken, "boutique", "monthly");
+  check("purchase: BOUTIQUE FUND activates", boutiquePurchase.body.ok && boutiquePurchase.body.plan === "boutique");
+  const boutiqueUse = await call(handlers.usage, { method: "POST", token: boutiqueToken });
+  check("usage: BOUTIQUE FUND has no cap", boutiqueUse.code === 200 && boutiqueUse.body.limit === null);
 
   // -- annual purchase grants a ~365-day pass ------------------------------
   const annualToken = await login("annual-buyer@example.com");

@@ -155,7 +155,7 @@ def _effective_plan(email: str) -> str:
         return "free"
     plan = sub.get("plan")
     expires_at = sub.get("expiresAt")
-    if plan not in ("pro", "unlimited") or not expires_at:
+    if plan not in ("pro", "unlimited", "boutique", "enterprise") or not expires_at:
         return "free"
     try:
         expires = datetime.fromisoformat(str(expires_at).replace("Z", "+00:00"))
@@ -421,7 +421,7 @@ class handler(BaseHTTPRequestHandler):
             return self._json(401, {"ok": False, "error": "SESSION INVALID"})
 
         plan = _effective_plan(email)
-        if plan not in ("pro", "unlimited"):
+        if plan not in ("pro", "unlimited", "boutique", "enterprise"):
             return self._json(403, {"ok": False, "error":
                 "This tool requires ANALYST PRO or higher — upgrade to unlock the "
                 "Ind AS hidden-debt normalizer and reverse-DCF solver."})
