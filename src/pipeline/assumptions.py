@@ -158,6 +158,19 @@ _MPT_CORRELATION = 0.6
 #: in :meth:`AutoAssumer.build`) — an unusual real number is disclosed as
 #: real, not silently smoothed into something more comfortable.
 #:
+#: One sector's raw figure is capped rather than trusted at face value —
+#: see :data:`_MAX_SECTOR_GROWTH` just below — because it is not actually a
+#: case of "the sector genuinely behaves this way" the way the two above
+#: are. Air Transport's 47.79% is a trailing 5-year CAGR measured off a
+#: pandemic-crashed base year: a real number, but a measurement artifact of
+#: *when* the window starts, not a forward-looking rate any airline is
+#: expected to sustain. Damodaran's own methodology explicitly warns
+#: against using a raw historical CAGR as a forward growth driver without
+#: adjusting for exactly this kind of base-year distortion. Bounding a
+#: proxy value for this reason is not the same thing as smoothing real
+#: company-disclosed data (which this pipeline still never touches) — it
+#: is model hygiene applied to an already-approximate fallback layer.
+#:
 #: This is a fallback layer only: it fills a gap the code would otherwise
 #: fill with the flat generic default (beta=1.0, margin=15%, growth=5%),
 #: and only when :meth:`PDFExtractor._classify_sector` confidently
@@ -170,6 +183,15 @@ _MPT_CORRELATION = 0.6
 #: over a periodically-updated constant; the existing risk-free-rate and
 #: equity-risk-premium defaults in this same class take the identical
 #: compiled-constant posture already.
+#:
+#: Applied ONLY to a value sourced from this table (never to a company's
+#: own real disclosed/derived growth, which is used exactly as stated no
+#: matter how extreme) — see the Air Transport note above. Set just above
+#: Software (Internet)'s real, legitimately-volatile 29.18%, so it clips
+#: nothing but the one confirmed base-year artifact currently in this
+#: table; a future addition landing above it deserves the same scrutiny
+#: Air Transport got, not a silent pass-through.
+_MAX_SECTOR_GROWTH = 0.30
 SECTOR_BASELINES: dict[str, dict[str, float]] = {
     "Drugs (Pharmaceutical)":            {"beta": 0.98, "operating_margin": 0.3124, "revenue_growth": 0.1845},
     "Healthcare Products":               {"beta": 0.91, "operating_margin": 0.1740, "revenue_growth": 0.1841},
@@ -240,6 +262,27 @@ class AutoAssumer:
         self.default_vol = default_volatility
 
     # ------------------------------------------------------------------ #
+    @staticmethod
+    def _sector_baseline(data: ExtractedFinancials) -> dict[str, float] | None:
+        """SECTOR_BASELINES entry for ``data.sector``, or ``None``.
+
+        The single lookup point — this used to be repeated inline at three
+        separate call sites (build, _project_fcfs, _synth_fcfs), which meant
+        any future change to how a sector maps to its baseline (or a guard
+        added around it) had to be kept in sync by hand across all three.
+        """
+        return SECTOR_BASELINES.get(data.sector) if data.sector else None
+
+    @staticmethod
+    def _sector_growth(sector_baseline: dict[str, float] | None) -> float | None:
+        """The sector's revenue-growth baseline, capped — see
+        :data:`_MAX_SECTOR_GROWTH` for why this is the one field in
+        SECTOR_BASELINES that gets bounded rather than used verbatim.
+        """
+        if sector_baseline is None:
+            return None
+        return min(sector_baseline["revenue_growth"], _MAX_SECTOR_GROWTH)
+
     def _wacc(
         self, beta: float, tax: float | None = None,
         we: float | None = None, cost_of_debt: float | None = None,
@@ -276,7 +319,7 @@ class AutoAssumer:
         """
         o = overrides or ManualOverrides()
         rf = o.risk_free_rate if o.risk_free_rate is not None else self.rf
-        sector_baseline = SECTOR_BASELINES.get(data.sector) if data.sector else None
+        sector_baseline = self._sector_baseline(data)
         # A real, filing-disclosed beta always wins; failing that, a real
         # sector-median beta (Damodaran, see SECTOR_BASELINES) beats the flat
         # 1.0 "sector-neutral" default this class's docstring already
@@ -545,8 +588,11 @@ class AutoAssumer:
             f"Capped at min(rf={rf:.2%}, 2.5%) — Gordon constraint g < r."
         )
         if not data.free_cash_flows:
+            capped_note = (" (capped — see SECTOR_BASELINES)"
+                           if sector_baseline and sector_baseline["revenue_growth"] > _MAX_SECTOR_GROWTH
+                           else "")
             growth_src = ("filing" if data.revenue_growth else
-                          f"{data.sector} sector" if sector_baseline else "generic 5%")
+                          f"{data.sector} sector{capped_note}" if sector_baseline else "generic 5%")
             if data.revenue is None:
                 rationale[("DCF", "free_cash_flows")] = (
                     "No FCF or revenue disclosed — synthesised from a placeholder "
@@ -559,12 +605,24 @@ class AutoAssumer:
                     f"No FCF disclosed — synthesised as revenue × operating margin "
                     f"({margin_src} default), grown at {growth_src} default."
                 )
-        rationale[("CAPM", "beta")] = (
-            "Scraped from PDF." if data.beta
-            else (f"{data.sector} sector median (Damodaran, Jan 2026) = {beta}."
-                  if not data.beta and sector_baseline
-                  else f"Sector-neutral default = {beta}.")
-        )
+        # Checks the TRUE source beta was actually resolved from, in the same
+        # priority order build() itself used (o.beta > data.beta >
+        # sector_baseline > default) — not just data.beta and sector_baseline,
+        # which the earlier version of this line did. That version, given a
+        # manual override on a filing that happened to classify into a
+        # sector, printed "Drugs (Pharmaceutical) sector median (Damodaran,
+        # Jan 2026) = 1.5" for a beta the USER typed in — a specific,
+        # authoritative-sounding false citation for their own input.
+        if o.beta is not None:
+            rationale[("CAPM", "beta")] = f"Manually overridden = {beta}."
+        elif data.beta is not None:
+            rationale[("CAPM", "beta")] = "Scraped from PDF."
+        elif sector_baseline:
+            rationale[("CAPM", "beta")] = (
+                f"{data.sector} sector median (Damodaran, Jan 2026) = {beta}."
+            )
+        else:
+            rationale[("CAPM", "beta")] = f"Sector-neutral default = {beta}."
         rationale[("Options/MPT/VaR", "volatility")] = (
             f"Scraped from the filing's stock-comp footnote ('expected "
             f"volatility' — {vol:.0%}); this is management's own ASC 718 "
@@ -781,12 +839,12 @@ class AutoAssumer:
         Growth prefers, in order: the filing's own disclosed/derived rate,
         then its sector's real 5-year historical CAGR (SECTOR_BASELINES —
         the same "a real number beats a generic one" substitution
-        PDFExtractor._derive_yoy_metrics already makes at company level),
-        then the flat 5% default.
+        PDFExtractor._derive_yoy_metrics already makes at company level, but
+        see :meth:`_sector_growth` for the one figure in that table that's
+        capped rather than used verbatim), then the flat 5% default.
         """
-        sector_baseline = SECTOR_BASELINES.get(data.sector) if data.sector else None
-        g = data.revenue_growth or (
-            sector_baseline["revenue_growth"] if sector_baseline else None) or 0.05
+        sector_baseline = self._sector_baseline(data)
+        g = data.revenue_growth or self._sector_growth(sector_baseline) or 0.05
         return [base * (1 + g) ** t for t in range(1, 6)]
 
     def _synth_fcfs(self, data: ExtractedFinancials, wacc: float) -> list[float]:
@@ -794,7 +852,7 @@ class AutoAssumer:
         if data.revenue is None:
             base = 100.0                                     # placeholder units
         else:
-            sector_baseline = SECTOR_BASELINES.get(data.sector) if data.sector else None
+            sector_baseline = self._sector_baseline(data)
             # Same margin fallback build() uses for base_revenue's own
             # abs(fcfs[0])/margin path — see SECTOR_BASELINES.
             margin = data.operating_margin or (

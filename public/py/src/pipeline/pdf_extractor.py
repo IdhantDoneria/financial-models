@@ -1302,9 +1302,17 @@ class PDFExtractor:
             r"managed (?:IT )?services",
         ),
         "Business & Consumer Services": (
+            # No bare "\bconsular\b" — it duplicated every "consular
+            # services" match (the word is a strict substring of the
+            # phrase), silently doubling this sector's score and defeating
+            # the "no single stray match" guarantee the scoring depends on.
+            # "consular outsourcing" is a real, independently-occurring
+            # phrase in BLS's own filing (distinct from "consular services"),
+            # so it's kept as its own non-overlapping pattern.
             r"outsourcing services", r"business process outsourcing", r"\bBPO\b",
-            r"consular services", r"visa (?:outsourcing|application) services",
-            r"staffing services", r"facility management services", r"\bconsular\b",
+            r"consular services", r"consular outsourcing",
+            r"visa (?:outsourcing|application) services",
+            r"staffing services", r"facility management services",
         ),
         "Bank (Money Center)": (
             r"scheduled commercial bank", r"banking company", r"net interest income",
@@ -1382,7 +1390,13 @@ class PDFExtractor:
             r"hotel operations", r"hospitality business", r"casinos?", r"resort properties",
         ),
         "Air Transport": (
-            r"airlines?", r"air transport services", r"aviation services",
+            # NOT bare "airlines?" — that matches inside any carrier's own
+            # name ("Delta Airlines", "American Airlines"), so an aerospace
+            # supplier, caterer, or airport-IT vendor that merely names its
+            # airline CUSTOMERS would clear the hit floor on customer
+            # references alone, with nothing actually contradicting it.
+            r"air transport services", r"aviation services", r"airline operations",
+            r"scheduled airline", r"passenger airline", r"commercial airline",
         ),
         "Transportation": (
             r"logistics services", r"freight transport", r"shipping and logistics",
@@ -1621,11 +1635,18 @@ class PDFExtractor:
             figures_text,
             {f: getattr(data, f) for f in self._TTM_ROW_PATTERNS})
 
-        # The FULL document, not figures_text: a business description ("the
-        # Company is engaged in the manufacture of pharmaceutical
-        # formulations...") is narrative, not a statement-section figure,
-        # and routinely sits on the cover page before any statement begins.
-        data.sector = self._classify_sector(text)
+        # Not figures_text (a business description is narrative, not a
+        # statement-section figure, and routinely sits on the cover page
+        # before any statement begins), but bounded to the same 50k-char
+        # slice raw_text keeps below — running ~150 IGNORECASE regex passes
+        # over a full 300-500KB 10-K would block the Pyodide/WASM main
+        # thread for real, user-visible seconds on every upload. A
+        # company's own business description is front-loaded (cover page,
+        # Item 1) on every real filing this pipeline has been tested
+        # against — confirmed unchanged on the Caplin fixture, whose real
+        # text exceeds 50k chars (22 pharma-vocabulary hits full text vs 21
+        # in the first 50k, same winner by the same decisive margin).
+        data.sector = self._classify_sector(text[:50_000])
 
         data.raw_text = text[:50_000]
         return data
