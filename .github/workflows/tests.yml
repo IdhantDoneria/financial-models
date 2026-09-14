@@ -37,3 +37,5 @@ jobs:
         run: node scripts/test_xss_escaping.js
       - name: Per-market gold/silver quoting conventions
         run: node scripts/test_metal_unit_conventions.js
+      - name: Ticker-load data mapping (SEC XBRL)
+        run: node scripts/test_fundamentals.js
