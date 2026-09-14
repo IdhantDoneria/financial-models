@@ -619,6 +619,7 @@ input.ibov:focus { outline: none; border-color: var(--amber); }
 .pcard.cur .pbuy:disabled { border-color: var(--green); color: var(--green); }
 .pnote.gift { color: var(--amber); border: 1px dashed var(--amber-dim); padding: 8px 10px; }
 .pnote.gift b { letter-spacing: 0.08em; }
+.pcard.boutique { border-color: var(--cyan); }
 .pcard.enterprise { border-color: var(--cyan); }
 .pflag.teams { background: var(--cyan); }
 .pquota.seats { color: var(--cyan); }

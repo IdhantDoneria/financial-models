@@ -258,7 +258,7 @@ const state = {
   user: null,              // session from login.html (set before boot)
   country: null,           // set in boot() from storage or default US
   scen: { built: null, busy: false },   // scenario & sensitivity engine
-  billing: { cfg: null, usage: null },  // Razorpay plans + upload metering
+  billing: { cfg: null, usage: null, geo: null },  // Razorpay plans + upload metering + IP-derived display currency
   ib: { pkgsReady: false, fns: null, extracted: null, report: null,
         liveRf: null, rfSource: null, fx: null, fxDate: null,
         period: "auto", mode: "auto", dirty: {}, selected: null },
@@ -539,7 +539,11 @@ function buildUI() {
  * visitor's IP (server-side, /api/geo) to a timezone once at boot and
  * renderClock() switches to it from then on — a small "this feels built
  * for me" touch, and the country tally behind /api/geo also gives the
- * operator real visitor-geography data for conversion tracking. */
+ * operator real visitor-geography data for conversion tracking. The same
+ * lookup also sets state.billing.geo, which the PLAN tab uses to choose
+ * whether to LABEL prices in ₹ or $ — the real amount charged never
+ * changes by geography, only which of the two equal-value figures is
+ * shown (see USD_TO_INR in api/_lib/billing.js). */
 let clockTz = null;
 function renderClock() {
   const now = new Date();
@@ -566,7 +570,8 @@ async function initGeoClock() {
       const loc = [j.city, j.country].filter(Boolean).join(", ");
       $("#clock").title = `LOCAL TIME${loc ? " · " + loc : ""}${j.flag ? " " + j.flag : ""} — DETECTED FROM YOUR IP ADDRESS`;
     }
-  } catch { /* geolocation unreachable — clock stays on UTC */ }
+    if (j.ok) state.billing.geo = { country_code: j.country_code || null };
+  } catch { /* geolocation unreachable — clock stays on UTC, PLAN tab defaults to USD */ }
 }
 
 /* --------------------------- phone bottom nav --------------------------- */
@@ -597,6 +602,67 @@ function setMobileView(mv) {
 /* ------------------------------ live ticker ---------------------------- */
 const TROY_OZ_TO_G = 31.1034768;
 
+//: Real local gold/silver quoting units, verified per market (not assumed
+//  uniform) against that market's own exchange or major retail bullion
+//  dealers, October 2026:
+//   - IN  gold/10g, silver/kg — MCX contract units, the newspaper/jeweller
+//     convention (pre-existing; see below for why gold and silver differ).
+//   - CN  gold/g (Shanghai Gold Exchange quotes RMB/gram), silver/kg (SGE's
+//     own benchmark is RMB/kilogram, not RMB/gram — the same gold≠silver
+//     divergence as India, independently confirmed on a different exchange).
+//   - HK  gold/tael (37.429g) — the Chinese Gold & Silver Exchange Society's
+//     traditional "99 Tael Gold" contract, still the market's real physical-
+//     trade unit. Silver stays on troy oz: HK's silver trade is smaller and
+//     less standardized locally, and no clear local-unit convention could
+//     be confirmed — left alone rather than guessed.
+//   - JP  gold/g, silver/g — Tokyo Commodity Exchange (now part of JPX)
+//     trades both in JPY/gram; Tanaka Kikinzoku, Japan's largest retail
+//     dealer, quotes the same way.
+//   - SA  gold/g, silver/g — the standard Gulf retail convention (grams,
+//     further split by karat for gold; per-gram is explicitly the dominant
+//     retail unit for silver too, cheap enough that a bigger unit isn't
+//     needed the way it is for gold elsewhere).
+//   - KR  gold/don (3.75g) — Seoul's Jongno district (the country's real
+//     physical retail benchmark) prices in don; the gram-based KRX Gold
+//     Market is the separate institutional venue. Silver/g — no matching
+//     "don" convention found for silver; retail trackers show gram as the
+//     norm, unlike gold's divergence.
+//   - CH, DE, FR, NL  gold/g, silver/g — the Eurozone/Swiss bullion trade's
+//     retail bars run 1g-1kg and its major dealers (Degussa, Geiger,
+//     ProAurum) quote per gram; troy oz is used only for international
+//     comparison, not local retail.
+//   - GB, CA, AU  UNCHANGED (troy oz): confirmed as the real convention —
+//     LBMA (UK), COMEX/LBMA-aligned Royal Canadian Mint (Canada) and Perth
+//     Mint (Australia) all price and mint in troy ounces already.
+//   - TW  gold/mace, silver/mace (3.75g) — Taiwan's own bullion trade quotes
+//     "台錢" (a real 3.75g unit, TPEx's own English term for it since its
+//     October 2025 rename is "Taiwan Mace"), NOT the 37.5g "tael" (台兩,
+//     =10 mace) an earlier pass here mistook it for from a translation that
+//     glossed 台錢 as "tael" — a real, confirmable error, not an
+//     unresolvable ambiguity. Resolved by independent arithmetic rather
+//     than trusting either English gloss: a real quoted retail sell price
+//     (NT$17,050) divided by 3.75g lands ~3% over a spot-equivalent gram
+//     price computed from live gold spot × USD/TWD FX — a plausible dealer
+//     markup; divided by 37.5g it lands ~90% UNDER spot, which no real
+//     dealer price can be. Silver: a genuine Taiwan bullion-dealer site
+//     (tw9999.tw, not a generic international-price aggregator) lists its
+//     silver-bar table in 台錢 as the first/primary column, with no
+//     kilogram unit shown — the non-divergent pattern (like Japan, Saudi
+//     Arabia), not the gold≠silver split India/China/Korea have.
+const METAL_UNIT_CONVENTIONS = {
+  IN: { GOLD: { grams: 10,     label: "GOLD (10G)" },  SILVER: { grams: 1000, label: "SILVER (KG)" } },
+  CN: { GOLD: { grams: 1,      label: "GOLD (G)" },    SILVER: { grams: 1000, label: "SILVER (KG)" } },
+  HK: { GOLD: { grams: 37.429, label: "GOLD (TAEL)" } },
+  JP: { GOLD: { grams: 1,      label: "GOLD (G)" },    SILVER: { grams: 1, label: "SILVER (G)" } },
+  SA: { GOLD: { grams: 1,      label: "GOLD (G)" },    SILVER: { grams: 1, label: "SILVER (G)" } },
+  KR: { GOLD: { grams: 3.75,   label: "GOLD (DON)" },  SILVER: { grams: 1, label: "SILVER (G)" } },
+  CH: { GOLD: { grams: 1,      label: "GOLD (G)" },    SILVER: { grams: 1, label: "SILVER (G)" } },
+  DE: { GOLD: { grams: 1,      label: "GOLD (G)" },    SILVER: { grams: 1, label: "SILVER (G)" } },
+  FR: { GOLD: { grams: 1,      label: "GOLD (G)" },    SILVER: { grams: 1, label: "SILVER (G)" } },
+  NL: { GOLD: { grams: 1,      label: "GOLD (G)" },    SILVER: { grams: 1, label: "SILVER (G)" } },
+  TW: { GOLD: { grams: 3.75,   label: "GOLD (MACE)" }, SILVER: { grams: 3.75, label: "SILVER (MACE)" } },
+};
+
 //: Converts one raw (always-USD) tape quote to the selected country's
 //  currency for display. Deliberately narrow about what it touches:
 //   - Index levels (q.money === false — S&P, NASDAQ, Nikkei, …) are never
@@ -607,29 +673,23 @@ const TROY_OZ_TO_G = 31.1034768;
 //   - Without a live FX rate yet (state.ib.fx is null — e.g. right after
 //     switching country, before /api/rates has answered), the quote is left
 //     in USD rather than guessed at.
-//   - Gold and silver get an extra unit conversion for India specifically,
-//     from Yahoo's COMEX futures convention (USD per troy ounce) to what
-//     Indian buyers actually quote: gold per 10 grams (the universal
-//     newspaper/jeweller/MCX convention) and silver per kilogram (MCX's own
-//     contract unit, and what's quoted locally — NOT per 10g; silver and
-//     gold follow different conventions in the Indian market, so applying
-//     the same 10g unit to both would be a real, if minor, inaccuracy). The
-//     label changes alongside the number so the unit is always visible, not
-//     just a silently different figure.
-//   - Every other market's gold/silver stays in troy ounces (just FX-
-//     converted) until each market's own real quoting convention is
-//     verified — not guessed — in a follow-up.
+//   - Gold and silver get an extra unit conversion per METAL_UNIT_CONVENTIONS,
+//     from Yahoo's COMEX/LBMA futures convention (USD per troy ounce) to
+//     what that market actually quotes locally — see the table above for
+//     the market-by-market rationale and sourcing. A market absent from the
+//     table (GB, CA, AU, and any other not yet researched) keeps troy
+//     ounces, just FX-converted, rather than guess. The label changes
+//     alongside the number so the unit is always visible, not just a
+//     silently different figure.
 function convertTapeQuote(q, country) {
   if (!q.money || !country || country.ccy === "USD" || typeof state.ib.fx !== "number") return q;
   const fx = state.ib.fx;   // country currency per 1 USD
   let price = q.price * fx;
   let label = q.label;
-  if (country.code === "IN" && q.label === "GOLD") {
-    price = (price / TROY_OZ_TO_G) * 10;
-    label = "GOLD (10G)";
-  } else if (country.code === "IN" && q.label === "SILVER") {
-    price = (price / TROY_OZ_TO_G) * 1000;
-    label = "SILVER (KG)";
+  const conv = METAL_UNIT_CONVENTIONS[country.code] && METAL_UNIT_CONVENTIONS[country.code][q.label];
+  if (conv) {
+    price = (price / TROY_OZ_TO_G) * conv.grams;
+    label = conv.label;
   }
   return { ...q, price, label, ccy: country.ccy };
 }
@@ -2592,13 +2652,17 @@ async function runSensitivityGrid() {
 
 /* ======================================================================== *
  * BILLING — Razorpay plans, upload metering, PLAN tab.
- * FREE: 3 uploads/mo · ANALYST PRO ₹299/mo or ₹2,499/yr: 50 uploads, plus
+ * FREE: 3 uploads/mo · ANALYST PRO $29/mo or $299/yr: 50 uploads, plus
  * the Ind AS hidden-debt normalizer and reverse-DCF solver · DESK UNLIMITED
- * ₹599/mo or ₹4,999/yr: unlimited uploads. "Upload" = one IB-desk PDF
- * analysis. Amounts are authoritative server-side (api/_lib/billing.js);
- * checkout is Razorpay's hosted modal; payment proof is verified
- * server-side. Until RAZORPAY_* env vars exist, billing reports offline
- * and nothing is gated.
+ * $59/mo or $599/yr: unlimited uploads · BOUTIQUE FUND $249/mo or
+ * $2,499/yr: unlimited uploads, up to 5 seats. "Upload" = one IB-desk PDF
+ * analysis. Amounts are authoritative server-side (api/_lib/billing.js) as
+ * INR paise, converted from one global USD price at a fixed rate — every
+ * buyer pays the same real price; the PLAN tab just labels it in ₹ or $
+ * depending on IP-derived country (state.billing.geo). Checkout is
+ * Razorpay's hosted modal (settles in INR regardless of the label shown);
+ * payment proof is verified server-side. Until RAZORPAY_* env vars exist,
+ * billing reports offline and nothing is gated.
  * ======================================================================== */
 
 //: The two premium models — available from ANALYST PRO up. Actually
@@ -2713,15 +2777,30 @@ async function consumeUpload() {
 }
 
 /* ------------------------------ PLAN tab -------------------------------- */
+//: Which of the two equal-value price labels to show — IP-derived, India
+//  sees ₹, everyone else sees $. The amount actually charged never changes;
+//  see USD_TO_INR in api/_lib/billing.js. Defaults to USD (the larger
+//  audience) if geo lookup hasn't resolved yet or failed.
+function planCurrency() {
+  return state.billing.geo && state.billing.geo.country_code === "IN" ? "inr" : "usd";
+}
+//: `period` is one entry of a plan's `periods` (has priceInr + priceUsd).
+function fmtPlanPrice(period, currency) {
+  return currency === "inr"
+    ? `₹${period.priceInr.toLocaleString("en-IN")}`
+    : `$${period.priceUsd.toLocaleString("en-US")}`;
+}
+
 //: Paid plans show both billing periods side by side — a toggle would hide
 //  half the picture, and these cards have room for two short price lines.
 function planPriceHTML(p) {
   if (p.contact) return `<div class="pprice">CUSTOM <small>TAILORED TO YOUR DESK</small></div>`;
-  if (!p.periods) return `<div class="pprice">₹0 <small>FOREVER</small></div>`;
+  const cur = planCurrency();
+  if (!p.periods) return `<div class="pprice">${cur === "inr" ? "₹0" : "$0"} <small>FOREVER</small></div>`;
   const { monthly, annual } = p.periods;
   return `<div class="pprice">
-    <div class="pp-period">₹${monthly.priceInr} <small>/ MO</small></div>
-    <div class="pp-period">₹${annual.priceInr.toLocaleString("en-IN")} <small>/ YR</small></div>
+    <div class="pp-period">${fmtPlanPrice(monthly, cur)} <small>/ MO</small></div>
+    <div class="pp-period">${fmtPlanPrice(annual, cur)} <small>/ YR</small></div>
   </div>`;
 }
 
@@ -2771,11 +2850,14 @@ async function renderPlanTab(body) {
   const plans = (cfg && cfg.plans) || [
     { id: "free", name: "FREE", periods: null, uploads: 3, blurb: "3 company uploads / month · all 10 models · SCEN engine" },
     { id: "pro", name: "ANALYST PRO", uploads: 50,
-      periods: { monthly: { priceInr: 299 }, annual: { priceInr: 2499 } },
+      periods: { monthly: { priceInr: 2552, priceUsd: 29 }, annual: { priceInr: 26312, priceUsd: 299 } },
       blurb: "50 company uploads / month · Ind AS hidden-debt normalizer & reverse-DCF solver · everything in FREE" },
     { id: "unlimited", name: "DESK UNLIMITED", uploads: null,
-      periods: { monthly: { priceInr: 599 }, annual: { priceInr: 4999 } },
+      periods: { monthly: { priceInr: 5192, priceUsd: 59 }, annual: { priceInr: 52712, priceUsd: 599 } },
       blurb: "Unlimited uploads · everything in PRO" },
+    { id: "boutique", name: "BOUTIQUE FUND", uploads: null, seats: 5,
+      periods: { monthly: { priceInr: 21912, priceUsd: 249 }, annual: { priceInr: 219912, priceUsd: 2499 } },
+      blurb: "Unlimited uploads · everything in DESK UNLIMITED · priority support · provisioning for up to 5 named team members" },
     { id: "enterprise", name: "ENTERPRISE", periods: null, uploads: null, contact: true, seats: 20,
       blurb: "Unrestricted access to the entire platform with unlimited analyses, guaranteed priority compute during peak traffic, provisioning for up to 20 team members, and early access to new capabilities ahead of general release — with dedicated onboarding and priority support." },
   ];
@@ -2787,18 +2869,19 @@ async function renderPlanTab(body) {
   const buyButtons = (p) => {
     if (current === p.id) return `<button class="pbuy" disabled>CURRENT PLAN</button>`;
     if (!cfg || !cfg.billing) return `<button class="pbuy" disabled>OFFLINE</button>`;
+    const cur = planCurrency();
     return `<div class="pbuyrow">
       <button class="pbuy" data-plan="${p.id}" data-period="monthly" ${canBuy ? "" : "disabled"}>
-        MONTHLY — ₹${p.periods.monthly.priceInr}</button>
+        MONTHLY — ${fmtPlanPrice(p.periods.monthly, cur)}</button>
       <button class="pbuy" data-plan="${p.id}" data-period="annual" ${canBuy ? "" : "disabled"}>
-        ANNUAL — ₹${p.periods.annual.priceInr.toLocaleString("en-IN")}</button>
+        ANNUAL — ${fmtPlanPrice(p.periods.annual, cur)}</button>
     </div>`;
   };
   body.innerHTML = `<h3>PLANS &amp; USAGE</h3>${head}
     <div class="pcards">${plans.map((p) => `
       <div class="pcard ${p.id} ${current === p.id ? "cur" : ""}">
         ${p.id === "unlimited" ? `<div class="pflag">BEST VALUE</div>` : ""}
-        ${p.contact ? `<div class="pflag teams">FOR TEAMS</div>` : ""}
+        ${p.contact || p.id === "boutique" ? `<div class="pflag teams">FOR TEAMS</div>` : ""}
         <div class="pname">${p.name}</div>
         ${planPriceHTML(p)}
         <div class="pquota">${p.uploads === null ? "UNLIMITED" : p.uploads} UPLOADS${p.uploads === null ? "" : " / MO"}</div>
@@ -2813,7 +2896,10 @@ async function renderPlanTab(body) {
     <div class="pnote" id="pmsg">Paid plans are day-based passes (30 for monthly, 365 for annual) —
       renewing or upgrading early credits your unused days. Payments are processed by Razorpay
       (UPI · cards · netbanking · wallets); this site never sees card details. An upload = one
-      IB-desk PDF analysis; model runs and the SCEN engine are never metered.</div>`;
+      IB-desk PDF analysis; model runs and the SCEN engine are never metered. Prices are shown
+      in ${planCurrency() === "inr" ? "₹" : "$"} based on your location, but it's the same real
+      price everywhere — no regional discount; checkout always settles in ₹ (Razorpay does not
+      support other settlement currencies).</div>`;
   body.querySelectorAll(".pbuy[data-plan]").forEach((b) => {
     b.onclick = () => startCheckout(b.dataset.plan, b.dataset.period);
   });

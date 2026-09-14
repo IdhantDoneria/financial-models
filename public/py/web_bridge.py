@@ -378,24 +378,37 @@ def _assumed_preview(data: Any) -> dict:
     Mirrors :class:`AutoAssumer`'s defaults (and calls its own synthesiser for
     the FCF path) so the UI can show what "AUTO-ASSUMED" actually means —
     e.g. a company with no debt shows an assumed 0, not a hidden guess.
+
+    Beta/margin/growth specifically call AutoAssumer's own
+    ``_sector_baseline``/``_sector_growth`` helpers rather than
+    reimplementing the sector-vs-flat-default choice a third time — that
+    reimplementation is exactly how this preview drifted out of sync with
+    reality in the first place: build() and _synth_fcfs() both gained a
+    sector-baseline fallback, this function didn't, and the previewed
+    free_cash_flows (which DOES call _synth_fcfs) came out computed from a
+    different margin/growth pair than the beta/margin/growth values shown
+    right next to it in the same response — silently breaking this
+    docstring's own "the exact numbers" promise.
     """
     from src.pipeline import AutoAssumer
 
     auto = AutoAssumer()
+    sector_baseline = auto._sector_baseline(data)
     spot = data.current_price or 100.0
     preview: dict[str, Any] = {}
     if data.current_price is None:
         preview["current_price"] = 100.0            # normalised units
     if data.beta is None:
-        preview["beta"] = auto.default_beta
+        preview["beta"] = sector_baseline["beta"] if sector_baseline else auto.default_beta
     if data.dividend_per_share is None:
         preview["dividend_per_share"] = round(0.02 * spot, 4)
     if data.revenue is None:
         preview["revenue"] = 100.0                  # synth-FCF base, normalised
     if data.revenue_growth is None:
-        preview["revenue_growth"] = 0.05
+        preview["revenue_growth"] = auto._sector_growth(sector_baseline) or 0.05
     if data.operating_margin is None:
-        preview["operating_margin"] = 0.15
+        preview["operating_margin"] = (
+            sector_baseline["operating_margin"] if sector_baseline else 0.15)
     if data.tax_rate is None:
         preview["tax_rate"] = auto.tax
     if data.total_debt is None:

@@ -391,13 +391,21 @@ The terminal has a built-in monetisation layer. The metered unit is an **upload*
 
 | Plan | Price | Uploads / month |
 |---|---|---|
-| **FREE** | ₹0 | 3 |
-| **ANALYST PRO** | **₹299 / mo** or **₹2,499 / yr** | 50 |
-| **DESK UNLIMITED** | **₹599 / mo** or **₹4,999 / yr** | Unlimited |
+| **FREE** | $0 | 3 |
+| **ANALYST PRO** | **$29 / mo** or **$299 / yr** | 50 |
+| **DESK UNLIMITED** | **$59 / mo** or **$599 / yr** | Unlimited |
+| **BOUTIQUE FUND** | **$249 / mo** or **$2,499 / yr** | Unlimited, up to 5 seats |
+| **ENTERPRISE** | custom, sales-led | Unlimited, up to 20 seats |
+
+Every price is one global USD figure converted to INR at a single fixed rate
+(`USD_TO_INR` in `api/_lib/billing.js`) — deliberately not geo-discounted, so a buyer
+in Mumbai and a buyer in Manhattan pay the same real price. Razorpay only settles in
+INR, so that converted figure is what's actually charged; the PLAN tab just labels it
+in ₹ or $ depending on the visitor's IP-derived country (`/api/geo`).
 
 Analyst Pro and above also unlock the Ind AS 116 hidden-debt normalizer and reverse-DCF
-solver (client-side gated — see `PREMIUM_MODELS` in `terminal.js`); the free tier gets
-the original 10 models only.
+solver (server-enforced — see `_effective_plan()` in `api/premium.py` and `api/mcp.py`);
+the free tier gets the original 10 models only.
 
 Paid plans are **day-based passes** — 30 days for monthly, 365 for annual — bought
 through Razorpay Checkout (UPI · cards · netbanking · wallets); renewing or upgrading
