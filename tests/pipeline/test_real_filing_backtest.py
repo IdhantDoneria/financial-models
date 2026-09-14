@@ -825,3 +825,151 @@ def test_synthesised_fcf_uses_the_sector_margin_and_growth_on_tesla():
     base = data.revenue * margin
     expected_fcfs = [base * (1 + growth) ** t for t in range(1, 6)]
     assert a.kwargs_by_model[DCF_MODEL]["free_cash_flows"] == pytest.approx(expected_fcfs)
+
+
+# --------------------------------------------------------------------------
+# Ultrareview findings on the sector-baseline / metal-convention PRs — six
+# real issues found by a cloud code review of this session's diff (4
+# correctness bugs, 2 nits), verified against the actual code before
+# fixing, then fixed and regression-tested here.
+# --------------------------------------------------------------------------
+
+from src.pipeline.assumptions import ManualOverrides, _MAX_SECTOR_GROWTH   # noqa: E402
+
+
+def test_air_transport_sector_growth_is_capped_not_used_raw():
+    """SECTOR_BASELINES['Air Transport']['revenue_growth'] is a real,
+    correctly-sourced Damodaran figure (47.79%) — but it's a 5-year CAGR
+    measured off a pandemic-crashed base year, not a sustainable forward
+    rate. Raw, compounded 5 years it's a 7x FCF multiple handed to a DCF as
+    an "authoritative sector median". Capped at _MAX_SECTOR_GROWTH; every
+    OTHER real sector figure (including genuinely volatile ones like
+    Software (Internet)'s 29.18%) stays untouched."""
+    raw = SECTOR_BASELINES["Air Transport"]["revenue_growth"]
+    assert raw > _MAX_SECTOR_GROWTH, "fixture assumption: the raw figure is still the outlier"
+    data = PDFExtractor().scrape_figures(
+        "The Company operates scheduled airline services on passenger "
+        "airline routes. scheduled airline passenger airline")
+    assert data.sector == "Air Transport"
+    a = AutoAssumer().build(data)
+    fcfs = a.kwargs_by_model[DCF_MODEL]["free_cash_flows"]
+    base = fcfs[0] / (1 + _MAX_SECTOR_GROWTH)
+    expected = [base * (1 + _MAX_SECTOR_GROWTH) ** t for t in range(1, 6)]
+    assert fcfs == pytest.approx(expected)
+    assert "capped" in a.rationale[("DCF", "free_cash_flows")]
+
+
+def test_a_legitimately_volatile_sector_growth_is_not_capped():
+    """Software (Internet)'s real 29.18% sits just under _MAX_SECTOR_GROWTH
+    — confirms the cap catches Air Transport's artifact without touching a
+    genuinely high-growth sector's real figure."""
+    growth = SECTOR_BASELINES["Software (Internet)"]["revenue_growth"]
+    assert growth < _MAX_SECTOR_GROWTH
+    data = PDFExtractor().scrape_figures(
+        "The Company operates an e-commerce platform and online marketplace "
+        "as an internet-based digital platform business. "
+        "e-commerce platform online marketplace")
+    assert data.sector == "Software (Internet)"
+    a = AutoAssumer().build(data)
+    fcfs = a.kwargs_by_model[DCF_MODEL]["free_cash_flows"]
+    base = fcfs[0] / (1 + growth)
+    expected = [base * (1 + growth) ** t for t in range(1, 6)]
+    assert fcfs == pytest.approx(expected)
+    assert "capped" not in a.rationale[("DCF", "free_cash_flows")]
+
+
+def test_bare_airline_customer_references_do_not_classify_as_air_transport():
+    """A supplier that merely NAMES its airline customers (not an airline
+    operator itself) must not classify — the bare 'airlines?' keyword
+    previously matched inside any carrier's own proper name."""
+    text = ("This Company manufactures aerospace components for Delta "
+            "Airlines, United Airlines, and American Airlines.")
+    assert PDFExtractor._classify_sector(text) is None
+
+
+def test_a_real_airline_operator_still_classifies():
+    """The fix narrows the vocabulary to specific phrases — confirm a real
+    airline operator's own description still clears the bar."""
+    text = ("The Company provides scheduled airline services and operates "
+            "commercial airline routes as a passenger airline carrier. "
+            "aviation services air transport services")
+    assert PDFExtractor._classify_sector(text) == "Air Transport"
+
+
+def test_consular_services_is_not_double_counted():
+    """'consular services' and a bare '\\bconsular\\b' pattern used to both
+    match the same occurrence, silently doubling this sector's score and
+    undermining the classifier's stated 'no single stray match' guarantee."""
+    # Exactly 2 real occurrences of "consular services" and nothing else —
+    # should score exactly 2, not 4.
+    import re
+    text = "The Company offers consular services. Our consular services team..."
+    total = sum(len(re.findall(pat, text, re.IGNORECASE))
+                for pat in PDFExtractor._SECTOR_KEYWORDS["Business & Consumer Services"])
+    assert total == 2, f"expected exactly 2 (one per real occurrence), got {total}"
+
+
+def test_bls_still_classifies_after_the_consular_dedup_fix():
+    data = PDFExtractor().scrape_figures(
+        (FIXTURES / "bls_international_q1_fy2026-27_raw_text.txt").read_text())
+    assert data.sector == "Business & Consumer Services"
+
+
+def test_classify_sector_on_the_same_truncated_slice_as_raw_text():
+    """_classify_sector used to scan the FULL unbounded document (up to
+    hundreds of KB on a real 10-K), unlike every other consumer which caps
+    at 50k chars — a real perf risk on the Pyodide/WASM main thread. Confirm
+    a real filing whose text exceeds 50k chars (Caplin: 62,396) still
+    classifies identically from the first 50k alone."""
+    text = (FIXTURES / "caplin_point_q1_fy2026-27_raw_text.txt").read_text()
+    assert len(text) > 50_000
+    assert PDFExtractor._classify_sector(text) == \
+        PDFExtractor._classify_sector(text[:50_000]) == "Drugs (Pharmaceutical)"
+
+
+def test_manual_beta_override_is_not_misattributed_to_a_sector_citation():
+    """A user-entered beta on a classified filing must be labelled as their
+    own override, not falsely cited as a specific Damodaran sector figure —
+    the CAPM rationale used to check only data.beta and sector_baseline,
+    never whether a manual override was actually what got used."""
+    data = PDFExtractor().scrape_figures(
+        "The Company is a pharmaceutical formulations manufacturer. "
+        "pharmaceutical formulation formulation")
+    assert data.sector == "Drugs (Pharmaceutical)"
+    assert data.beta is None
+    a = AutoAssumer().build(data, overrides=ManualOverrides(beta=1.5))
+    assert a.market_context["beta"] == pytest.approx(1.5)
+    note = a.rationale[("CAPM", "beta")]
+    assert "1.5" in note
+    assert "Damodaran" not in note
+    assert "Manually overridden" in note
+
+
+def test_web_bridge_assumed_preview_matches_what_autoassumer_actually_uses():
+    """web_bridge._assumed_preview's beta/margin/growth used to be hardcoded
+    flat defaults even after AutoAssumer.build and _synth_fcfs gained a
+    sector-baseline fallback — so the previewed FCF path (which DOES call
+    _synth_fcfs) was computed from a different margin/growth pair than the
+    beta/margin/growth values shown in the same preview response, breaking
+    _assumed_preview's own docstring promise ('the exact numbers the IB bot
+    will use')."""
+    import importlib.util
+    root = FIXTURES.parent.parent
+    spec = importlib.util.spec_from_file_location(
+        "web_bridge_preview_test", root / "public" / "py" / "web_bridge.py")
+    wb = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(wb)
+
+    data = PDFExtractor().scrape_figures(
+        (FIXTURES / "tesla_10k_fy2025_raw_text_excerpts.txt").read_text())
+    assert data.sector == "Auto & Truck"
+    assert data.operating_margin is None and data.revenue_growth is None
+    preview = wb._assumed_preview(data)
+    baseline = SECTOR_BASELINES["Auto & Truck"]
+    assert preview["beta"] == pytest.approx(baseline["beta"])
+    assert preview["operating_margin"] == pytest.approx(baseline["operating_margin"])
+    assert preview["revenue_growth"] == pytest.approx(baseline["revenue_growth"])
+    # The FCF preview must reconcile with the SAME margin/growth shown above
+    # — the actual bug: these silently used to disagree.
+    implied_margin = preview["free_cash_flows"][0] / (1 + preview["revenue_growth"]) / data.revenue
+    assert implied_margin == pytest.approx(preview["operating_margin"])
