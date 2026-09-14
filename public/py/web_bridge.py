@@ -499,6 +499,52 @@ def analyze_pdf(pdf_bytes: Any, period_mode: str = "auto") -> str:
     })
 
 
+def load_fundamentals(fields_json: str) -> str:
+    """Load a company from SEC XBRL data instead of an uploaded PDF.
+
+    ``fields_json`` is the ``fields`` object from ``/api/fundamentals`` —
+    already keyed to :class:`ExtractedFinancials` and already in raw currency
+    units, the same scale the PDF extractor normalises to, so nothing is
+    rescaled here.
+
+    Returns exactly the payload shape :func:`analyze_pdf` returns, so the whole
+    downstream UI (extraction grid, missing-field warnings, assumption preview,
+    model run, export) works against a ticker load without a second code path.
+    The alternative — a parallel render path for tickers — is how the two
+    drift apart and how one of them quietly stops reporting missing fields.
+    """
+    from src.pipeline.pdf_extractor import ExtractedFinancials
+
+    try:
+        fields = json.loads(fields_json)
+        allowed = set(ExtractedFinancials.__dataclass_fields__)
+        kwargs = {k: v for k, v in fields.items() if k in allowed}
+        if not kwargs.get("free_cash_flows"):
+            kwargs["free_cash_flows"] = []
+        #: Provenance marker. assumptions.py reads backends_used to decide how
+        #  to DESCRIBE a figure's origin, and must never call an XBRL fact
+        #  "scraped from PDF" — being able to say where each number came from
+        #  is the whole point of this tool.
+        kwargs.setdefault("backends_used", ["sec-edgar-xbrl"])
+        data = ExtractedFinancials(**kwargs)
+    except Exception as exc:
+        return json.dumps({"ok": False, "error": f"{type(exc).__name__}: {exc}"})
+
+    #: SEC company facts are annual-period figures already; there is nothing to
+    #  annualise, so the quarterly ×4 path is deliberately not run here.
+    _ANALYZER.update(data=data, report=None, period="annual")
+    clean = _clean(data.to_dict())
+    missing = [k for k in _KEY_FIELDS
+               if clean.get(k) in (None, [], "") and k != "free_cash_flows"
+               or (k == "free_cash_flows" and not clean.get(k))]
+    return json.dumps({
+        "ok": True, "fields": clean, "missing": missing, "period": "annual",
+        "backends": clean.get("backends_used", []),
+        "assumed": _assumed_preview(data),
+        "source": "sec-edgar-xbrl",
+    })
+
+
 def run_report(params_json: str) -> str:
     """Build assumptions (auto or manual) and run the selected models.
 

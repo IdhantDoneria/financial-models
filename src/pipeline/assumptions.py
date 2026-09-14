@@ -274,6 +274,26 @@ class AutoAssumer:
         return SECTOR_BASELINES.get(data.sector) if data.sector else None
 
     @staticmethod
+    def _disclosed_source(data: ExtractedFinancials) -> str:
+        """How to describe a figure that came from the company itself.
+
+        The IB desk has two intake paths: an uploaded PDF, and a ticker load
+        that pulls SEC XBRL company facts (``api/fundamentals.js``). A
+        rationale reading "Scraped from PDF." next to an XBRL fact is a false
+        citation — the same class of bug as the manual-override
+        misattribution guarded against in :meth:`build`, and the reason that
+        guard exists: a specific, authoritative-sounding *wrong* provenance is
+        worse than no provenance at all, because a reader acts on it.
+
+        Keyed off ``backends_used``, which each intake path stamps on the
+        extraction it produces.
+        """
+        backends = getattr(data, "backends_used", None) or []
+        if any("sec-edgar" in str(b).lower() for b in backends):
+            return "From the company's SEC XBRL filing data."
+        return "Scraped from PDF."
+
+    @staticmethod
     def _sector_growth(sector_baseline: dict[str, float] | None) -> float | None:
         """The sector's revenue-growth baseline, capped — see
         :data:`_MAX_SECTOR_GROWTH` for why this is the one field in
@@ -616,7 +636,7 @@ class AutoAssumer:
         if o.beta is not None:
             rationale[("CAPM", "beta")] = f"Manually overridden = {beta}."
         elif data.beta is not None:
-            rationale[("CAPM", "beta")] = "Scraped from PDF."
+            rationale[("CAPM", "beta")] = self._disclosed_source(data)
         elif sector_baseline:
             rationale[("CAPM", "beta")] = (
                 f"{data.sector} sector median (Damodaran, Jan 2026) = {beta}."
@@ -650,8 +670,9 @@ class AutoAssumer:
             "footnotes in MANUAL mode."
         )
         rationale[("HDEBT", "depreciation_amortization / rd_cash_spend / maintenance_capex")] = (
-            "Scraped from PDF." if (data.depreciation_amortization and data.rd_expense
-                                     and data.capital_expenditures)
+            self._disclosed_source(data)
+            if (data.depreciation_amortization and data.rd_expense
+                and data.capital_expenditures)
             else "Partially or fully defaulted to $0 where the filing's D&A, R&D "
                  "expense or capex line wasn't confidently found."
         )
