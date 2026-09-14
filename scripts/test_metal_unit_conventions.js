@@ -116,11 +116,34 @@ for (const [code, ccy, fx] of [["GB", "GBP", 0.79], ["CA", "CAD", 1.39], ["AU", 
     `${code}: gold stays troy oz, only FX-converted`, `${g.label} ${g.price}`);
 }
 
-console.log("· Taiwan: deliberately left on troy oz — convention genuinely ambiguous, not guessed");
+console.log("· Taiwan: gold AND silver per mace (3.75g) — resolved by independent arithmetic,");
+console.log("  not either English gloss (a real quote reconciles with spot only at 3.75g, not 37.5g)");
 {
-  const g = convert("TW", "TWD", 32, "GOLD", GOLD_USD_OZ);
-  ok(g.label === "GOLD" && Math.abs(g.price - GOLD_USD_OZ * 32) < 0.01,
-    "TW gold stays troy oz (no entry in METAL_UNIT_CONVENTIONS)", `${g.label} ${g.price}`);
+  const g = convert("TW", "TWD", 31.64, "GOLD", GOLD_USD_OZ);
+  ok(g.label === "GOLD (MACE)", "gold relabelled MACE", g.label);
+  ok(Math.abs(g.price - (GOLD_USD_OZ * 31.64 / TROY_OZ_TO_G) * 3.75) < 1,
+    "gold price uses the 3.75g mace, not the 37.5g tael", g.price);
+  const s = convert("TW", "TWD", 31.64, "SILVER", SILVER_USD_OZ);
+  ok(s.label === "SILVER (MACE)", "silver relabelled MACE (non-divergent, unlike KR/CN)", s.label);
+  ok(Math.abs(s.price - (SILVER_USD_OZ * 31.64 / TROY_OZ_TO_G) * 3.75) < 1,
+    "silver price also uses the 3.75g mace", s.price);
+}
+console.log("· Taiwan gold at a real recent quote reconciles with spot only at 3.75g");
+{
+  // A real goldlegend.com sell quote (Sept 2026): NT$17,050 "per 錢". Real
+  // gold spot ~$4,340/oz that week, USD/TWD ~31.64. If 錢 were 37.5g the
+  // implied price would sit ~90% under spot — impossible for a dealer's
+  // own sell price. At 3.75g it lands a plausible few percent OVER spot.
+  const REAL_QUOTE_NTD = 17050, REAL_SPOT_USD_OZ = 4340, REAL_FX = 31.64;
+  const spotEquivalentPerGram = (REAL_SPOT_USD_OZ * REAL_FX) / TROY_OZ_TO_G;
+  const impliedAt3_75g = REAL_QUOTE_NTD / 3.75;
+  const impliedAt37_5g = REAL_QUOTE_NTD / 37.5;
+  ok(impliedAt3_75g > spotEquivalentPerGram && impliedAt3_75g < spotEquivalentPerGram * 1.15,
+    "3.75g reading is within a plausible dealer markup of spot",
+    `implied ${impliedAt3_75g.toFixed(0)} vs spot-equiv ${spotEquivalentPerGram.toFixed(0)} TWD/g`);
+  ok(impliedAt37_5g < spotEquivalentPerGram * 0.5,
+    "37.5g reading would be far below spot — proves it's the wrong unit",
+    `implied ${impliedAt37_5g.toFixed(0)} vs spot-equiv ${spotEquivalentPerGram.toFixed(0)} TWD/g`);
 }
 
 console.log("· Non-metal quotes and index levels are never touched by the metal table");

@@ -629,12 +629,21 @@ const TROY_OZ_TO_G = 31.1034768;
 //   - GB, CA, AU  UNCHANGED (troy oz): confirmed as the real convention —
 //     LBMA (UK), COMEX/LBMA-aligned Royal Canadian Mint (Canada) and Perth
 //     Mint (Australia) all price and mint in troy ounces already.
-//   - TW  UNCHANGED (troy oz): genuinely ambiguous rather than unresearched.
-//     Taiwan's own exchange (TPEx) switched its trading unit from the
-//     traditional tael (37.5g) to a "Taiwan mace" (3.75g) in October 2025,
-//     while retail trackers still show gram, tael and mace inconsistently.
-//     No single figure could be confirmed with the same confidence as the
-//     markets above, so this is left on troy oz rather than guessed.
+//   - TW  gold/mace, silver/mace (3.75g) — Taiwan's own bullion trade quotes
+//     "台錢" (a real 3.75g unit, TPEx's own English term for it since its
+//     October 2025 rename is "Taiwan Mace"), NOT the 37.5g "tael" (台兩,
+//     =10 mace) an earlier pass here mistook it for from a translation that
+//     glossed 台錢 as "tael" — a real, confirmable error, not an
+//     unresolvable ambiguity. Resolved by independent arithmetic rather
+//     than trusting either English gloss: a real quoted retail sell price
+//     (NT$17,050) divided by 3.75g lands ~3% over a spot-equivalent gram
+//     price computed from live gold spot × USD/TWD FX — a plausible dealer
+//     markup; divided by 37.5g it lands ~90% UNDER spot, which no real
+//     dealer price can be. Silver: a genuine Taiwan bullion-dealer site
+//     (tw9999.tw, not a generic international-price aggregator) lists its
+//     silver-bar table in 台錢 as the first/primary column, with no
+//     kilogram unit shown — the non-divergent pattern (like Japan, Saudi
+//     Arabia), not the gold≠silver split India/China/Korea have.
 const METAL_UNIT_CONVENTIONS = {
   IN: { GOLD: { grams: 10,     label: "GOLD (10G)" },  SILVER: { grams: 1000, label: "SILVER (KG)" } },
   CN: { GOLD: { grams: 1,      label: "GOLD (G)" },    SILVER: { grams: 1000, label: "SILVER (KG)" } },
@@ -646,6 +655,7 @@ const METAL_UNIT_CONVENTIONS = {
   DE: { GOLD: { grams: 1,      label: "GOLD (G)" },    SILVER: { grams: 1, label: "SILVER (G)" } },
   FR: { GOLD: { grams: 1,      label: "GOLD (G)" },    SILVER: { grams: 1, label: "SILVER (G)" } },
   NL: { GOLD: { grams: 1,      label: "GOLD (G)" },    SILVER: { grams: 1, label: "SILVER (G)" } },
+  TW: { GOLD: { grams: 3.75,   label: "GOLD (MACE)" }, SILVER: { grams: 3.75, label: "SILVER (MACE)" } },
 };
 
 //: Converts one raw (always-USD) tape quote to the selected country's
@@ -662,7 +672,7 @@ const METAL_UNIT_CONVENTIONS = {
 //     from Yahoo's COMEX/LBMA futures convention (USD per troy ounce) to
 //     what that market actually quotes locally — see the table above for
 //     the market-by-market rationale and sourcing. A market absent from the
-//     table (GB, CA, AU, TW, and any other not yet researched) keeps troy
+//     table (GB, CA, AU, and any other not yet researched) keeps troy
 //     ounces, just FX-converted, rather than guess. The label changes
 //     alongside the number so the unit is always visible, not just a
 //     silently different figure.
