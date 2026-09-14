@@ -14,7 +14,7 @@ Each model is a self-contained class with a common interface (`calculate()` · `
 ## Table of contents
 - [Overview](#overview)
 - [The twelve models](#the-twelve-models)
-- [Metric scores](#metric-scores)
+- [Metric scores](#metric-scores-self-assessed)
 - [Installation](#installation)
 - [Quick start](#quick-start)
 - [Architecture](#architecture)
@@ -172,12 +172,18 @@ financial-models/
 │   └── pipeline/test_pipeline.py  # 20 tests: PDF analyzer end-to-end
 ├── scripts/build_notebook.py      # regenerates the notebook from source
 ├── scripts/sync_web_assets.py     # syncs src/ + FF data into public/ for the terminal
+├── scripts/build_landing_pages.py # generates the per-model calculator pages + sitemap.xml
+├── scripts/test_seo.js            # SEO invariants (canonicals, h1s, schema, sitemap, links)
 ├── scripts/e2e_terminal.py        # headless-Chromium check: all 10 models in-browser
 ├── public/
 │   ├── index.html · assets/       # FINMODELS terminal (Bloomberg-style, Pyodide)
 │   ├── py/                        # synced model sources + web_bridge.py + manifest
 │   ├── data/ff_factors.csv        # bundled Ken French factor snapshot
-│   └── about.html                 # static project overview page
+│   ├── about.html                 # static project overview page
+│   ├── reverse-dcf-calculator.html · ifrs-16-hidden-debt-calculator.html
+│   ├── monte-carlo-stock-price-simulator.html · black-scholes-calculator.html
+│   │                              # generated landing pages (build_landing_pages.py)
+│   └── robots.txt · sitemap.xml   # sitemap is generated; do not hand-edit
 ├── docs/design/terminal-spec.md   # terminal design specification
 ├── docs/design/mockup.html        # design-first UI wireframe
 ├── requirements.txt · requirements-test.txt · requirements-notebook.txt · vercel.json · .gitignore · LICENSE
@@ -211,7 +217,7 @@ Tested end-to-end: synthetic 10-K → extract → run all twelve models → expo
 ## Testing & scoring
 
 ```bash
-pytest tests/ -q          # 112 tests
+pytest tests/ -q          # 320 tests
 ```
 
 The suite validates: every model's benchmarks (numerical accuracy), the
@@ -219,6 +225,46 @@ The suite validates: every model's benchmarks (numerical accuracy), the
 (`ValidationError` on negative spot, zero volatility, discount rate ≤ growth, etc.), and
 asserts the full 10/10 scorecard across all twelve models. Tests also run in CI via GitHub Actions
 (`.github/workflows/tests.yml`).
+
+Several browser-side guards run under Node rather than pytest:
+
+```bash
+node scripts/test_seo.js                     # 188 SEO invariants
+node scripts/test_xss_escaping.js            # escaping of every HTML sink
+node scripts/test_metal_unit_conventions.js  # per-market gold/silver units
+node scripts/test_billing_api.js             # full purchase lifecycle
+node scripts/test_admin_founders.js          # admin desk + grants
+```
+
+## 🔎 Landing pages & SEO
+
+The terminal is one URL, which gives search engines nothing to rank for the
+queries this tool actually serves ("reverse dcf calculator", "operating lease
+capitalization"). Four generated landing pages fill that gap — each explains a
+model properly and deep-links into it via `/?m=<MNEMONIC>`:
+
+| Page | Model | Plan |
+|---|---|---|
+| `/reverse-dcf-calculator` | `RDCF` | Analyst Pro |
+| `/ifrs-16-hidden-debt-calculator` | `HDEBT` | Analyst Pro |
+| `/monte-carlo-stock-price-simulator` | `MC` | Free |
+| `/black-scholes-calculator` | `BSM` | Free |
+
+```bash
+python scripts/build_landing_pages.py            # regenerate pages + sitemap.xml
+python scripts/build_landing_pages.py --check    # verify, write nothing
+```
+
+Content lives in `PAGES` inside that script; structure lives in one template,
+so the parts that must stay identical across pages (JSON-LD shape, canonical
+and OG wiring, breadcrumbs, the sitemap entry) can't drift. `sitemap.xml` is
+generated too — a new page cannot be forgotten. `tests/test_landing_pages.py`
+fails the build if the committed HTML no longer matches the generator, and
+also pins two rules: **no page may advertise a paywalled model as free**, and
+the JSON-LD `offers` price must equal the real plan price.
+
+**The strategy behind these pages — including what not to chase, what to build
+next, and the off-page work — is in [`docs/seo-strategy.md`](docs/seo-strategy.md).**
 
 ## Live data
 

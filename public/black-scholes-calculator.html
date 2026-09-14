@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="theme-color" content="#0f1420" />
+<title>Black-Scholes Calculator with Greeks — Free, In-Browser</title>
+<meta name="description" content="Free Black-Scholes calculator for European calls and puts with all five Greeks — delta, gamma, vega, theta, rho — validated against Hull&#x27;s textbook values." />
+<link rel="canonical" href="https://financial-models-six.vercel.app/black-scholes-calculator" />
+
+<meta property="og:type" content="website" />
+<meta property="og:site_name" content="FINMODELS TERMINAL" />
+<meta property="og:title" content="Black-Scholes Calculator with Greeks — Free, In-Browser" />
+<meta property="og:description" content="Free Black-Scholes calculator for European calls and puts with all five Greeks — delta, gamma, vega, theta, rho — validated against Hull&#x27;s textbook values." />
+<meta property="og:url" content="https://financial-models-six.vercel.app/black-scholes-calculator" />
+<meta property="og:image" content="https://financial-models-six.vercel.app/og.png" />
+<meta property="og:image:width" content="1200" />
+<meta property="og:image:height" content="630" />
+<meta property="og:image:alt" content="FINMODELS TERMINAL — an amber-on-black browser terminal running twelve quantitative-finance models." />
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:title" content="Black-Scholes Calculator with Greeks — Free, In-Browser" />
+<meta name="twitter:description" content="Free Black-Scholes calculator for European calls and puts with all five Greeks — delta, gamma, vega, theta, rho — validated against Hull&#x27;s textbook values." />
+<meta name="twitter:image" content="https://financial-models-six.vercel.app/og.png" />
+
+<link rel="icon" href="/favicon.ico" sizes="32x32" />
+<link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+<link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+<link rel="stylesheet" href="/assets/landing.css" />
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "Black-Scholes Calculator with Greeks",
+  "url": "https://financial-models-six.vercel.app/black-scholes-calculator",
+  "applicationCategory": "FinanceApplication",
+  "operatingSystem": "Any modern web browser",
+  "browserRequirements": "Requires JavaScript and WebAssembly",
+  "description": "Free Black-Scholes calculator for European calls and puts with all five Greeks — delta, gamma, vega, theta, rho — validated against Hull's textbook values.",
+  "isPartOf": {
+    "@id": "https://financial-models-six.vercel.app/#website"
+  },
+  "offers": {
+    "@type": "Offer",
+    "price": "0",
+    "priceCurrency": "USD"
+  }
+}
+</script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "BreadcrumbList",
+  "itemListElement": [
+    {
+      "@type": "ListItem",
+      "position": 1,
+      "name": "Home",
+      "item": "https://financial-models-six.vercel.app/"
+    },
+    {
+      "@type": "ListItem",
+      "position": 2,
+      "name": "Calculators",
+      "item": "https://financial-models-six.vercel.app/about"
+    },
+    {
+      "@type": "ListItem",
+      "position": 3,
+      "name": "Black-Scholes Calculator with Greeks",
+      "item": "https://financial-models-six.vercel.app/black-scholes-calculator"
+    }
+  ]
+}
+</script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    {
+      "@type": "Question",
+      "name": "What is the Black-Scholes formula?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "A closed-form solution for the value of a European option: C = S·N(d₁) − K·e^(−rT)·N(d₂) for a call, where d₁ and d₂ are functions of spot, strike, rate, volatility and time."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "What are the Greeks in options?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "The sensitivities of an option's value to its inputs: delta to the underlying price, gamma to delta itself, vega to volatility, theta to the passage of time, and rho to interest rates."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Can Black-Scholes price American options?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "No. It assumes exercise only at expiry. American options can be exercised early, which makes them worth at least as much; use a binomial tree for those."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Why does Black-Scholes disagree with market prices?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Mostly because it assumes constant volatility. Markets price a volatility smile, charging more for far out-of-the-money strikes than a single volatility implies. That gap is the reason stochastic-volatility models like Heston exist."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Is this Black-Scholes calculator free?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Yes. Black-Scholes is one of the ten models on the free tier and runs entirely in your browser — no signup, and nothing you enter is sent to a server."
+      }
+    }
+  ]
+}
+</script>
+</head>
+<body>
+<div class="wrap">
+
+  <nav class="crumbs" aria-label="Breadcrumb">
+    <a href="/">Terminal</a><span>/</span><a href="/about">Models</a><span>/</span>Black-Scholes Calculator with Greeks
+  </nav>
+
+  <header>
+    <span class="eyebrow">Derivatives</span>
+    <h1>Black-Scholes Calculator with Greeks</h1>
+    <p class="lede">Price European calls and puts and get the complete set of Greeks, computed by real SciPy running in your browser. Benchmarked against Hull's worked example and verified to satisfy put-call parity to machine precision.</p>
+
+    <a class="cta" href="/?m=BSM">
+      <span class="go">Open the Black-Scholes Calculator with Greeks &rarr;</span>
+      <span class="note">Runs free in your browser — no signup, nothing uploaded.</span>
+    </a>
+  </header>
+
+  <main>
+    <h2>What the Black-Scholes model does</h2>
+    <p>The Black-Scholes-Merton model gives a closed-form value for a European option under a specific set of assumptions: the underlying follows geometric Brownian motion with constant volatility, there are no transaction costs, and the option can only be exercised at expiry.</p>
+    <p>It remains the industry baseline half a century on — not because those assumptions hold, but because everyone knows exactly how they fail. Implied volatility, the number the market actually quotes, is defined as the volatility that makes this formula return the observed price.</p>
+    <p>The <strong>Greeks</strong> are the partial derivatives of that value with respect to each input, and they are what the formula is mostly used for in practice: they tell you how the position's value moves when the world does.</p>
+
+    <h2>The formula</h2>
+    <div class="formula">  C  =  S·N(d₁)  −  K·e^(−rT)·N(d₂)
+  P  =  K·e^(−rT)·N(−d₂)  −  S·N(−d₁)
+
+         ln(S/K) + (r + ½σ²)T
+  d₁  =  ─────────────────────  ,      d₂  =  d₁ − σ√T
+                 σ√T</div>
+    <ul class="vars"><li><code>S</code> — spot price of the underlying</li><li><code>K</code> — strike price</li><li><code>r</code> — risk-free interest rate</li><li><code>σ</code> — volatility of the underlying</li><li><code>T</code> — time to expiry, in years</li><li><code>N(·)</code> — the standard normal cumulative distribution function</li></ul>
+
+    <h3>The Greeks</h3>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Greek</th><th>Derivative</th><th>What it tells you</th></tr></thead>
+        <tbody>
+        <tr><td><strong>Delta</strong></td><td class="num">∂V/∂S</td><td>How much the option value moves per unit move in the underlying — and the hedge ratio.</td></tr>
+        <tr><td><strong>Gamma</strong></td><td class="num">∂²V/∂S²</td><td>How fast delta itself changes. High gamma means a hedge goes stale quickly.</td></tr>
+        <tr><td><strong>Vega</strong></td><td class="num">∂V/∂σ</td><td>Sensitivity to volatility. Usually the dominant risk on a long option.</td></tr>
+        <tr><td><strong>Theta</strong></td><td class="num">∂V/∂T</td><td>Time decay — what the position loses simply by another day passing.</td></tr>
+        <tr><td><strong>Rho</strong></td><td class="num">∂V/∂r</td><td>Sensitivity to interest rates. Matters most on long-dated options.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2>How this calculator works</h2>
+    <p>The price and every Greek are computed in closed form using SciPy's normal distribution functions — no finite-difference approximation, so the Greeks are exact rather than estimated from nearby repricings.</p>
+    <p>The implementation is validated two ways in this project's test suite. It reproduces Hull's Example 15.6 to a relative error of 8.9 × 10⁻⁵, and it satisfies <strong>put-call parity</strong> — C − P = S − K·e^(−rT) — to 4.5 × 10⁻¹⁶. The second check is the stronger one: parity is an arbitrage identity that must hold exactly, independent of any particular textbook value.</p>
+    <p>The whole calculation runs as real CPython in your browser through WebAssembly. Nothing you type is transmitted anywhere.</p>
+
+    <h2>How to use it</h2>
+    <ol>
+      <li>Enter spot, strike, risk-free rate, volatility and time to expiry in years.</li>
+      <li>Choose call or put.</li>
+      <li>Read the price and the full set of Greeks together — the Greeks are usually the point.</li>
+      <li>Check put-call parity if you want to verify an input: C − P should equal S − K·e^(−rT).</li>
+      <li>Cross-check against the Monte Carlo simulator; for a European option the two should agree within simulation error.</li>
+    </ol>
+
+    <h2>Worked example</h2>
+    <p>Hull's Example 15.6, which this implementation is benchmarked against: a European call with six months to expiry.</p>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Input</th><th>Value</th></tr></thead>
+        <tbody>
+        <tr><td>Spot (S)</td><td class="num">42.00</td></tr>
+        <tr><td>Strike (K)</td><td class="num">40.00</td></tr>
+        <tr><td>Risk-free rate (r)</td><td class="num">10%</td></tr>
+        <tr><td>Volatility (σ)</td><td class="num">20%</td></tr>
+        <tr><td>Time to expiry (T)</td><td class="num">0.5 years</td></tr>
+        <tr><td>Call value</td><td class="num">4.759422</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>This reproduces the textbook value to a relative error of 8.9 × 10⁻⁵, and put-call parity holds to 4.5 × 10⁻¹⁶ — effectively machine precision. Both checks run as part of the project's automated test suite rather than being asserted by hand.</p>
+
+    <h2>Assumptions and limitations</h2>
+    <ul>
+      <li>European exercise only. For American options, which can be exercised early, use the binomial (Cox-Ross-Rubinstein) model instead.</li>
+      <li>Volatility is assumed constant across strikes and maturities. Real option markets show a volatility smile, which is precisely what the Heston model exists to reproduce.</li>
+      <li>No dividends in the basic form. A continuous dividend yield can be handled by substituting the dividend-adjusted spot.</li>
+      <li>Returns are assumed log-normal. Real markets have fatter tails, so deep out-of-the-money options tend to be underpriced by this formula.</li>
+    </ul>
+
+    <h2>Frequently asked questions</h2>
+    <div class="faq">
+      <details>
+        <summary>What is the Black-Scholes formula?</summary>
+        <p>A closed-form solution for the value of a European option: C = S·N(d₁) − K·e^(−rT)·N(d₂) for a call, where d₁ and d₂ are functions of spot, strike, rate, volatility and time.</p>
+      </details>
+      <details>
+        <summary>What are the Greeks in options?</summary>
+        <p>The sensitivities of an option's value to its inputs: delta to the underlying price, gamma to delta itself, vega to volatility, theta to the passage of time, and rho to interest rates.</p>
+      </details>
+      <details>
+        <summary>Can Black-Scholes price American options?</summary>
+        <p>No. It assumes exercise only at expiry. American options can be exercised early, which makes them worth at least as much; use a binomial tree for those.</p>
+      </details>
+      <details>
+        <summary>Why does Black-Scholes disagree with market prices?</summary>
+        <p>Mostly because it assumes constant volatility. Markets price a volatility smile, charging more for far out-of-the-money strikes than a single volatility implies. That gap is the reason stochastic-volatility models like Heston exist.</p>
+      </details>
+      <details>
+        <summary>Is this Black-Scholes calculator free?</summary>
+        <p>Yes. Black-Scholes is one of the ten models on the free tier and runs entirely in your browser — no signup, and nothing you enter is sent to a server.</p>
+      </details>
+    </div>
+
+    <h2>Related calculators</h2>
+    <div class="related">
+      <a href="/monte-carlo-stock-price-simulator"><b>Monte Carlo Stock Price Simulator</b><span>Simulation</span></a>
+      <a href="/reverse-dcf-calculator"><b>Reverse DCF Calculator</b><span>Market-implied valuation</span></a>
+      <a href="/ifrs-16-hidden-debt-calculator"><b>Operating Lease Capitalization & Hidden-Debt Calculator</b><span>Forensic accounting</span></a>
+    </div>
+
+    <h2>References</h2>
+    <ul>
+      <li>Black, F. &amp; Scholes, M. (1973). <em>The Pricing of Options and Corporate Liabilities.</em> Journal of Political Economy.</li>
+      <li>Merton, R. C. (1973). <em>Theory of Rational Option Pricing.</em> Bell Journal of Economics.</li>
+      <li>Hull, J. (2018). <em>Options, Futures, and Other Derivatives</em>, 10th ed.</li>
+    </ul>
+  </main>
+
+  <footer>
+    <p>
+      Part of <a href="/">FINMODELS TERMINAL</a> — twelve canonical quantitative-finance
+      models running on real CPython compiled to WebAssembly, entirely in your browser.
+      See <a href="/about">all twelve models</a>.
+    </p>
+    <p class="updated">Last updated 2026-09-14.</p>
+  </footer>
+
+</div>
+</body>
+</html>

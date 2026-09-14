@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="theme-color" content="#0f1420" />
+<title>Operating Lease Capitalization &amp; Hidden Debt Calculator</title>
+<meta name="description" content="Capitalize operating leases and move footnote liabilities onto the balance sheet: lease debt, reverse factoring and contingent liabilities, the Damodaran way." />
+<link rel="canonical" href="https://financial-models-six.vercel.app/ifrs-16-hidden-debt-calculator" />
+
+<meta property="og:type" content="website" />
+<meta property="og:site_name" content="FINMODELS TERMINAL" />
+<meta property="og:title" content="Operating Lease Capitalization &amp; Hidden Debt Calculator" />
+<meta property="og:description" content="Capitalize operating leases and move footnote liabilities onto the balance sheet: lease debt, reverse factoring and contingent liabilities, the Damodaran way." />
+<meta property="og:url" content="https://financial-models-six.vercel.app/ifrs-16-hidden-debt-calculator" />
+<meta property="og:image" content="https://financial-models-six.vercel.app/og.png" />
+<meta property="og:image:width" content="1200" />
+<meta property="og:image:height" content="630" />
+<meta property="og:image:alt" content="FINMODELS TERMINAL — an amber-on-black browser terminal running twelve quantitative-finance models." />
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:title" content="Operating Lease Capitalization &amp; Hidden Debt Calculator" />
+<meta name="twitter:description" content="Capitalize operating leases and move footnote liabilities onto the balance sheet: lease debt, reverse factoring and contingent liabilities, the Damodaran way." />
+<meta name="twitter:image" content="https://financial-models-six.vercel.app/og.png" />
+
+<link rel="icon" href="/favicon.ico" sizes="32x32" />
+<link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+<link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+<link rel="stylesheet" href="/assets/landing.css" />
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "Operating Lease Capitalization & Hidden-Debt Calculator",
+  "url": "https://financial-models-six.vercel.app/ifrs-16-hidden-debt-calculator",
+  "applicationCategory": "FinanceApplication",
+  "operatingSystem": "Any modern web browser",
+  "browserRequirements": "Requires JavaScript and WebAssembly",
+  "description": "Capitalize operating leases and move footnote liabilities onto the balance sheet: lease debt, reverse factoring and contingent liabilities, the Damodaran way.",
+  "isPartOf": {
+    "@id": "https://financial-models-six.vercel.app/#website"
+  },
+  "offers": {
+    "@type": "Offer",
+    "price": "29",
+    "priceCurrency": "USD"
+  }
+}
+</script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "BreadcrumbList",
+  "itemListElement": [
+    {
+      "@type": "ListItem",
+      "position": 1,
+      "name": "Home",
+      "item": "https://financial-models-six.vercel.app/"
+    },
+    {
+      "@type": "ListItem",
+      "position": 2,
+      "name": "Calculators",
+      "item": "https://financial-models-six.vercel.app/about"
+    },
+    {
+      "@type": "ListItem",
+      "position": 3,
+      "name": "Operating Lease Capitalization & Hidden-Debt Calculator",
+      "item": "https://financial-models-six.vercel.app/ifrs-16-hidden-debt-calculator"
+    }
+  ]
+}
+</script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    {
+      "@type": "Question",
+      "name": "How do you capitalize operating leases?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Discount the remaining lease payments to present value at the lessee's incremental borrowing rate and add the result to net debt. For a level payment stream that is the ordinary-annuity formula L = C × (1 − (1+r)^−n) / r."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "What discount rate should I use to capitalize leases?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "The incremental borrowing rate — what the company itself would pay to borrow over a similar term. It is often disclosed in the lease note. A market-wide or risk-free rate understates the liability for weaker credits."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Does IFRS 16 mean lease capitalization is no longer needed?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Not entirely. IFRS 16 and Ind AS 116 brought most leases on balance sheet, but you still need the calculation to compare across periods that straddle adoption, across reporting frameworks, and where disclosure practice differs."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Why include reverse factoring in debt?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Because it is borrowing. Supply-chain finance is often presented within trade payables, which improves reported net debt and operating cash flow without reducing the obligation. Where the exposure is disclosed it belongs in the debt figure."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "What are owner earnings?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Buffett's 1986 definition: net income plus depreciation and amortisation, less the maintenance capital expenditure required to hold competitive position. This model also reverses capitalised R&D, adding back its amortisation and expensing the period's actual cash R&D instead."
+      }
+    }
+  ]
+}
+</script>
+</head>
+<body>
+<div class="wrap">
+
+  <nav class="crumbs" aria-label="Breadcrumb">
+    <a href="/">Terminal</a><span>/</span><a href="/about">Models</a><span>/</span>Operating Lease Capitalization & Hidden-Debt Calculator
+  </nav>
+
+  <header>
+    <span class="eyebrow">Forensic accounting</span>
+    <h1>Operating Lease Capitalization &amp; Hidden-Debt Calculator</h1>
+    <p class="lede">Reported net debt is not total leverage. This tool present-values remaining lease commitments, adds disclosed reverse-factoring exposure and probability-weighted contingent liabilities, and shows you what the balance sheet would look like if the footnotes were on it.</p>
+
+    <a class="cta" href="/?m=HDEBT">
+      <span class="go">Open the Operating Lease Capitalization & Hidden-Debt Calculator &rarr;</span>
+      <span class="note">Opens the live terminal with this model selected.</span>
+    </a>
+    <p class="plan-note">This model is part of <strong>Analyst Pro</strong> ($29/month). The other ten models — including Black-Scholes, Monte Carlo and DCF — are free to run with no signup. <a href="/login">Create an account</a> to get started.</p>
+  </header>
+
+  <main>
+    <h2>Why reported net debt understates real leverage</h2>
+    <p>Three categories of economically real borrowing routinely sit outside reported net debt, in the notes to the accounts rather than on the face of the balance sheet. Ratio analysis that starts from the reported figure silently understates leverage for exactly the companies where it matters most — retail, airlines, logistics, hospitality.</p>
+    <p><strong>Capitalised operating leases.</strong> Ind AS 116 and IFRS 16 brought most leases on balance sheet, but comparability across periods, across reporting standards, and across companies with different disclosure practice still requires doing the present-value calculation yourself.</p>
+    <p><strong>Reverse factoring / supply-chain finance.</strong> Economically this is borrowing; it is frequently presented within trade payables, which flatters both net debt and operating cash flow. Where the exposure is disclosed, it belongs in debt.</p>
+    <p><strong>Contingent liabilities.</strong> Usually treated as a binary — either ignored entirely or taken at full face value. Neither is right. The defensible treatment is to probability-weight the disclosed amount.</p>
+    <p>This is the adjustment a credit or equity analyst does by hand from the notes. Here it is a formula applied to a real filing.</p>
+
+    <h2>The formula</h2>
+    <div class="formula">Capitalised lease liability (present value of an ordinary annuity):
+
+            1 − (1 + r)⁻ⁿ
+  L  =  C × ──────────────
+                  r
+
+  hidden_debt    =  L  +  reverse_factoring  +  Σ (contingentᵢ × probabilityᵢ)
+  adjusted_debt  =  reported_net_debt  +  hidden_debt</div>
+    <ul class="vars"><li><code>C</code> — annual lease payment</li><li><code>r</code> — incremental borrowing rate — the rate the company itself would pay</li><li><code>n</code> — remaining lease term, in years</li><li><code>L</code> — the capitalised lease liability, treated as debt</li></ul>
+
+    <h3>Owner earnings</h3>
+    <div class="formula">owner_earnings  =  net_income + D&amp;A + rd_amortization − rd_cash_spend − maint_capex</div>
+
+    <h2>How this calculator works</h2>
+    <p>The lease liability is a plain ordinary-annuity present value, discounted at the <strong>incremental borrowing rate</strong> rather than a market-wide rate — the whole point is what this borrower would pay. Using a generic risk-free rate here understates the liability for precisely the weaker credits where the adjustment matters.</p>
+    <p>Contingent liabilities are probability-weighted rather than included or excluded wholesale, so a ₹500 crore claim assessed at 20% likelihood contributes ₹100 crore of expected liability instead of either ₹0 or ₹500 crore.</p>
+    <p>The same model also recomputes Buffett-style <strong>owner earnings</strong>, which reverses the smoothing effect of capitalised R&amp;D: the amortisation already embedded in reported net income is added back, and the period's actual cash R&amp;D spend is expensed in full.</p>
+
+    <h2>How to use it</h2>
+    <ol>
+      <li>Take the annual lease payment and remaining lease term from the lease note.</li>
+      <li>Use the company's incremental borrowing rate — often disclosed in the same note. If it is not, the marginal cost of debt is the closest defensible proxy.</li>
+      <li>Add any disclosed reverse-factoring or supply-chain-finance exposure.</li>
+      <li>List contingent liabilities with a probability for each, rather than accepting or discarding them wholesale.</li>
+      <li>Compare adjusted net debt with the reported figure, then recompute the leverage ratios that actually drive the credit view.</li>
+    </ol>
+
+    <h2>Worked example</h2>
+    <p>A company reports ₹1,000 crore of net debt. Its lease note shows ₹120 crore of annual payments with 8 years remaining, at an 9% incremental borrowing rate. It discloses ₹150 crore of supply-chain finance and a ₹500 crore contingent claim assessed at 20%.</p>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Input</th><th>Value</th></tr></thead>
+        <tbody>
+        <tr><td>Reported net debt</td><td class="num">₹1,000cr</td></tr>
+        <tr><td>Annual lease payment (C)</td><td class="num">₹120cr</td></tr>
+        <tr><td>Remaining term (n)</td><td class="num">8 years</td></tr>
+        <tr><td>Incremental borrowing rate (r)</td><td class="num">9%</td></tr>
+        <tr><td>Capitalised lease liability (L)</td><td class="num">≈ ₹664cr</td></tr>
+        <tr><td>Reverse factoring</td><td class="num">₹150cr</td></tr>
+        <tr><td>Contingent liability (₹500cr × 20%)</td><td class="num">₹100cr</td></tr>
+        <tr><td>Adjusted net debt</td><td class="num">≈ ₹1,914cr</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Reported leverage understates the real figure by roughly 91% in this example. Nothing here is an accounting irregularity — every input was disclosed. It was simply disclosed in the notes rather than in the number most screens read.</p>
+
+    <h2>Assumptions and limitations</h2>
+    <ul>
+      <li>Lease payments are treated as a level annuity. Where the maturity schedule is disclosed year by year and is materially uneven, discounting the actual schedule is more precise.</li>
+      <li>The result is only as good as the incremental borrowing rate you supply — it is the single input the present value is most sensitive to.</li>
+      <li>Probability weights on contingent liabilities are a judgement. They should be stated openly alongside the output, because a reader may reasonably disagree with them.</li>
+      <li>This is an analytical restatement for valuation and credit work. It is not a statutory accounting treatment and does not replace the reported financial statements.</li>
+    </ul>
+
+    <h2>Frequently asked questions</h2>
+    <div class="faq">
+      <details>
+        <summary>How do you capitalize operating leases?</summary>
+        <p>Discount the remaining lease payments to present value at the lessee's incremental borrowing rate and add the result to net debt. For a level payment stream that is the ordinary-annuity formula L = C × (1 − (1+r)^−n) / r.</p>
+      </details>
+      <details>
+        <summary>What discount rate should I use to capitalize leases?</summary>
+        <p>The incremental borrowing rate — what the company itself would pay to borrow over a similar term. It is often disclosed in the lease note. A market-wide or risk-free rate understates the liability for weaker credits.</p>
+      </details>
+      <details>
+        <summary>Does IFRS 16 mean lease capitalization is no longer needed?</summary>
+        <p>Not entirely. IFRS 16 and Ind AS 116 brought most leases on balance sheet, but you still need the calculation to compare across periods that straddle adoption, across reporting frameworks, and where disclosure practice differs.</p>
+      </details>
+      <details>
+        <summary>Why include reverse factoring in debt?</summary>
+        <p>Because it is borrowing. Supply-chain finance is often presented within trade payables, which improves reported net debt and operating cash flow without reducing the obligation. Where the exposure is disclosed it belongs in the debt figure.</p>
+      </details>
+      <details>
+        <summary>What are owner earnings?</summary>
+        <p>Buffett's 1986 definition: net income plus depreciation and amortisation, less the maintenance capital expenditure required to hold competitive position. This model also reverses capitalised R&amp;D, adding back its amortisation and expensing the period's actual cash R&amp;D instead.</p>
+      </details>
+    </div>
+
+    <h2>Related calculators</h2>
+    <div class="related">
+      <a href="/reverse-dcf-calculator"><b>Reverse DCF Calculator</b><span>Market-implied valuation</span></a>
+      <a href="/black-scholes-calculator"><b>Black-Scholes Calculator with Greeks</b><span>Derivatives</span></a>
+      <a href="/monte-carlo-stock-price-simulator"><b>Monte Carlo Stock Price Simulator</b><span>Simulation</span></a>
+    </div>
+
+    <h2>References</h2>
+    <ul>
+      <li>IASB / ICAI. <em>Ind AS 116 / IFRS 16, Leases</em> (2016).</li>
+      <li>IASB. <em>Amendments to IAS 7 and IFRS 7: Supplier Finance Arrangements</em> (2023).</li>
+      <li>Damodaran, A. <em>Dealing with Operating Leases in Valuation.</em> NYU Stern.</li>
+      <li>Buffett, W. E. (1986). <em>Berkshire Hathaway Shareholder Letter</em> — owner earnings.</li>
+    </ul>
+  </main>
+
+  <footer>
+    <p>
+      Part of <a href="/">FINMODELS TERMINAL</a> — twelve canonical quantitative-finance
+      models running on real CPython compiled to WebAssembly, entirely in your browser.
+      See <a href="/about">all twelve models</a>.
+    </p>
+    <p class="updated">Last updated 2026-09-14.</p>
+  </footer>
+
+</div>
+</body>
+</html>
