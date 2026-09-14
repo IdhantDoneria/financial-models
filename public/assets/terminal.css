@@ -313,6 +313,34 @@ html, body {
 .ibrow { border-top: 1px solid var(--border); margin-top: 6px; padding-top: 12px; }
 .ibrow .mn { color: var(--green); }
 
+/* Ticker intake — the primary way into the IB desk. Styled solid/filled
+   against the upload button's dashed outline so the low-friction path is
+   visibly the default rather than an equal-weight alternative. */
+.tick { display: flex; gap: 8px; align-items: center; padding: 12px 14px 6px; }
+.tick input {
+  flex: 1 1 auto; min-width: 0; background: var(--bg-soft, rgba(255, 255, 255, 0.03));
+  border: 1px solid var(--amber-dim); color: var(--amber);
+  font: 13px var(--mono); letter-spacing: 0.12em; text-transform: uppercase;
+  padding: 10px 12px; outline: none;
+}
+.tick input:focus { border-color: var(--amber); background: rgba(255, 176, 0, 0.05); }
+.tick input::placeholder { color: var(--text-dim); letter-spacing: 0.06em; text-transform: none; }
+.tick button {
+  background: var(--amber); border: 1px solid var(--amber); color: #000;
+  font: 12px var(--mono); font-weight: 600; letter-spacing: 0.12em;
+  padding: 10px 20px; cursor: pointer; flex: 0 0 auto;
+}
+.tick button:hover { filter: brightness(1.12); }
+.ibor {
+  padding: 4px 14px 8px; color: var(--text-dim);
+  font-size: 10px; letter-spacing: 0.14em; text-align: center;
+}
+/* Caveats the data source itself reported — never hidden behind a tooltip. */
+.srcnote {
+  display: block; margin-top: 6px; color: var(--text-dim);
+  font-size: 10px; line-height: 1.65; white-space: normal;
+}
+
 .upl { display: flex; gap: 10px; align-items: center; padding: 12px 14px; }
 .upl button {
   background: transparent; border: 1px dashed var(--amber-dim); color: var(--amber);

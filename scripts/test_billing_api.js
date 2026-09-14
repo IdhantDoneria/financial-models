@@ -88,7 +88,7 @@ async function buy(token, plan, period = "monthly") {
     && byId.boutique.uploads === null && byId.boutique.seats === 5);
   check("config: USD/INR rate is the same for every plan (no geo discount)",
     cfg.body.usdToInr === 88);
-  check("config: FREE tier is 3 uploads", byId.free.uploads === 3 && byId.free.periods === null);
+  check("config: FREE tier is 10 analyses", byId.free.uploads === 10 && byId.free.periods === null);
 
   // -- auth requirements ---------------------------------------------------
   const anon = await call(handlers.billingOrder, { method: "POST", body: { plan: "pro" } });
@@ -105,17 +105,18 @@ async function buy(token, plan, period = "monthly") {
     { method: "POST", token, body: { plan: "pro", period: "weekly" } });
   check("order: unknown period rejected", badPeriod.code === 400);
 
-  const FREE_LIMIT = 3;
-  // -- free-tier metering: 3 uploads then a 402 ----------------------------
+  //: Raised from 3 when ticker load removed the friction that made 3 last.
+  const FREE_LIMIT = 10;
+  // -- free-tier metering: the allowance, then a 402 ----------------------
   const first = await call(handlers.usage, { method: "GET", token });
-  check("usage: fresh account on FREE 0/3",
+  check(`usage: fresh account on FREE 0/${FREE_LIMIT}`,
     first.body.plan === "free" && first.body.used === 0 && first.body.limit === FREE_LIMIT);
   let last;
   for (let i = 0; i < FREE_LIMIT; i++) last = await call(handlers.usage, { method: "POST", token });
-  check("usage: three uploads consumed", last.code === 200 && last.body.used === FREE_LIMIT);
-  const sixth = await call(handlers.usage, { method: "POST", token });
-  check("usage: fourth upload -> 402 with upgrade pointer",
-    sixth.code === 402 && /UPGRADE/.test(sixth.body.error));
+  check(`usage: ${FREE_LIMIT} analyses consumed`, last.code === 200 && last.body.used === FREE_LIMIT);
+  const overLimit = await call(handlers.usage, { method: "POST", token });
+  check("usage: one past the allowance -> 402 with upgrade pointer",
+    overLimit.code === 402 && /UPGRADE/.test(overLimit.body.error));
 
   // -- purchase PRO (monthly) ----------------------------------------------
   const order = await call(handlers.billingOrder,

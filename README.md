@@ -432,12 +432,12 @@ PDF.
 
 ### 💳 Plans & payments — Razorpay
 
-The terminal has a built-in monetisation layer. The metered unit is an **upload**
-(one IB-desk PDF analysis); model runs and the SCEN engine are never metered.
+The terminal has a built-in monetisation layer. The metered unit is one **company analysis** — loaded either from a ticker
+(SEC EDGAR) or an uploaded PDF; model runs and the SCEN engine are never metered.
 
-| Plan | Price | Uploads / month |
+| Plan | Price | Company analyses / month |
 |---|---|---|
-| **FREE** | $0 | 3 |
+| **FREE** | $0 | 10 |
 | **ANALYST PRO** | **$29 / mo** or **$299 / yr** | 50 |
 | **DESK UNLIMITED** | **$59 / mo** or **$599 / yr** | Unlimited |
 | **BOUTIQUE FUND** | **$249 / mo** or **$2,499 / yr** | Unlimited, up to 5 seats |

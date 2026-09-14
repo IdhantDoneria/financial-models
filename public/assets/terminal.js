@@ -261,7 +261,10 @@ const state = {
   billing: { cfg: null, usage: null, geo: null },  // Razorpay plans + upload metering + IP-derived display currency
   ib: { pkgsReady: false, fns: null, extracted: null, report: null,
         liveRf: null, rfSource: null, fx: null, fxDate: null,
-        period: "auto", mode: "auto", dirty: {}, selected: null },
+        period: "auto", mode: "auto", dirty: {}, selected: null,
+        // ticker-load intake (SEC EDGAR) — distinct from state.rdcf.ticker,
+        // which is only the Reverse DCF model's live-price source.
+        ticker: "", sourceNotes: [], billedTickers: new Set() },
   rdcf: { mode: "manual", ticker: "" },  // Reverse DCF price-source toggle
   pkgs: { pandasPromise: null, plotlyPromise: null },   // lazy-loaded deps beyond boot's core set
   tape: { raw: null },             // last fetched USD tape quotes — repainted per-country without a refetch
@@ -1442,7 +1445,7 @@ function selectAnalyzer() {
 
   $("#tab-scen").style.display = "none";   // scenario engine is per-model
   $("#inputs header .title").textContent = "IB DESK — COMPANY PDF ANALYZER";
-  $("#formula").innerHTML = "ƒ  <b>UPLOAD 10-K / 10-Q → SCRAPE → ASSUME (AUTO IB-BOT | MANUAL) → RUN MODELS → EXPORT</b>";
+  $("#formula").innerHTML = "ƒ  <b>TICKER (SEC EDGAR) OR 10-K / 10-Q PDF → EXTRACT → ASSUME (AUTO IB-BOT | MANUAL) → RUN MODELS → EXPORT</b>";
   $("#output header .title").textContent = "EXTRACTED DATA";
   $("#ostat").textContent = "—"; $("#ostat").className = "meta";
   $("#ogrid").innerHTML = ""; $("#oerr").style.display = "none";
@@ -1460,7 +1463,20 @@ function buildIBForm() {
   body.innerHTML = "";
 
   // 1 · source document
+  //: Ticker first, upload second — deliberately. Requiring a PDF meant a
+  //  visitor had to go find a 10-K before the product could show them
+  //  anything at all, which is the single largest drop-off in the funnel.
+  //  Typing a symbol is the low-friction path, so it leads.
   body.insertAdjacentHTML("beforeend", `<div class="ibsec">1 · SOURCE DOCUMENT</div>
+    <div class="tick">
+      <input id="ibticker" type="text" maxlength="12" spellcheck="false"
+             placeholder="TICKER — e.g. AAPL, MSFT, BRK.B" aria-label="US ticker symbol">
+      <button id="ibtickgo">LOAD</button>
+    </div>
+    <div class="ibhint">Pulls the latest annual figures straight from the company's
+      <b>SEC XBRL filing data</b> (EDGAR) — US-listed companies only. For any other
+      market, or for a specific filing, upload the PDF below.</div>
+    <div class="ibor">— or —</div>
     <div class="upl">
       <button id="ibupl">⬆ UPLOAD 10-K / 10-Q PDF</button>
       <span class="fname" id="ibfname">no file — any annual or quarterly filing</span>
@@ -1468,6 +1484,9 @@ function buildIBForm() {
     </div>`);
   $("#ibupl").onclick = () => $("#ibfile").click();
   $("#ibfile").onchange = onIBUpload;
+  $("#ibtickgo").onclick = onIBTicker;
+  $("#ibticker").onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); onIBTicker(); } };
+  if (state.ib.ticker) $("#ibticker").value = state.ib.ticker;
 
   // 2 · period basis
   body.insertAdjacentHTML("beforeend", `<div class="ibsec">2 · PERIOD BASIS</div>`);
@@ -1613,6 +1632,7 @@ function ensureAnalyzerPackages() {
       );
       const rawAnalyze = state.pyodide.runPython("web_bridge.analyze_pdf");
       const rawRun = state.pyodide.runPython("web_bridge.run_report");
+      const rawLoadFundamentals = state.pyodide.runPython("web_bridge.load_fundamentals");
       state.ib.fns = {
         // Gate enforcement lives HERE, not only in onIBUpload()/the model
         // checkboxes — those are UX (fail fast, explain why), this is the
@@ -1631,11 +1651,50 @@ function ensureAnalyzerPackages() {
           }
           return result;
         },
+        //: Ticker loads are an ANALYSIS, exactly like an upload, so they are
+        //  metered exactly like one. Routing them around this wrapper would
+        //  have handed anyone an unlimited free tier just by typing a symbol
+        //  instead of dragging a PDF — and would have reopened the "call the
+        //  existing entrypoint and skip the gate" bypass the analyze()
+        //  wrapper above exists to close.
+        loadFundamentals: async (fieldsJson) => {
+          const gate = await uploadGate();
+          if (!gate.allowed) return JSON.stringify({ ok: false, error: gate.reason });
+          let symbol = null;
+          try { symbol = JSON.parse(fieldsJson).ticker || null; } catch { /* meter it as a fresh load */ }
+          //: Loading the SAME company twice in one session — a typo, a second
+          //  look, a re-read after changing the market — must not bill twice.
+          //  A PDF upload had natural friction that made accidental repeats
+          //  rare; a ticker box does not, and "it charged me three times for
+          //  Apple" is a support ticket and a refund, not a rounding error.
+          //  Scoped to the session deliberately: this forgives fat-fingers, it
+          //  does not turn one credit into permanent free access.
+          const alreadyBilled = symbol && state.ib.billedTickers.has(symbol);
+          const result = rawLoadFundamentals(fieldsJson);
+          if (gate.metered && !alreadyBilled) {
+            try {
+              if (JSON.parse(result).ok) {
+                await consumeUpload();
+                if (symbol) state.ib.billedTickers.add(symbol);
+              }
+            } catch { /* malformed result — nothing to meter */ }
+          }
+          return result;
+        },
         // HDEBT/RDCF never reach the WASM engine at all now — they're
         // computed by api/premium.py, which re-derives plan entitlement
         // from the session cookie against Redis directly. This function
         // only decides routing; it grants nothing itself.
         run: async (paramsJson) => {
+          //: run_report() ends in AnalysisReport.summary_frame(), which imports
+          //  pandas — and pandas is deliberately NOT in FINMODELS_CORE_PACKAGES
+          //  (see boot-packages.js: it was moved out to cut boot latency, since
+          //  only Fama-French was thought to need it). run_report needs it too,
+          //  so without this every IB-desk report died on ModuleNotFoundError
+          //  unless the visitor happened to open FF3 first and trigger the lazy
+          //  load as a side effect. Awaited here, at the one boundary every
+          //  report run passes through, rather than at each caller.
+          await ensurePandas();
           let params;
           try { params = JSON.parse(paramsJson); } catch { return rawRun(paramsJson); }
           const selected = Array.isArray(params.selected) ? params.selected : [];
@@ -1707,6 +1766,66 @@ function ibStatus(msg, isError) {
 }
 
 /* ------------------------------ actions -------------------------------- */
+/**
+ * Load a company from its ticker instead of an uploaded filing.
+ *
+ * Mirrors onIBUpload() deliberately: same gate, same status messages, same
+ * `state.ib.extracted` shape, same renderers. web_bridge.load_fundamentals()
+ * returns the identical payload analyze_pdf() does, so nothing downstream has
+ * to know which intake path produced the data — which is what stops the two
+ * paths drifting until one of them quietly stops reporting missing fields.
+ */
+async function onIBTicker() {
+  const raw = ($("#ibticker").value || "").trim().toUpperCase();
+  if (!raw) { ibStatus("ENTER A TICKER — e.g. AAPL", true); return; }
+
+  const gate = await uploadGate();
+  if (!gate.allowed) {
+    ibStatus(gate.reason, true);
+    if (gate.upgrade) openMenuTab("plan");
+    return;
+  }
+  try { await ensureAnalyzerPackages(); } catch { return; }
+
+  ibStatus(`FETCHING ${esc(raw)} FROM SEC EDGAR…`);
+  let payload;
+  try {
+    const r = await fetch(`api/fundamentals?ticker=${encodeURIComponent(raw)}`,
+      { signal: AbortSignal.timeout(25_000) });
+    payload = await r.json();
+    if (!payload.ok) throw new Error(payload.error || `HTTP ${r.status}`);
+  } catch (err) {
+    ibStatus("TICKER LOAD FAILED: " + String(err.message || err).slice(0, 200), true);
+    return;
+  }
+
+  await new Promise((r) => setTimeout(r, 25));   // let the status paint
+  try {
+    // Metered inside fns.loadFundamentals(), the same boundary uploads use.
+    const out = JSON.parse(await state.ib.fns.loadFundamentals(JSON.stringify(payload.fields)));
+    if (!out.ok) throw new Error(out.error);
+    state.ib.ticker = payload.ticker;
+    state.ib.file = null;
+    $("#ibfname").textContent = "no file — loaded from SEC EDGAR";
+    state.ib.extracted = out;
+    state.ib.report = null;
+    state.ib.userSet = new Set();       // fresh company — no manual overrides yet
+    //: Caveats the API found (a bank with no capex line, cash that includes
+    //  short-term investments, a missing price). Surfaced, never swallowed:
+    //  a figure whose provenance carries a caveat is worth less than one
+    //  that doesn't, and the user is the one who has to judge that.
+    state.ib.sourceNotes = Array.isArray(payload.notes) ? payload.notes : [];
+    renderIBExtracted();
+    const fy = payload.fiscal_year ? ` · FY${payload.fiscal_year}` : "";
+    ibStatus(`LOADED ${payload.ticker} — ${String(payload.company_name).slice(0, 40)}${fy} · SEC XBRL`);
+    $("#ostat").className = "meta";
+  } catch (err) {
+    state.ib.extracted = null;
+    ibStatus("TICKER LOAD FAILED: " + String(err.message || err).slice(0, 200), true);
+  }
+  syncIBButtons();
+}
+
 async function onIBUpload() {
   const file = $("#ibfile").files[0];
   if (!file) return;
@@ -1720,6 +1839,12 @@ async function onIBUpload() {
     return;
   }
   state.ib.file = file;
+  //: Switching intake paths must not leave the other one's provenance behind —
+  //  a stale "loaded from EDGAR" caveat next to PDF figures is a false citation.
+  state.ib.ticker = "";
+  state.ib.sourceNotes = [];
+  const tickBox = $("#ibticker");
+  if (tickBox) tickBox.value = "";
   $("#ibfname").textContent = `${file.name} · ${(file.size / 1024).toFixed(0)} KB`;
   try { await ensureAnalyzerPackages(); } catch { return; }
   ibStatus("SCRAPING PDF (PYPDF → PDFMINER CASCADE)…");
@@ -1881,6 +2006,26 @@ function renderIBContext() {
     c.name.toUpperCase()} · ${c.ccy} · ERP ${(c.erp * 100).toFixed(1)}%${fx}
     <span class="badge live">ALL ASSUMPTIONS ANCHOR HERE</span></td>`;
   grid.appendChild(mkt);
+
+  //: Provenance row. Where the figures came from is not a footnote on this
+  //  product — it is the thing that separates a number you can put in a memo
+  //  from one you can't. Shown for every intake path, with the source's own
+  //  caveats attached rather than summarised away.
+  const out = state.ib.extracted;
+  if (out) {
+    let src = $("#ibsrc");
+    if (!src) { src = document.createElement("tr"); src.id = "ibsrc"; }
+    const fromEdgar = (out.backends || []).some((b) => String(b).includes("sec-edgar"));
+    const label = fromEdgar
+      ? `SEC XBRL COMPANY FACTS${state.ib.ticker ? " · " + esc(state.ib.ticker) : ""}`
+      : `UPLOADED FILING · ${esc((out.backends || []).join("+") || "no backend")}`;
+    const notes = (state.ib.sourceNotes || []).length
+      ? `<div class="srcnote">${(state.ib.sourceNotes || [])
+          .map((n) => "• " + esc(String(n))).join("<br>")}</div>` : "";
+    src.innerHTML = `<td class="k">DATA SOURCE</td><td class="v">${label}
+      <span class="badge live">${fromEdgar ? "OFFICIAL FILING DATA" : "SCRAPED"}</span>${notes}</td>`;
+    grid.appendChild(src);
+  }
 }
 
 async function runIBReport() {
@@ -2708,7 +2853,7 @@ async function runSensitivityGrid() {
 
 /* ======================================================================== *
  * BILLING — Razorpay plans, upload metering, PLAN tab.
- * FREE: 3 uploads/mo · ANALYST PRO $29/mo or $299/yr: 50 uploads, plus
+ * FREE: 10 analyses/mo · ANALYST PRO $29/mo or $299/yr: 50 analyses, plus
  * the Ind AS hidden-debt normalizer and reverse-DCF solver · DESK UNLIMITED
  * $59/mo or $599/yr: unlimited uploads · BOUTIQUE FUND $249/mo or
  * $2,499/yr: unlimited uploads, up to 5 seats. "Upload" = one IB-desk PDF
@@ -2782,7 +2927,7 @@ async function uploadGate() {
   const u = state.user;
   if (!isServerBacked(u)) {
     return { allowed: false, upgrade: true,
-      reason: "UPLOADS NEED A SERVER-BACKED ACCOUNT — SIGN OUT & SIGN IN WITH EMAIL OR GOOGLE (FREE PLAN: 3/MO)" };
+      reason: "ANALYSES NEED A SERVER-BACKED ACCOUNT — SIGN OUT & SIGN IN WITH EMAIL OR GOOGLE (FREE PLAN: 10/MO)" };
   }
   const us = await refreshUsage();
   if (!us) return { allowed: true, metered: false };   // fail-open on hiccup
@@ -2875,7 +3020,7 @@ async function renderPlanTab(body) {
   } else if (!isOtp) {
     head = `<div class="pnote warn">Plans attach to a server-backed account. You're browsing as
       <b>${(u && u.provider ? u.provider : "guest").toUpperCase()}</b> — SIGN OUT and sign back in
-      with email or Google to use the free tier (3 uploads/mo) or subscribe.</div>`;
+      with email or Google to use the free tier (10 analyses/mo) or subscribe.</div>`;
   } else if (us) {
     const lim = us.limit === null ? "∞" : us.limit;
     const pctUsed = us.limit === null ? 0 : Math.min(100, (us.used / us.limit) * 100);
@@ -2904,13 +3049,13 @@ async function renderPlanTab(body) {
   }
 
   const plans = (cfg && cfg.plans) || [
-    { id: "free", name: "FREE", periods: null, uploads: 3, blurb: "3 company uploads / month · all 10 models · SCEN engine" },
+    { id: "free", name: "FREE", periods: null, uploads: 10, blurb: "10 company analyses / month · ticker or PDF · all 10 models · every assumption sourced · SCEN engine" },
     { id: "pro", name: "ANALYST PRO", uploads: 50,
       periods: { monthly: { priceInr: 2552, priceUsd: 29 }, annual: { priceInr: 26312, priceUsd: 299 } },
-      blurb: "50 company uploads / month · Ind AS hidden-debt normalizer & reverse-DCF solver · everything in FREE" },
+      blurb: "50 company analyses / month · every figure traced to its source · also unlocks the Ind AS 116 hidden-debt normalizer and reverse-DCF solver" },
     { id: "unlimited", name: "DESK UNLIMITED", uploads: null,
       periods: { monthly: { priceInr: 5192, priceUsd: 59 }, annual: { priceInr: 52712, priceUsd: 599 } },
-      blurb: "Unlimited uploads · everything in PRO" },
+      blurb: "Unlimited company analyses · everything in ANALYST PRO" },
     { id: "boutique", name: "BOUTIQUE FUND", uploads: null, seats: 5,
       periods: { monthly: { priceInr: 21912, priceUsd: 249 }, annual: { priceInr: 219912, priceUsd: 2499 } },
       blurb: "Unlimited uploads · everything in DESK UNLIMITED · priority support · provisioning for up to 5 named team members" },

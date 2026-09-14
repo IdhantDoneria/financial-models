@@ -62,9 +62,13 @@ const ADMIN = { "x-admin-key": "devadmin" };
   check("founders: promo retired -> nobody wins a slot", winners.length === 0,
     `got ${winners.length}`);
 
+  //: Read from the catalogue rather than hardcoded, so changing the free
+  //  allowance in api/_lib/billing.js can never leave this asserting a number
+  //  the product no longer offers.
+  const FREE_LIMIT = require("../api/_lib/billing.js").PLANS.free.uploads;
   const use1 = await call(handlers.usage, { method: "GET", token: results[0].body.token });
-  check("founders: signups stay on FREE 3/mo (no auto-grant)",
-    use1.body.plan === "free" && use1.body.limit === 3 && use1.body.via === null);
+  check(`founders: signups stay on FREE ${FREE_LIMIT}/mo (no auto-grant)`,
+    use1.body.plan === "free" && use1.body.limit === FREE_LIMIT && use1.body.via === null);
   const again = await signup("user1@example.com");   // repeat sign-in: already has a password
   check("founders: re-login still never wins a slot", again.body.founder === null
     && again.code === 200

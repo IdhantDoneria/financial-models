@@ -9,10 +9,11 @@
 // dies before the client-side verify.
 //
 // Paid plans are bought as one-time orders for a MONTHLY or ANNUAL pass (no
-// dashboard plan objects needed): FREE 3 uploads/mo · ANALYST PRO 50
+// dashboard plan objects needed): FREE 10 analyses/mo · ANALYST PRO 50
 // uploads/mo @ $29/mo or $299/yr · DESK UNLIMITED (unlimited uploads)
 // @ $59/mo or $599/yr · BOUTIQUE FUND (unlimited uploads, up to 5 seats)
-// @ $249/mo or $2,499/yr. "Upload" = one IB-desk PDF analysis. Analyst Pro
+// @ $249/mo or $2,499/yr. "Upload" = one IB-desk company analysis,
+// whether loaded from a ticker (api/fundamentals.js) or an uploaded PDF. Analyst Pro
 // and above also unlock the Ind AS 116 hidden-debt normalizer and reverse
 // DCF solver — unlike every other model's math (client-side WASM), these
 // two are actually computed server-side, in api/premium.py, which
@@ -61,17 +62,28 @@ const usdToPaise = (usd) => usd * USD_TO_INR * 100;
 //  dollars (display only, terminal.js picks which one to show), `days` is
 //  how long one purchase of that period grants. `uploads` null = unlimited.
 const PLANS = {
-  free: { id: "free", name: "FREE", uploads: 3,
-          blurb: "3 company uploads / month · all 10 models · SCEN engine" },
+  //: 10, not 3. The metered unit used to require possessing a 10-K PDF, which
+  //  was friction enough that 3 lasted a while. Ticker load removed that
+  //  friction entirely — an evaluator can now spend 3 analyses in under a
+  //  minute and meet the paywall before they have seen what the product
+  //  actually does, which converts worse, not better. 10 buys enough room to
+  //  check a few real holdings; it is still far short of habitual use.
+  free: { id: "free", name: "FREE", uploads: 10,
+          blurb: "10 company analyses / month · ticker or PDF · all 10 models · " +
+                 "every assumption sourced · SCEN engine" },
   pro: { id: "pro", name: "ANALYST PRO", uploads: 50,
          periods: { monthly: { amount: usdToPaise(29), usd: 29, days: 30 },
                     annual: { amount: usdToPaise(299), usd: 299, days: 365 } },
-         blurb: "50 company uploads / month · Ind AS hidden-debt normalizer & " +
-                "reverse-DCF solver · everything in FREE" },
+         //: Blurbs lead with volume and provenance, not with the two forensic
+         //  models. Those are the sharpest differentiator but the narrowest
+         //  audience; the pain most buyers actually have is "turn a filing
+         //  into a model I can defend, without spending an afternoon on it".
+         blurb: "50 company analyses / month · every figure traced to its source · " +
+                "also unlocks the Ind AS 116 hidden-debt normalizer and reverse-DCF solver" },
   unlimited: { id: "unlimited", name: "DESK UNLIMITED", uploads: null,
                periods: { monthly: { amount: usdToPaise(59), usd: 59, days: 30 },
                           annual: { amount: usdToPaise(599), usd: 599, days: 365 } },
-               blurb: "Unlimited uploads · everything in PRO" },
+               blurb: "Unlimited company analyses · everything in ANALYST PRO" },
   //: Self-serve tier for small funds/RIAs — sits between DESK UNLIMITED
   //  (single desk) and ENTERPRISE (bespoke, sales-led). `seats` here is
   //  declarative, same as ENTERPRISE's: this store is per-email, so

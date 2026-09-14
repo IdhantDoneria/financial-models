@@ -32,6 +32,7 @@ const API = {
   "usage": require("../api/usage.js"),
   "rates": require("../api/rates.js"),
   "geo": require("../api/geo.js"),
+  "fundamentals": require("../api/fundamentals.js"),
 };
 
 const MIME = {
