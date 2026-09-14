@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="theme-color" content="#0f1420" />
+<title>Monte Carlo Stock Price Simulator — Option Pricing</title>
+<meta name="description" content="Free Monte Carlo simulator for stock prices and option values under geometric Brownian motion, with antithetic variates and standard-error convergence diagnostics." />
+<link rel="canonical" href="https://financial-models-six.vercel.app/monte-carlo-stock-price-simulator" />
+
+<meta property="og:type" content="website" />
+<meta property="og:site_name" content="FINMODELS TERMINAL" />
+<meta property="og:title" content="Monte Carlo Stock Price Simulator — Option Pricing" />
+<meta property="og:description" content="Free Monte Carlo simulator for stock prices and option values under geometric Brownian motion, with antithetic variates and standard-error convergence diagnostics." />
+<meta property="og:url" content="https://financial-models-six.vercel.app/monte-carlo-stock-price-simulator" />
+<meta property="og:image" content="https://financial-models-six.vercel.app/og.png" />
+<meta property="og:image:width" content="1200" />
+<meta property="og:image:height" content="630" />
+<meta property="og:image:alt" content="FINMODELS TERMINAL — an amber-on-black browser terminal running twelve quantitative-finance models." />
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:title" content="Monte Carlo Stock Price Simulator — Option Pricing" />
+<meta name="twitter:description" content="Free Monte Carlo simulator for stock prices and option values under geometric Brownian motion, with antithetic variates and standard-error convergence diagnostics." />
+<meta name="twitter:image" content="https://financial-models-six.vercel.app/og.png" />
+
+<link rel="icon" href="/favicon.ico" sizes="32x32" />
+<link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+<link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+<link rel="stylesheet" href="/assets/landing.css" />
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "Monte Carlo Stock Price Simulator",
+  "url": "https://financial-models-six.vercel.app/monte-carlo-stock-price-simulator",
+  "applicationCategory": "FinanceApplication",
+  "operatingSystem": "Any modern web browser",
+  "browserRequirements": "Requires JavaScript and WebAssembly",
+  "description": "Free Monte Carlo simulator for stock prices and option values under geometric Brownian motion, with antithetic variates and standard-error convergence diagnostics.",
+  "isPartOf": {
+    "@id": "https://financial-models-six.vercel.app/#website"
+  },
+  "offers": {
+    "@type": "Offer",
+    "price": "0",
+    "priceCurrency": "USD"
+  }
+}
+</script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "BreadcrumbList",
+  "itemListElement": [
+    {
+      "@type": "ListItem",
+      "position": 1,
+      "name": "Home",
+      "item": "https://financial-models-six.vercel.app/"
+    },
+    {
+      "@type": "ListItem",
+      "position": 2,
+      "name": "Calculators",
+      "item": "https://financial-models-six.vercel.app/about"
+    },
+    {
+      "@type": "ListItem",
+      "position": 3,
+      "name": "Monte Carlo Stock Price Simulator",
+      "item": "https://financial-models-six.vercel.app/monte-carlo-stock-price-simulator"
+    }
+  ]
+}
+</script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    {
+      "@type": "Question",
+      "name": "What is a Monte Carlo simulation for stock prices?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "It generates a large number of possible future price paths from a stochastic model — usually geometric Brownian motion — and uses the distribution of outcomes to value a derivative or assess risk, instead of relying on a closed-form formula."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "How many simulations do I need?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Monte Carlo error falls with the square root of the path count, so quadrupling the simulations halves the error. Tens of thousands is usually enough for a rough price; hundreds of thousands for a tight one. Watch the reported standard error rather than picking a number by feel."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "What are antithetic variates?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "A variance-reduction technique that pairs each random draw with its negative. The paired paths are negatively correlated, so their errors partly cancel and the estimate gets more accurate for the same number of draws."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Why does Monte Carlo disagree with Black-Scholes?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "For a European option it should not, beyond simulation noise — they price the same thing. If the gap is much larger than a few standard errors, the inputs differ or the payoff is not the one Black-Scholes assumes."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Is this simulator free?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Yes. The Monte Carlo model is one of the ten models available on the free tier, with no signup required to run it."
+      }
+    }
+  ]
+}
+</script>
+</head>
+<body>
+<div class="wrap">
+
+  <nav class="crumbs" aria-label="Breadcrumb">
+    <a href="/">Terminal</a><span>/</span><a href="/about">Models</a><span>/</span>Monte Carlo Stock Price Simulator
+  </nav>
+
+  <header>
+    <span class="eyebrow">Simulation</span>
+    <h1>Monte Carlo Stock Price Simulator</h1>
+    <p class="lede">Simulate thousands of geometric Brownian motion price paths in your browser and price an option from the resulting distribution — with the standard error reported, so you can see how converged the answer actually is.</p>
+
+    <a class="cta" href="/?m=MC">
+      <span class="go">Open the Monte Carlo Stock Price Simulator &rarr;</span>
+      <span class="note">Runs free in your browser — no signup, nothing uploaded.</span>
+    </a>
+  </header>
+
+  <main>
+    <h2>What a Monte Carlo simulation does</h2>
+    <p>Monte Carlo pricing replaces a closed-form formula with brute force: simulate a very large number of possible future price paths, compute the option's payoff along each one, average those payoffs, and discount the average back to today.</p>
+    <p>Its value is not in pricing vanilla European options — Black-Scholes does that exactly and instantly. It is in everything that has no closed form: path-dependent payoffs, early exercise, multiple underlyings, or any situation where you want the whole distribution of outcomes rather than a single expected value.</p>
+    <p>It is also the most honest pricing method, because it reports its own uncertainty. A Monte Carlo price comes with a standard error; a closed-form price does not tell you anything about whether its assumptions hold.</p>
+
+    <h2>The formula</h2>
+    <div class="formula">Geometric Brownian motion, exact solution at maturity:
+
+  S_T  =  S₀ · exp[ (r − ½σ²)T  +  σ√T · Z ],      Z ~ N(0, 1)
+
+Price the option as the discounted mean payoff:
+
+  Ĉ  =  e^(−rT) · mean[ max(S_T − K, 0) ]</div>
+    <ul class="vars"><li><code>S₀</code> — spot price today</li><li><code>K</code> — strike price</li><li><code>r</code> — risk-free rate</li><li><code>σ</code> — volatility</li><li><code>T</code> — time to maturity, in years</li><li><code>Z</code> — a standard normal draw — one per simulated path</li></ul>
+
+
+    <h2>How this calculator works</h2>
+    <p>This simulator uses <strong>antithetic variates</strong>: every random draw Z is paired with its mirror image −Z. The two paths are negatively correlated, so their errors partially cancel and the estimator's variance falls without needing more simulations. It is the cheapest variance reduction available and there is no reason not to use it.</p>
+    <p>Because the exact solution to geometric Brownian motion is known, the terminal price is drawn in a single step rather than by stepping through time. That is both faster and free of discretisation error for payoffs that only depend on the final price.</p>
+    <p>Every run reports its <strong>standard error</strong>. Monte Carlo error shrinks with the square root of the number of simulations, so quadrupling the paths halves the error — worth knowing before you wait on a very large run.</p>
+
+    <h2>How to use it</h2>
+    <ol>
+      <li>Enter spot, strike, risk-free rate, volatility and time to maturity.</li>
+      <li>Choose the number of simulations. More paths means a tighter standard error, at a roughly linear cost in time.</li>
+      <li>Run it, and read the estimated price together with its standard error.</li>
+      <li>Compare against the analytical Black-Scholes price for a European option — they should agree within a few standard errors. If they do not, an input is wrong.</li>
+      <li>Inspect the terminal price distribution, not just the mean. The shape is the part a closed-form price throws away.</li>
+    </ol>
+
+    <h2>Worked example</h2>
+    <p>The repository's own convergence benchmark: a European call with spot 42, strike 40, a 10% risk-free rate, 20% volatility and six months to maturity, run over 400,000 simulations with a fixed seed.</p>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Input</th><th>Value</th></tr></thead>
+        <tbody>
+        <tr><td>Spot (S₀)</td><td class="num">42.00</td></tr>
+        <tr><td>Strike (K)</td><td class="num">40.00</td></tr>
+        <tr><td>Risk-free rate (r)</td><td class="num">10%</td></tr>
+        <tr><td>Volatility (σ)</td><td class="num">20%</td></tr>
+        <tr><td>Maturity (T)</td><td class="num">0.5 years</td></tr>
+        <tr><td>Simulations</td><td class="num">400,000</td></tr>
+        <tr><td>Analytical Black-Scholes price</td><td class="num">4.759</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>The analytical target is Hull's Example 15.6, and the simulation is asserted in this project's test suite to land within three standard errors of it. That is the right way to test a Monte Carlo estimator: not against a fixed expected value, which would be flaky, but against its own convergence guarantee.</p>
+
+    <h2>Assumptions and limitations</h2>
+    <ul>
+      <li>Geometric Brownian motion assumes constant volatility and log-normal returns. Real markets have fat tails and volatility clustering — for the volatility smile, use the Heston stochastic-volatility model instead.</li>
+      <li>The simulation is risk-neutral: the drift is the risk-free rate, not an expected return. Simulated paths are a pricing device, not a forecast of where the stock will go.</li>
+      <li>The standard error measures simulation noise only. It says nothing about whether the model itself is right — a precisely converged answer to the wrong model is still wrong.</li>
+      <li>Results are reproducible only when a seed is fixed. Without one, two runs will differ.</li>
+    </ul>
+
+    <h2>Frequently asked questions</h2>
+    <div class="faq">
+      <details>
+        <summary>What is a Monte Carlo simulation for stock prices?</summary>
+        <p>It generates a large number of possible future price paths from a stochastic model — usually geometric Brownian motion — and uses the distribution of outcomes to value a derivative or assess risk, instead of relying on a closed-form formula.</p>
+      </details>
+      <details>
+        <summary>How many simulations do I need?</summary>
+        <p>Monte Carlo error falls with the square root of the path count, so quadrupling the simulations halves the error. Tens of thousands is usually enough for a rough price; hundreds of thousands for a tight one. Watch the reported standard error rather than picking a number by feel.</p>
+      </details>
+      <details>
+        <summary>What are antithetic variates?</summary>
+        <p>A variance-reduction technique that pairs each random draw with its negative. The paired paths are negatively correlated, so their errors partly cancel and the estimate gets more accurate for the same number of draws.</p>
+      </details>
+      <details>
+        <summary>Why does Monte Carlo disagree with Black-Scholes?</summary>
+        <p>For a European option it should not, beyond simulation noise — they price the same thing. If the gap is much larger than a few standard errors, the inputs differ or the payoff is not the one Black-Scholes assumes.</p>
+      </details>
+      <details>
+        <summary>Is this simulator free?</summary>
+        <p>Yes. The Monte Carlo model is one of the ten models available on the free tier, with no signup required to run it.</p>
+      </details>
+    </div>
+
+    <h2>Related calculators</h2>
+    <div class="related">
+      <a href="/black-scholes-calculator"><b>Black-Scholes Calculator with Greeks</b><span>Derivatives</span></a>
+      <a href="/reverse-dcf-calculator"><b>Reverse DCF Calculator</b><span>Market-implied valuation</span></a>
+      <a href="/ifrs-16-hidden-debt-calculator"><b>Operating Lease Capitalization & Hidden-Debt Calculator</b><span>Forensic accounting</span></a>
+    </div>
+
+    <h2>References</h2>
+    <ul>
+      <li>Boyle, P. (1977). <em>Options: A Monte Carlo Approach.</em> Journal of Financial Economics.</li>
+      <li>Hull, J. (2018). <em>Options, Futures, and Other Derivatives</em>, 10th ed., Example 15.6.</li>
+    </ul>
+  </main>
+
+  <footer>
+    <p>
+      Part of <a href="/">FINMODELS TERMINAL</a> — twelve canonical quantitative-finance
+      models running on real CPython compiled to WebAssembly, entirely in your browser.
+      See <a href="/about">all twelve models</a>.
+    </p>
+    <p class="updated">Last updated 2026-09-14.</p>
+  </footer>
+
+</div>
+</body>
+</html>

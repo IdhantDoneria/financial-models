@@ -3,7 +3,9 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Financial Models — 12 Canonical Models, Self-Assessed & Documented</title>
+<!-- ~57 chars: the previous 66-char title truncated in the SERP. The bare "&"
+     was also invalid markup; &amp; renders identically and parses cleanly. -->
+<title>Twelve Canonical Financial Models — Formulas &amp; Benchmarks</title>
 <meta name="description" content="Twelve canonical quantitative-finance models with literature-validated numerics, self-assessed quality scores, and a production-grade Python architecture." />
 <meta name="theme-color" content="#0f1420" />
 <link rel="canonical" href="https://financial-models-six.vercel.app/about" />
@@ -225,6 +227,16 @@
     <thead><tr><th>Model</th><th>Clarity</th><th>Accuracy</th><th>Production</th><th>Total</th></tr></thead>
     <tbody id="scorebody"></tbody>
   </table>
+
+  <h2>Individual calculators</h2>
+  <p>Each of these opens the live model directly, and explains the formula,
+     a worked example, and where the method stops being appropriate.</p>
+  <ul>
+    <li><a href="/reverse-dcf-calculator">Reverse DCF calculator</a> — solve for the free-cash-flow growth rate a market price already implies.</li>
+    <li><a href="/ifrs-16-hidden-debt-calculator">Operating lease capitalization &amp; hidden-debt calculator</a> — present-value lease commitments, reverse factoring and contingent liabilities.</li>
+    <li><a href="/monte-carlo-stock-price-simulator">Monte Carlo stock price simulator</a> — GBM paths with antithetic variates and standard-error diagnostics.</li>
+    <li><a href="/black-scholes-calculator">Black-Scholes calculator with Greeks</a> — European calls and puts, validated against Hull's Example 15.6.</li>
+  </ul>
 
   <h2>Getting started</h2>
   <pre>Open the terminal in your browser — no install, no setup required.

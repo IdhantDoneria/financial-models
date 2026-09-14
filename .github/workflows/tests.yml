@@ -20,3 +20,20 @@ jobs:
           pip install -r requirements.txt -r requirements-test.txt
       - name: Run test suite (numerical accuracy + scoring)
         run: pytest tests/ -q
+
+  # Browser-side guards. These need no npm install — they read public/ off
+  # disk with Node builtins only — so they run as their own fast job rather
+  # than being bolted onto the Python one.
+  browser-guards:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: SEO invariants (canonicals, h1s, schema, sitemap, internal links)
+        run: node scripts/test_seo.js
+      - name: HTML-escaping of every rendered sink
+        run: node scripts/test_xss_escaping.js
+      - name: Per-market gold/silver quoting conventions
+        run: node scripts/test_metal_unit_conventions.js

@@ -263,7 +263,7 @@ const state = {
         liveRf: null, rfSource: null, fx: null, fxDate: null,
         period: "auto", mode: "auto", dirty: {}, selected: null },
   rdcf: { mode: "manual", ticker: "" },  // Reverse DCF price-source toggle
-  pkgs: { pandasPromise: null },   // lazy-loaded runtime deps beyond boot's core set
+  pkgs: { pandasPromise: null, plotlyPromise: null },   // lazy-loaded deps beyond boot's core set
   tape: { raw: null },             // last fetched USD tape quotes — repainted per-country without a refetch
 };
 
@@ -402,6 +402,34 @@ function ensurePandas() {
   return state.pkgs.pandasPromise;
 }
 
+//: Plotly is 1.4 MB — by far the heaviest thing the page can pull, and it
+//  used to be a <script defer> in index.html, so every visitor paid for it
+//  during first paint even though nothing is plotted until a model has
+//  actually been run. It's fetched on first chart instead, behind the same
+//  shared-promise guard as ensurePandas() so concurrent renders await one
+//  load rather than injecting the tag twice. cdn.plot.ly is already in the
+//  script-src allowlist in vercel.json, so the injected tag passes CSP.
+function ensurePlotly() {
+  if (!state.pkgs.plotlyPromise) {
+    state.pkgs.plotlyPromise = window.Plotly
+      ? Promise.resolve()
+      : new Promise((resolve, reject) => {
+          const s = document.createElement("script");
+          s.src = "https://cdn.plot.ly/plotly-3.3.0.min.js";
+          s.charset = "utf-8";
+          s.onload = resolve;
+          //: Clear the guard on failure so a later render can retry rather
+          //  than being permanently stuck on one rejected promise.
+          s.onerror = () => {
+            state.pkgs.plotlyPromise = null;
+            reject(new Error("Plotly failed to load"));
+          };
+          document.head.appendChild(s);
+        });
+  }
+  return state.pkgs.plotlyPromise;
+}
+
 async function boot() {
   try {
     bootLog("FINMODELS TERMINAL v2 — session start");
@@ -452,7 +480,7 @@ async function boot() {
     document.getElementById("boot").style.display = "none";
     document.getElementById("app").classList.add("ready");
     window.TERMINAL_READY = true;   // e2e hook
-    selectModel("DCF");   // land new users on valuation first, not derivatives
+    selectModel(requestedModel());   // ?m= deep link, else valuation first
     $("#cmd").focus();
     // Isolated on purpose: a bug in the walkthrough must never look like a
     // failed boot (the app above this point is already fully working).
@@ -797,6 +825,23 @@ function execCommand() {
 }
 
 /* --------------------------- model selection --------------------------- */
+//: The per-model landing pages (/reverse-dcf-calculator and friends) deep-link
+//  straight into the model they describe, via /?m=RDCF. Only a mnemonic that
+//  actually exists is honoured — a typo, a stale link, or someone poking at
+//  the query string falls back to the default rather than reaching
+//  selectModel() with a key that would make `model` undefined. Premium
+//  mnemonics are deliberately NOT special-cased here: they resolve normally
+//  and hit the same entitlement gate selectModel() already applies, so a
+//  deep link can't smuggle anyone past the paywall.
+function requestedModel(fallback = "DCF") {
+  let mn;
+  try { mn = new URLSearchParams(location.search).get("m"); }
+  catch { return fallback; }              // no URLSearchParams / opaque origin
+  if (!mn) return fallback;
+  const hit = MODELS.find((m) => m.mn.toLowerCase() === String(mn).trim().toLowerCase());
+  return hit ? hit.mn : fallback;
+}
+
 function selectModel(mn) {
   const model = MODELS.find((m) => m.mn === mn);
   state.view = "model";
@@ -1092,7 +1137,11 @@ async function runCurrent() {
   }
   if (seq !== state.seq) return; // superseded by newer input
   renderResults(model, payload);
-  renderChart(model, payload);
+  //: Deliberately NOT awaited. renderChart() now fetches Plotly on demand, and
+  //  if that CDN is unreachable the numbers and the derivation below are still
+  //  the answer — a dead chart must not blank the actual result. Same
+  //  isolation rule the walkthrough boot uses.
+  renderChart(model, payload).catch((e) => console.error("Chart render failed:", e));
   renderDoc(payload);
   $("#ostat").textContent = `${payload.calc_ms} MS`;
   $("#ostat").className = "meta";
@@ -1219,8 +1268,10 @@ function renderResults(model, payload) {
   $("#output header .title").textContent = `OUTPUT — ${model.mn}`;
 }
 
-function renderChart(model, payload) {
-  if (!payload.figure) { Plotly.purge("chart"); return; }
+async function renderChart(model, payload) {
+  //: Nothing to draw -> don't pull 1.4 MB of Plotly just to purge an empty
+  //  div; only purge if it was already loaded by an earlier chart.
+  if (!payload.figure) { if (window.Plotly) Plotly.purge("chart"); return; }
   const fig = JSON.parse(payload.figure);
   const layout = fig.layout || {};
   delete layout.template; // models emit the default light template — re-skin
@@ -1242,6 +1293,7 @@ function renderChart(model, payload) {
     margin: { l: 60, r: 24, t: 46, b: 48 },
     autosize: true,
   });
+  await ensurePlotly();
   Plotly.react("chart", fig.data, layout, { responsive: true, displaylogo: false });
 }
 
@@ -2385,7 +2437,7 @@ function resetScenPanel() {
   const scen = $("#scen");
   if (!scen) return;
   const tornado = document.getElementById("scen-tornado");
-  if (tornado) Plotly.purge(tornado);   // release the old chart before wiping
+  if (tornado && window.Plotly) Plotly.purge(tornado);   // release the old chart before wiping
   scen.innerHTML = "";
 }
 
@@ -2576,6 +2628,10 @@ async function runTornado() {
     marker: { color: xs.map((d) => (H.worse === "up" ? -d : d) >= 0 ? "#2fbf71" : "#e05252") },
     hovertemplate: "%{y}: " + H.label + " %{x:+.4f}<extra>" + name + "</extra>",
   });
+  //: Buttons are already re-enabled above, so a failed fetch here leaves the
+  //  panel usable — say so instead of silently drawing nothing.
+  try { await ensurePlotly(); }
+  catch { scenStat("CHART LIBRARY UNAVAILABLE — CHECK YOUR CONNECTION", false); return; }
   Plotly.react("scen-tornado", [
     mk(bars.map((b) => b.lo), `−${shock * 100}% SHOCK`),
     mk(bars.map((b) => b.hi), `+${shock * 100}% SHOCK`),

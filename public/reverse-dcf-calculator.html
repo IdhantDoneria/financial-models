@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="theme-color" content="#0f1420" />
+<title>Reverse DCF Calculator — Market-Implied Growth Rate</title>
+<meta name="description" content="Reverse DCF calculator: give it a share price and it solves for the free-cash-flow growth rate the market already implies, using a real bracketed root-finder." />
+<link rel="canonical" href="https://financial-models-six.vercel.app/reverse-dcf-calculator" />
+
+<meta property="og:type" content="website" />
+<meta property="og:site_name" content="FINMODELS TERMINAL" />
+<meta property="og:title" content="Reverse DCF Calculator — Market-Implied Growth Rate" />
+<meta property="og:description" content="Reverse DCF calculator: give it a share price and it solves for the free-cash-flow growth rate the market already implies, using a real bracketed root-finder." />
+<meta property="og:url" content="https://financial-models-six.vercel.app/reverse-dcf-calculator" />
+<meta property="og:image" content="https://financial-models-six.vercel.app/og.png" />
+<meta property="og:image:width" content="1200" />
+<meta property="og:image:height" content="630" />
+<meta property="og:image:alt" content="FINMODELS TERMINAL — an amber-on-black browser terminal running twelve quantitative-finance models." />
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:title" content="Reverse DCF Calculator — Market-Implied Growth Rate" />
+<meta name="twitter:description" content="Reverse DCF calculator: give it a share price and it solves for the free-cash-flow growth rate the market already implies, using a real bracketed root-finder." />
+<meta name="twitter:image" content="https://financial-models-six.vercel.app/og.png" />
+
+<link rel="icon" href="/favicon.ico" sizes="32x32" />
+<link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+<link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+<link rel="stylesheet" href="/assets/landing.css" />
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "Reverse DCF Calculator",
+  "url": "https://financial-models-six.vercel.app/reverse-dcf-calculator",
+  "applicationCategory": "FinanceApplication",
+  "operatingSystem": "Any modern web browser",
+  "browserRequirements": "Requires JavaScript and WebAssembly",
+  "description": "Reverse DCF calculator: give it a share price and it solves for the free-cash-flow growth rate the market already implies, using a real bracketed root-finder.",
+  "isPartOf": {
+    "@id": "https://financial-models-six.vercel.app/#website"
+  },
+  "offers": {
+    "@type": "Offer",
+    "price": "29",
+    "priceCurrency": "USD"
+  }
+}
+</script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "BreadcrumbList",
+  "itemListElement": [
+    {
+      "@type": "ListItem",
+      "position": 1,
+      "name": "Home",
+      "item": "https://financial-models-six.vercel.app/"
+    },
+    {
+      "@type": "ListItem",
+      "position": 2,
+      "name": "Calculators",
+      "item": "https://financial-models-six.vercel.app/about"
+    },
+    {
+      "@type": "ListItem",
+      "position": 3,
+      "name": "Reverse DCF Calculator",
+      "item": "https://financial-models-six.vercel.app/reverse-dcf-calculator"
+    }
+  ]
+}
+</script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    {
+      "@type": "Question",
+      "name": "What is a reverse DCF?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "A reverse DCF takes a company's current market price as the input and solves for the future cash-flow growth rate that price implies, rather than taking a growth forecast and producing a target price. It tells you what the market already believes."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "How is a reverse DCF different from a normal DCF?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "A normal DCF runs assumptions → value. A reverse DCF runs value → assumptions. Same identity, solved in the opposite direction, which removes the single most manipulable input from the process."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "What is a good implied growth rate?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "There is no universally good number. The test is comparative: an implied rate below the company's own historical growth suggests the market is sceptical; one far above it means the price requires an acceleration that has to be explained by something."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Does this calculator use a real solver?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Yes. It root-finds with Brent's method via scipy.optimize.brentq over a −50% to +200% bracket, running as real CPython in your browser through WebAssembly — not a JavaScript approximation or a lookup table."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Can I use a reverse DCF on an unprofitable company?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Not reliably. The solver depends on enterprise value increasing monotonically with the growth rate, which requires a positive base free cash flow. With negative base FCF the relationship inverts and the implied rate stops being interpretable."
+      }
+    }
+  ]
+}
+</script>
+</head>
+<body>
+<div class="wrap">
+
+  <nav class="crumbs" aria-label="Breadcrumb">
+    <a href="/">Terminal</a><span>/</span><a href="/about">Models</a><span>/</span>Reverse DCF Calculator
+  </nav>
+
+  <header>
+    <span class="eyebrow">Market-implied valuation</span>
+    <h1>Reverse DCF Calculator</h1>
+    <p class="lede">Instead of guessing a growth rate to produce a price, a reverse DCF takes the price the market is already quoting and solves backwards for the growth rate that price implies. It turns valuation from a forecast into a testable question: <em>do I believe the market's number?</em></p>
+
+    <a class="cta" href="/?m=RDCF">
+      <span class="go">Open the Reverse DCF Calculator &rarr;</span>
+      <span class="note">Opens the live terminal with this model selected.</span>
+    </a>
+    <p class="plan-note">This model is part of <strong>Analyst Pro</strong> ($29/month). The other ten models — including Black-Scholes, Monte Carlo and DCF — are free to run with no signup. <a href="/login">Create an account</a> to get started.</p>
+  </header>
+
+  <main>
+    <h2>What a reverse DCF actually tells you</h2>
+    <p>A conventional discounted cash flow model asks you to supply a growth assumption and returns an intrinsic value. That makes the output only as good as the input nobody can actually know, and it makes it very easy to reverse-engineer whatever answer you were hoping for by nudging the growth rate.</p>
+    <p>A <strong>reverse DCF</strong> inverts the relationship. It holds the discount rate and terminal growth fixed, takes the current market price as given, and solves for the constant free-cash-flow CAGR that would be required to justify that price. The result is not a valuation — it is a statement of what the market currently believes.</p>
+    <p>This is the method Rappaport and Mauboussin call <em>expectations investing</em>: you stop competing on whose forecast is better and start asking whether the embedded forecast is plausible at all. A stock implying 34% annual free-cash-flow growth for five years is making a claim you can check against the company's own history, its addressable market, and its competition.</p>
+
+    <h2>The formula</h2>
+    <div class="formula">EV(price)  =  price × shares_outstanding  +  net_debt
+
+solve g such that:
+
+                 ⁿ    FCF₀(1+g)ᵗ
+  EV(g)  =       Σ   ────────────   +   PV(terminal value)   =   EV(price)
+                t=1     (1+r)ᵗ</div>
+    <ul class="vars"><li><code>g</code> — the implied free-cash-flow CAGR being solved for — the output</li><li><code>FCF₀</code> — base-year free cash flow</li><li><code>r</code> — discount rate (WACC)</li><li><code>n</code> — explicit forecast horizon, 5 years by default</li><li><code>net_debt</code> — total debt less cash, bridging equity value to enterprise value</li></ul>
+
+
+    <h2>How this calculator works</h2>
+    <p>Enterprise value is <strong>monotonically increasing</strong> in the growth rate for a positive base free cash flow — more growth always means more value — so the root is unique and a bracketed solver is guaranteed to find it. This calculator uses Brent's method (<code>scipy.optimize.brentq</code>) over a search bracket of −50% to +200% a year: wide enough to cover a distressed business and a hyper-growth story stock, without pretending a market can imply something outside any plausible range.</p>
+    <p>That matters because most free "reverse DCF" tools are not solvers at all — they interpolate a lookup table or iterate a fixed number of times and stop. Here the real SciPy routine runs in your browser, on CPython compiled to WebAssembly, and converges to the actual root.</p>
+    <p>The model also translates the implied growth into an <strong>implied share of a disclosed total addressable market</strong>, which is a second and independent way to sanity-check the same expectation: a growth rate that quietly requires the company to capture 60% of its own TAM is usually the more obvious tell.</p>
+
+    <h2>How to use it</h2>
+    <ol>
+      <li>Enter the current share price and shares outstanding — together these give equity value.</li>
+      <li>Add net debt (total debt less cash) to bridge from equity value to enterprise value.</li>
+      <li>Enter base-year free cash flow. This is the figure the growth rate compounds from, so a one-off working-capital swing here distorts everything downstream.</li>
+      <li>Set the discount rate and terminal growth. Terminal growth should not exceed the long-run risk-free rate — a company cannot outgrow its economy forever.</li>
+      <li>Optionally supply base revenue and total addressable market to get the implied TAM capture alongside the implied growth rate.</li>
+      <li>Read the implied CAGR, then go check it against the company's actual historical growth.</li>
+    </ol>
+
+    <h2>Worked example</h2>
+    <p>A company trades at $42.00 with 100 million shares outstanding and $200 million of net debt. Base free cash flow is $100 million, and we discount at 10% with 3% terminal growth.</p>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Input</th><th>Value</th></tr></thead>
+        <tbody>
+        <tr><td>Share price</td><td class="num">$42.00</td></tr>
+        <tr><td>Shares outstanding</td><td class="num">100m</td></tr>
+        <tr><td>Net debt</td><td class="num">$200m</td></tr>
+        <tr><td>Base free cash flow</td><td class="num">$100m</td></tr>
+        <tr><td>Discount rate (WACC)</td><td class="num">10%</td></tr>
+        <tr><td>Terminal growth</td><td class="num">3%</td></tr>
+        <tr><td>Implied enterprise value</td><td class="num">$4,400m</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Equity value is 42 × 100m = $4,200m; adding $200m of net debt gives an enterprise value of $4,400m. The solver then finds the single growth rate that makes the discounted cash flows sum to exactly that figure. The number it returns is the market's embedded assumption — and the useful next step is always the same: compare it with what the company has actually delivered over the last five years.</p>
+
+    <h2>Assumptions and limitations</h2>
+    <ul>
+      <li>Growth is modelled as a <strong>constant</strong> CAGR across the forecast horizon. Real cash flows are lumpy; this deliberately answers "what single rate is equivalent", not "what is the year-by-year path".</li>
+      <li>The discount rate and terminal growth are held fixed. The implied growth rate is only meaningful relative to those two inputs — a different WACC gives a different answer for the same price, which is why they should be stated whenever the output is quoted.</li>
+      <li>A negative or near-zero base free cash flow breaks the monotonicity the solver relies on. Pre-profit companies are not a good fit for this method.</li>
+      <li>The output describes the market's aggregate expectation. It is not a recommendation, and a high implied growth rate is not by itself evidence that something is overvalued.</li>
+    </ul>
+
+    <h2>Frequently asked questions</h2>
+    <div class="faq">
+      <details>
+        <summary>What is a reverse DCF?</summary>
+        <p>A reverse DCF takes a company's current market price as the input and solves for the future cash-flow growth rate that price implies, rather than taking a growth forecast and producing a target price. It tells you what the market already believes.</p>
+      </details>
+      <details>
+        <summary>How is a reverse DCF different from a normal DCF?</summary>
+        <p>A normal DCF runs assumptions → value. A reverse DCF runs value → assumptions. Same identity, solved in the opposite direction, which removes the single most manipulable input from the process.</p>
+      </details>
+      <details>
+        <summary>What is a good implied growth rate?</summary>
+        <p>There is no universally good number. The test is comparative: an implied rate below the company's own historical growth suggests the market is sceptical; one far above it means the price requires an acceleration that has to be explained by something.</p>
+      </details>
+      <details>
+        <summary>Does this calculator use a real solver?</summary>
+        <p>Yes. It root-finds with Brent's method via scipy.optimize.brentq over a −50% to +200% bracket, running as real CPython in your browser through WebAssembly — not a JavaScript approximation or a lookup table.</p>
+      </details>
+      <details>
+        <summary>Can I use a reverse DCF on an unprofitable company?</summary>
+        <p>Not reliably. The solver depends on enterprise value increasing monotonically with the growth rate, which requires a positive base free cash flow. With negative base FCF the relationship inverts and the implied rate stops being interpretable.</p>
+      </details>
+    </div>
+
+    <h2>Related calculators</h2>
+    <div class="related">
+      <a href="/ifrs-16-hidden-debt-calculator"><b>Operating Lease Capitalization & Hidden-Debt Calculator</b><span>Forensic accounting</span></a>
+      <a href="/monte-carlo-stock-price-simulator"><b>Monte Carlo Stock Price Simulator</b><span>Simulation</span></a>
+      <a href="/black-scholes-calculator"><b>Black-Scholes Calculator with Greeks</b><span>Derivatives</span></a>
+    </div>
+
+    <h2>References</h2>
+    <ul>
+      <li>Rappaport, A. &amp; Mauboussin, M. J. (2001). <em>Expectations Investing: Reading Stock Prices for Better Returns.</em> Harvard Business School Press.</li>
+      <li>Damodaran, A. (2012). <em>Investment Valuation</em>, 3rd ed., ch. 12 — the enterprise-value identity inverted here.</li>
+    </ul>
+  </main>
+
+  <footer>
+    <p>
+      Part of <a href="/">FINMODELS TERMINAL</a> — twelve canonical quantitative-finance
+      models running on real CPython compiled to WebAssembly, entirely in your browser.
+      See <a href="/about">all twelve models</a>.
+    </p>
+    <p class="updated">Last updated 2026-09-14.</p>
+  </footer>
+
+</div>
+</body>
+</html>

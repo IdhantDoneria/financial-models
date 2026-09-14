@@ -5,7 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#050608">
   <title>FINMODELS TERMINAL — 12 quant models, live in your browser</title>
-  <meta name="description" content="Bloomberg-terminal-style interface running twelve canonical quantitative finance models (Black-Scholes, Heston, DCF, MPT, VaR, Fama-French, plus a hidden-debt normalizer and reverse-DCF solver…) live in the browser via Python/WebAssembly.">
+  <!-- Kept under ~160 chars: past that Google truncates mid-sentence in the
+       SERP, and the tail of the old 238-char version (the model list) was
+       being cut anyway. Front-load the models people actually search for. -->
+  <meta name="description" content="Twelve quantitative finance models — DCF, reverse DCF, Black-Scholes, Heston, VaR — run free in your browser on real CPython compiled to WebAssembly.">
   <link rel="canonical" href="https://financial-models-six.vercel.app/">
 
   <!-- Social / link-preview cards. These matter more here than on a normal
@@ -33,15 +36,29 @@
   <link rel="manifest" href="/site.webmanifest">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <!-- Plotly is fetched lazily on the first chart (see ensurePlotly), so warm
+       the connection now rather than paying DNS+TLS at the moment of render. -->
+  <link rel="preconnect" href="https://cdn.plot.ly" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/katex.min.css">
   <link rel="stylesheet" href="assets/terminal.css">
 
   <!-- Structured data. Two graphs, both describing things a human can also
-       see: the app itself, and the site it belongs to. Deliberately NO
-       aggregateRating and no offers block — we have no review corpus and the
-       plan price moves, and fabricated rich-result markup is the fastest way
-       to earn a manual action from Google. -->
+       see: the app itself, and the site it belongs to.
+
+       Still deliberately NO aggregateRating: there is no review corpus, and
+       inventing one is the fastest way to earn a manual action from Google.
+       That prohibition stands.
+
+       `offers` HAS now been added, reversing the earlier call here. The
+       original reason to omit it was that the plan price moved; it no longer
+       does — plans are one global USD figure fixed in api/_lib/billing.js and
+       published on the PLAN tab and in the README, so the price below is the
+       real one a buyer pays, not marketing garnish. Google needs one of
+       offers/aggregateRating/review for software rich results, so without it
+       this block was ineligible to render at all. If the price changes,
+       THIS BLOCK MUST CHANGE WITH IT — stale price markup is its own
+       manual-action risk. -->
   <script type="application/ld+json">
   {
     "@context": "https://schema.org",
@@ -68,6 +85,22 @@
       "Reverse DCF growth solver",
       "IB Desk: automated 10-K / 10-Q PDF analysis with PDF, Word and Excel export",
       "Risk-free rates and currencies anchored to 15 equity markets"
+    ],
+    "offers": [
+      {
+        "@type": "Offer",
+        "name": "FREE",
+        "price": "0",
+        "priceCurrency": "USD",
+        "description": "Ten of the twelve models, the scenario engine, and 3 company PDF analyses per month."
+      },
+      {
+        "@type": "Offer",
+        "name": "ANALYST PRO",
+        "price": "29",
+        "priceCurrency": "USD",
+        "description": "50 company PDF analyses per month, plus the Ind AS 116 hidden-debt normalizer and the reverse-DCF solver."
+      }
     ]
   }
   </script>
@@ -75,6 +108,7 @@
   {
     "@context": "https://schema.org",
     "@type": "WebSite",
+    "@id": "https://financial-models-six.vercel.app/#website",
     "name": "FINMODELS TERMINAL",
     "url": "https://financial-models-six.vercel.app/",
     "description": "Twelve canonical quantitative finance models, running in the browser via CPython compiled to WebAssembly."
@@ -136,6 +170,18 @@
       <h2>IB DESK</h2>
       <p>Upload a 10-K or 10-Q and the terminal extracts the financials, fills the gaps with
         documented assumptions, runs the models, and exports the result as PDF, Word or Excel.</p>
+      <h2>CALCULATORS</h2>
+      <!-- These live in the no-JS fallback on purpose: it's the part of this
+           page a crawler reads without executing anything, so it's the only
+           place a link from the homepage reliably passes signal to the
+           landing pages. They're real destinations for humans too. -->
+      <ul>
+        <li><a href="/reverse-dcf-calculator">Reverse DCF calculator</a> — solve for the growth rate a share price already implies.</li>
+        <li><a href="/ifrs-16-hidden-debt-calculator">Operating lease capitalization &amp; hidden-debt calculator</a> — move footnote liabilities onto the balance sheet.</li>
+        <li><a href="/monte-carlo-stock-price-simulator">Monte Carlo stock price simulator</a> — geometric Brownian motion paths with convergence diagnostics.</li>
+        <li><a href="/black-scholes-calculator">Black-Scholes calculator with Greeks</a> — European options, benchmarked to Hull.</li>
+      </ul>
+
       <h2>ELSEWHERE</h2>
       <ul>
         <li><a href="/about">About the models</a> — full technical detail, formulas and the self-assessed scorecard.</li>
@@ -258,7 +304,10 @@
        as when these were blocking scripts loaded one at a time. -->
   <script defer src="assets/boot-packages.js"></script>
   <script defer src="https://cdn.jsdelivr.net/pyodide/v0.28.2/full/pyodide.js"></script>
-  <script defer src="https://cdn.plot.ly/plotly-3.3.0.min.js" charset="utf-8"></script>
+  <!-- Plotly (1.4 MB) is NOT loaded here on purpose. It dominated first-paint
+       bandwidth for every visitor even though nothing is plotted until a model
+       has run, so terminal.js's ensurePlotly() fetches it on the first chart
+       instead. The preconnect above keeps that on-demand fetch quick. -->
   <script defer src="https://cdn.jsdelivr.net/npm/marked@15.0.12/marked.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/katex.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/contrib/auto-render.min.js"></script>
