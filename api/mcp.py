@@ -545,7 +545,7 @@ def _effective_plan(email: str) -> str:
         sub = json.loads(raw)
     except (ValueError, TypeError):
         return "free"
-    if sub.get("plan") not in ("pro", "unlimited") or not sub.get("expiresAt"):
+    if sub.get("plan") not in ("pro", "unlimited", "boutique", "enterprise") or not sub.get("expiresAt"):
         return "free"
     try:
         expires = datetime.fromisoformat(str(sub["expiresAt"]).replace("Z", "+00:00"))
@@ -576,7 +576,7 @@ def _check_entitlement(bearer: str | None) -> str | None:
         email = json.loads(sess)["email"]
     except (ValueError, KeyError, TypeError):
         return "That session token is not valid."
-    if _effective_plan(email) not in ("pro", "unlimited"):
+    if _effective_plan(email) not in ("pro", "unlimited", "boutique", "enterprise"):
         return "Your account is on the FREE plan. " + UPGRADE_HINT
     return None
 

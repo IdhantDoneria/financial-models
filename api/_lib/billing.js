@@ -10,14 +10,23 @@
 //
 // Paid plans are bought as one-time orders for a MONTHLY or ANNUAL pass (no
 // dashboard plan objects needed): FREE 3 uploads/mo · ANALYST PRO 50
-// uploads/mo @ ₹299/mo or ₹2,499/yr · DESK UNLIMITED (unlimited uploads)
-// @ ₹599/mo or ₹4,999/yr. "Upload" = one IB-desk PDF analysis. Analyst Pro
+// uploads/mo @ $29/mo or $299/yr · DESK UNLIMITED (unlimited uploads)
+// @ $59/mo or $599/yr · BOUTIQUE FUND (unlimited uploads, up to 5 seats)
+// @ $249/mo or $2,499/yr. "Upload" = one IB-desk PDF analysis. Analyst Pro
 // and above also unlock the Ind AS 116 hidden-debt normalizer and reverse
 // DCF solver — unlike every other model's math (client-side WASM), these
 // two are actually computed server-side, in api/premium.py, which
 // re-derives plan entitlement from this same store rather than trusting
 // the client. terminal.js's PREMIUM_MODELS/premiumModelGate() are a fast
 // UX pre-check only, not the enforcement boundary.
+//
+// Pricing is one global USD figure per plan, converted to INR at a single
+// fixed rate (USD_TO_INR below) — deliberately NOT geo-discounted, so a
+// buyer in Mumbai and a buyer in Manhattan pay the same real price. INR is
+// the only currency actually charged (Razorpay settles in INR only; see
+// createOrder), so it is the authoritative `amount`; USD is derived from it
+// for display (terminal.js picks the label by IP-derived country, see
+// state.billing.geo) at the exact same rate, not a discounted one.
 //
 // Local testing: with AUTH_DEV_MEMORY=1 and no real keys, a fake gateway
 // takes over — orders get dev ids and signatures verify against the fixed
@@ -35,24 +44,44 @@ const DEV_SECRET = "devsecret";
 const ORDER_TTL = 3600;            // pending order records live 1 hour
 const PERIODS = ["monthly", "annual"];
 
+//: Reference rate for deriving the INR (authoritative, charged) amount from
+//  each plan's canonical USD price. Fixed rather than live-fetched — a price
+//  that moved mid-checkout would be worse than one that's a few percent
+//  stale — so nudge this occasionally to track the real rate, not on every
+//  deploy. usd * 8800 is always an integer number of paise for a whole-
+//  dollar price, so no rounding is needed.
+const USD_TO_INR = 88;
+const usdToPaise = (usd) => usd * USD_TO_INR * 100;
+
 //: Authoritative catalogue. `id`/`name`/`uploads`/`blurb` are billing-period
 //  independent (a monthly and an annual Pro subscriber get the same 50/mo
 //  cap and the same premium-model access). Only price and pass length vary
 //  by period, under `periods.monthly`/`periods.annual` — `amount` is paise
-//  (Razorpay's unit), `days` is how long one purchase of that period grants.
-//  `uploads` null = unlimited.
+//  (Razorpay's unit, what is actually charged), `usd` is the same price in
+//  dollars (display only, terminal.js picks which one to show), `days` is
+//  how long one purchase of that period grants. `uploads` null = unlimited.
 const PLANS = {
   free: { id: "free", name: "FREE", uploads: 3,
           blurb: "3 company uploads / month · all 10 models · SCEN engine" },
   pro: { id: "pro", name: "ANALYST PRO", uploads: 50,
-         periods: { monthly: { amount: 29_900, days: 30 },
-                    annual: { amount: 249_900, days: 365 } },
+         periods: { monthly: { amount: usdToPaise(29), usd: 29, days: 30 },
+                    annual: { amount: usdToPaise(299), usd: 299, days: 365 } },
          blurb: "50 company uploads / month · Ind AS hidden-debt normalizer & " +
                 "reverse-DCF solver · everything in FREE" },
   unlimited: { id: "unlimited", name: "DESK UNLIMITED", uploads: null,
-               periods: { monthly: { amount: 59_900, days: 30 },
-                          annual: { amount: 499_900, days: 365 } },
+               periods: { monthly: { amount: usdToPaise(59), usd: 59, days: 30 },
+                          annual: { amount: usdToPaise(599), usd: 599, days: 365 } },
                blurb: "Unlimited uploads · everything in PRO" },
+  //: Self-serve tier for small funds/RIAs — sits between DESK UNLIMITED
+  //  (single desk) and ENTERPRISE (bespoke, sales-led). `seats` here is
+  //  declarative, same as ENTERPRISE's: this store is per-email, so
+  //  provisioning the named team members is a manual step by the operator
+  //  today, not an automated multi-seat login system.
+  boutique: { id: "boutique", name: "BOUTIQUE FUND", uploads: null, seats: 5,
+              periods: { monthly: { amount: usdToPaise(249), usd: 249, days: 30 },
+                         annual: { amount: usdToPaise(2499), usd: 2499, days: 365 } },
+              blurb: "Unlimited uploads · everything in DESK UNLIMITED · priority support · " +
+                     "provisioning for up to 5 named team members" },
   //: Sales-led tier — bespoke pricing, so there's no self-serve `periods`
   //  entry and `contact:true`. The order handler rejects any plan without a
   //  `periods` catalogue, so ENTERPRISE can never be self-served through
@@ -220,7 +249,7 @@ async function getUsed(email) {
 const consumeUpload = (email) => store.incr(`use:${email}:${monthKey()}`, 35 * 86_400);
 
 module.exports = {
-  PLANS, PERIODS, PURCHASABLE_PLANS, ORDER_TTL, FOUNDER_CAP, FOUNDER_PLAN, FOUNDER_DAYS,
+  PLANS, PERIODS, PURCHASABLE_PLANS, ORDER_TTL, FOUNDER_CAP, FOUNDER_PLAN, FOUNDER_DAYS, USD_TO_INR,
   configured, mode, keyId,
   createOrder, verifyCheckoutSig, verifyWebhookSig,
   getSub, effectivePlan, activate, getUsed, consumeUpload, monthKey,

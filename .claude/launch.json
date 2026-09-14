@@ -6,6 +6,12 @@
       "runtimeExecutable": "python3",
       "runtimeArgs": ["-m", "http.server", "8743", "--directory", "public"],
       "port": 8743
+    },
+    {
+      "name": "full-stack",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["scripts/dev_auth_server.js", "8124"],
+      "port": 8124
     }
   ]
 }

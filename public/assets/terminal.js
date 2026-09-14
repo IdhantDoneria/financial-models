@@ -258,7 +258,7 @@ const state = {
   user: null,              // session from login.html (set before boot)
   country: null,           // set in boot() from storage or default US
   scen: { built: null, busy: false },   // scenario & sensitivity engine
-  billing: { cfg: null, usage: null },  // Razorpay plans + upload metering
+  billing: { cfg: null, usage: null, geo: null },  // Razorpay plans + upload metering + IP-derived display currency
   ib: { pkgsReady: false, fns: null, extracted: null, report: null,
         liveRf: null, rfSource: null, fx: null, fxDate: null,
         period: "auto", mode: "auto", dirty: {}, selected: null },
@@ -539,7 +539,11 @@ function buildUI() {
  * visitor's IP (server-side, /api/geo) to a timezone once at boot and
  * renderClock() switches to it from then on — a small "this feels built
  * for me" touch, and the country tally behind /api/geo also gives the
- * operator real visitor-geography data for conversion tracking. */
+ * operator real visitor-geography data for conversion tracking. The same
+ * lookup also sets state.billing.geo, which the PLAN tab uses to choose
+ * whether to LABEL prices in ₹ or $ — the real amount charged never
+ * changes by geography, only which of the two equal-value figures is
+ * shown (see USD_TO_INR in api/_lib/billing.js). */
 let clockTz = null;
 function renderClock() {
   const now = new Date();
@@ -566,7 +570,8 @@ async function initGeoClock() {
       const loc = [j.city, j.country].filter(Boolean).join(", ");
       $("#clock").title = `LOCAL TIME${loc ? " · " + loc : ""}${j.flag ? " " + j.flag : ""} — DETECTED FROM YOUR IP ADDRESS`;
     }
-  } catch { /* geolocation unreachable — clock stays on UTC */ }
+    if (j.ok) state.billing.geo = { country_code: j.country_code || null };
+  } catch { /* geolocation unreachable — clock stays on UTC, PLAN tab defaults to USD */ }
 }
 
 /* --------------------------- phone bottom nav --------------------------- */
@@ -2647,13 +2652,17 @@ async function runSensitivityGrid() {
 
 /* ======================================================================== *
  * BILLING — Razorpay plans, upload metering, PLAN tab.
- * FREE: 3 uploads/mo · ANALYST PRO ₹299/mo or ₹2,499/yr: 50 uploads, plus
+ * FREE: 3 uploads/mo · ANALYST PRO $29/mo or $299/yr: 50 uploads, plus
  * the Ind AS hidden-debt normalizer and reverse-DCF solver · DESK UNLIMITED
- * ₹599/mo or ₹4,999/yr: unlimited uploads. "Upload" = one IB-desk PDF
- * analysis. Amounts are authoritative server-side (api/_lib/billing.js);
- * checkout is Razorpay's hosted modal; payment proof is verified
- * server-side. Until RAZORPAY_* env vars exist, billing reports offline
- * and nothing is gated.
+ * $59/mo or $599/yr: unlimited uploads · BOUTIQUE FUND $249/mo or
+ * $2,499/yr: unlimited uploads, up to 5 seats. "Upload" = one IB-desk PDF
+ * analysis. Amounts are authoritative server-side (api/_lib/billing.js) as
+ * INR paise, converted from one global USD price at a fixed rate — every
+ * buyer pays the same real price; the PLAN tab just labels it in ₹ or $
+ * depending on IP-derived country (state.billing.geo). Checkout is
+ * Razorpay's hosted modal (settles in INR regardless of the label shown);
+ * payment proof is verified server-side. Until RAZORPAY_* env vars exist,
+ * billing reports offline and nothing is gated.
  * ======================================================================== */
 
 //: The two premium models — available from ANALYST PRO up. Actually
@@ -2768,15 +2777,30 @@ async function consumeUpload() {
 }
 
 /* ------------------------------ PLAN tab -------------------------------- */
+//: Which of the two equal-value price labels to show — IP-derived, India
+//  sees ₹, everyone else sees $. The amount actually charged never changes;
+//  see USD_TO_INR in api/_lib/billing.js. Defaults to USD (the larger
+//  audience) if geo lookup hasn't resolved yet or failed.
+function planCurrency() {
+  return state.billing.geo && state.billing.geo.country_code === "IN" ? "inr" : "usd";
+}
+//: `period` is one entry of a plan's `periods` (has priceInr + priceUsd).
+function fmtPlanPrice(period, currency) {
+  return currency === "inr"
+    ? `₹${period.priceInr.toLocaleString("en-IN")}`
+    : `$${period.priceUsd.toLocaleString("en-US")}`;
+}
+
 //: Paid plans show both billing periods side by side — a toggle would hide
 //  half the picture, and these cards have room for two short price lines.
 function planPriceHTML(p) {
   if (p.contact) return `<div class="pprice">CUSTOM <small>TAILORED TO YOUR DESK</small></div>`;
-  if (!p.periods) return `<div class="pprice">₹0 <small>FOREVER</small></div>`;
+  const cur = planCurrency();
+  if (!p.periods) return `<div class="pprice">${cur === "inr" ? "₹0" : "$0"} <small>FOREVER</small></div>`;
   const { monthly, annual } = p.periods;
   return `<div class="pprice">
-    <div class="pp-period">₹${monthly.priceInr} <small>/ MO</small></div>
-    <div class="pp-period">₹${annual.priceInr.toLocaleString("en-IN")} <small>/ YR</small></div>
+    <div class="pp-period">${fmtPlanPrice(monthly, cur)} <small>/ MO</small></div>
+    <div class="pp-period">${fmtPlanPrice(annual, cur)} <small>/ YR</small></div>
   </div>`;
 }
 
@@ -2826,11 +2850,14 @@ async function renderPlanTab(body) {
   const plans = (cfg && cfg.plans) || [
     { id: "free", name: "FREE", periods: null, uploads: 3, blurb: "3 company uploads / month · all 10 models · SCEN engine" },
     { id: "pro", name: "ANALYST PRO", uploads: 50,
-      periods: { monthly: { priceInr: 299 }, annual: { priceInr: 2499 } },
+      periods: { monthly: { priceInr: 2552, priceUsd: 29 }, annual: { priceInr: 26312, priceUsd: 299 } },
       blurb: "50 company uploads / month · Ind AS hidden-debt normalizer & reverse-DCF solver · everything in FREE" },
     { id: "unlimited", name: "DESK UNLIMITED", uploads: null,
-      periods: { monthly: { priceInr: 599 }, annual: { priceInr: 4999 } },
+      periods: { monthly: { priceInr: 5192, priceUsd: 59 }, annual: { priceInr: 52712, priceUsd: 599 } },
       blurb: "Unlimited uploads · everything in PRO" },
+    { id: "boutique", name: "BOUTIQUE FUND", uploads: null, seats: 5,
+      periods: { monthly: { priceInr: 21912, priceUsd: 249 }, annual: { priceInr: 219912, priceUsd: 2499 } },
+      blurb: "Unlimited uploads · everything in DESK UNLIMITED · priority support · provisioning for up to 5 named team members" },
     { id: "enterprise", name: "ENTERPRISE", periods: null, uploads: null, contact: true, seats: 20,
       blurb: "Unrestricted access to the entire platform with unlimited analyses, guaranteed priority compute during peak traffic, provisioning for up to 20 team members, and early access to new capabilities ahead of general release — with dedicated onboarding and priority support." },
   ];
@@ -2842,18 +2869,19 @@ async function renderPlanTab(body) {
   const buyButtons = (p) => {
     if (current === p.id) return `<button class="pbuy" disabled>CURRENT PLAN</button>`;
     if (!cfg || !cfg.billing) return `<button class="pbuy" disabled>OFFLINE</button>`;
+    const cur = planCurrency();
     return `<div class="pbuyrow">
       <button class="pbuy" data-plan="${p.id}" data-period="monthly" ${canBuy ? "" : "disabled"}>
-        MONTHLY — ₹${p.periods.monthly.priceInr}</button>
+        MONTHLY — ${fmtPlanPrice(p.periods.monthly, cur)}</button>
       <button class="pbuy" data-plan="${p.id}" data-period="annual" ${canBuy ? "" : "disabled"}>
-        ANNUAL — ₹${p.periods.annual.priceInr.toLocaleString("en-IN")}</button>
+        ANNUAL — ${fmtPlanPrice(p.periods.annual, cur)}</button>
     </div>`;
   };
   body.innerHTML = `<h3>PLANS &amp; USAGE</h3>${head}
     <div class="pcards">${plans.map((p) => `
       <div class="pcard ${p.id} ${current === p.id ? "cur" : ""}">
         ${p.id === "unlimited" ? `<div class="pflag">BEST VALUE</div>` : ""}
-        ${p.contact ? `<div class="pflag teams">FOR TEAMS</div>` : ""}
+        ${p.contact || p.id === "boutique" ? `<div class="pflag teams">FOR TEAMS</div>` : ""}
         <div class="pname">${p.name}</div>
         ${planPriceHTML(p)}
         <div class="pquota">${p.uploads === null ? "UNLIMITED" : p.uploads} UPLOADS${p.uploads === null ? "" : " / MO"}</div>
@@ -2868,7 +2896,10 @@ async function renderPlanTab(body) {
     <div class="pnote" id="pmsg">Paid plans are day-based passes (30 for monthly, 365 for annual) —
       renewing or upgrading early credits your unused days. Payments are processed by Razorpay
       (UPI · cards · netbanking · wallets); this site never sees card details. An upload = one
-      IB-desk PDF analysis; model runs and the SCEN engine are never metered.</div>`;
+      IB-desk PDF analysis; model runs and the SCEN engine are never metered. Prices are shown
+      in ${planCurrency() === "inr" ? "₹" : "$"} based on your location, but it's the same real
+      price everywhere — no regional discount; checkout always settles in ₹ (Razorpay does not
+      support other settlement currencies).</div>`;
   body.querySelectorAll(".pbuy[data-plan]").forEach((b) => {
     b.onclick = () => startCheckout(b.dataset.plan, b.dataset.period);
   });
