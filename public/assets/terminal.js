@@ -597,6 +597,57 @@ function setMobileView(mv) {
 /* ------------------------------ live ticker ---------------------------- */
 const TROY_OZ_TO_G = 31.1034768;
 
+//: Real local gold/silver quoting units, verified per market (not assumed
+//  uniform) against that market's own exchange or major retail bullion
+//  dealers, October 2026:
+//   - IN  gold/10g, silver/kg — MCX contract units, the newspaper/jeweller
+//     convention (pre-existing; see below for why gold and silver differ).
+//   - CN  gold/g (Shanghai Gold Exchange quotes RMB/gram), silver/kg (SGE's
+//     own benchmark is RMB/kilogram, not RMB/gram — the same gold≠silver
+//     divergence as India, independently confirmed on a different exchange).
+//   - HK  gold/tael (37.429g) — the Chinese Gold & Silver Exchange Society's
+//     traditional "99 Tael Gold" contract, still the market's real physical-
+//     trade unit. Silver stays on troy oz: HK's silver trade is smaller and
+//     less standardized locally, and no clear local-unit convention could
+//     be confirmed — left alone rather than guessed.
+//   - JP  gold/g, silver/g — Tokyo Commodity Exchange (now part of JPX)
+//     trades both in JPY/gram; Tanaka Kikinzoku, Japan's largest retail
+//     dealer, quotes the same way.
+//   - SA  gold/g, silver/g — the standard Gulf retail convention (grams,
+//     further split by karat for gold; per-gram is explicitly the dominant
+//     retail unit for silver too, cheap enough that a bigger unit isn't
+//     needed the way it is for gold elsewhere).
+//   - KR  gold/don (3.75g) — Seoul's Jongno district (the country's real
+//     physical retail benchmark) prices in don; the gram-based KRX Gold
+//     Market is the separate institutional venue. Silver/g — no matching
+//     "don" convention found for silver; retail trackers show gram as the
+//     norm, unlike gold's divergence.
+//   - CH, DE, FR, NL  gold/g, silver/g — the Eurozone/Swiss bullion trade's
+//     retail bars run 1g-1kg and its major dealers (Degussa, Geiger,
+//     ProAurum) quote per gram; troy oz is used only for international
+//     comparison, not local retail.
+//   - GB, CA, AU  UNCHANGED (troy oz): confirmed as the real convention —
+//     LBMA (UK), COMEX/LBMA-aligned Royal Canadian Mint (Canada) and Perth
+//     Mint (Australia) all price and mint in troy ounces already.
+//   - TW  UNCHANGED (troy oz): genuinely ambiguous rather than unresearched.
+//     Taiwan's own exchange (TPEx) switched its trading unit from the
+//     traditional tael (37.5g) to a "Taiwan mace" (3.75g) in October 2025,
+//     while retail trackers still show gram, tael and mace inconsistently.
+//     No single figure could be confirmed with the same confidence as the
+//     markets above, so this is left on troy oz rather than guessed.
+const METAL_UNIT_CONVENTIONS = {
+  IN: { GOLD: { grams: 10,     label: "GOLD (10G)" },  SILVER: { grams: 1000, label: "SILVER (KG)" } },
+  CN: { GOLD: { grams: 1,      label: "GOLD (G)" },    SILVER: { grams: 1000, label: "SILVER (KG)" } },
+  HK: { GOLD: { grams: 37.429, label: "GOLD (TAEL)" } },
+  JP: { GOLD: { grams: 1,      label: "GOLD (G)" },    SILVER: { grams: 1, label: "SILVER (G)" } },
+  SA: { GOLD: { grams: 1,      label: "GOLD (G)" },    SILVER: { grams: 1, label: "SILVER (G)" } },
+  KR: { GOLD: { grams: 3.75,   label: "GOLD (DON)" },  SILVER: { grams: 1, label: "SILVER (G)" } },
+  CH: { GOLD: { grams: 1,      label: "GOLD (G)" },    SILVER: { grams: 1, label: "SILVER (G)" } },
+  DE: { GOLD: { grams: 1,      label: "GOLD (G)" },    SILVER: { grams: 1, label: "SILVER (G)" } },
+  FR: { GOLD: { grams: 1,      label: "GOLD (G)" },    SILVER: { grams: 1, label: "SILVER (G)" } },
+  NL: { GOLD: { grams: 1,      label: "GOLD (G)" },    SILVER: { grams: 1, label: "SILVER (G)" } },
+};
+
 //: Converts one raw (always-USD) tape quote to the selected country's
 //  currency for display. Deliberately narrow about what it touches:
 //   - Index levels (q.money === false — S&P, NASDAQ, Nikkei, …) are never
@@ -607,29 +658,23 @@ const TROY_OZ_TO_G = 31.1034768;
 //   - Without a live FX rate yet (state.ib.fx is null — e.g. right after
 //     switching country, before /api/rates has answered), the quote is left
 //     in USD rather than guessed at.
-//   - Gold and silver get an extra unit conversion for India specifically,
-//     from Yahoo's COMEX futures convention (USD per troy ounce) to what
-//     Indian buyers actually quote: gold per 10 grams (the universal
-//     newspaper/jeweller/MCX convention) and silver per kilogram (MCX's own
-//     contract unit, and what's quoted locally — NOT per 10g; silver and
-//     gold follow different conventions in the Indian market, so applying
-//     the same 10g unit to both would be a real, if minor, inaccuracy). The
-//     label changes alongside the number so the unit is always visible, not
-//     just a silently different figure.
-//   - Every other market's gold/silver stays in troy ounces (just FX-
-//     converted) until each market's own real quoting convention is
-//     verified — not guessed — in a follow-up.
+//   - Gold and silver get an extra unit conversion per METAL_UNIT_CONVENTIONS,
+//     from Yahoo's COMEX/LBMA futures convention (USD per troy ounce) to
+//     what that market actually quotes locally — see the table above for
+//     the market-by-market rationale and sourcing. A market absent from the
+//     table (GB, CA, AU, TW, and any other not yet researched) keeps troy
+//     ounces, just FX-converted, rather than guess. The label changes
+//     alongside the number so the unit is always visible, not just a
+//     silently different figure.
 function convertTapeQuote(q, country) {
   if (!q.money || !country || country.ccy === "USD" || typeof state.ib.fx !== "number") return q;
   const fx = state.ib.fx;   // country currency per 1 USD
   let price = q.price * fx;
   let label = q.label;
-  if (country.code === "IN" && q.label === "GOLD") {
-    price = (price / TROY_OZ_TO_G) * 10;
-    label = "GOLD (10G)";
-  } else if (country.code === "IN" && q.label === "SILVER") {
-    price = (price / TROY_OZ_TO_G) * 1000;
-    label = "SILVER (KG)";
+  const conv = METAL_UNIT_CONVENTIONS[country.code] && METAL_UNIT_CONVENTIONS[country.code][q.label];
+  if (conv) {
+    price = (price / TROY_OZ_TO_G) * conv.grams;
+    label = conv.label;
   }
   return { ...q, price, label, ccy: country.ccy };
 }
