@@ -410,12 +410,22 @@ console.log("\n· Share-count freshness: corporate actions since the filing date
   // fabricate a ratio.
   ok(computeSplitAdjustment({ a: {} }, "2025-03-31").ratio === 1,
     "a split entry missing numerator/denominator is skipped, not NaN-multiplied");
-  ok(computeSplitAdjustment(null, "2025-03-31").ratio === 1,
-    "no split data at all yields no adjustment, not a crash");
   ok(computeSplitAdjustment({}, "not-a-date") === null,
     "an unparseable as-of date returns null rather than guessing");
   ok(computeSplitAdjustment({}, null) === null,
     "a missing as-of date returns null rather than guessing");
+}
+{
+  // null means the fetch FAILED (unknown), which is a different thing from
+  // {} (fetched fine, genuinely no splits) -- collapsing the two would let a
+  // network hiccup silently present an unverified share count as checked.
+  // Regression case: an earlier version of this function conflated them,
+  // which broke the handler's "could not check" disclosure entirely (it
+  // could never fire because the collapsed case always looked like success).
+  ok(computeSplitAdjustment(null, "2025-03-31") === null,
+    "a failed split lookup (null) propagates as null, not as \"no splits found\"");
+  ok(computeSplitAdjustment({}, "2025-03-31") !== null,
+    "a successful lookup that found nothing ({}) is NOT the same as a failed one");
 }
 {
   // A reverse split must shrink the count, not just be ignored for having
@@ -430,6 +440,25 @@ console.log("\n· Share-count freshness: corporate actions since the filing date
   ok(SPLIT_ALLOTMENT_LAG_MS >= 7 * 86_400_000 && SPLIT_ALLOTMENT_LAG_MS <= 21 * 86_400_000,
     "the allotment-lag buffer is on the order of the real record-to-credit gap (about 2 weeks)",
     String(SPLIT_ALLOTMENT_LAG_MS / 86_400_000) + " days");
+}
+{
+  // A per-share dividend has the OPPOSITE exposure to a split from the share
+  // count -- more shares now split the same payout -- so restating a
+  // pre-bonus dividend uses the SAME ratio computeSplitAdjustment returns,
+  // applied as a division. Real case: HDFC Bank disclosed $0.26/ADS for the
+  // period ending 2025-03-31, five months before its Aug-2025 1:1 bonus;
+  // left unadjusted this doubles the apparent yield against the (correctly
+  // split-adjusted) current price, and feeds the Gordon Growth Model
+  // (assumptions.py) as `dividend`, which scales linearly with it.
+  const hdfcSplits = {
+    "1753986600": { date: 1756179900, numerator: 2, denominator: 1, splitRatio: "2:1" },
+  };
+  const adj = computeSplitAdjustment(hdfcSplits, "2025-03-31");
+  eq(adj.events.length, 1, "the bonus postdates the dividend's own period end");
+  const restated = 0.26 / adj.ratio;
+  ok(Math.abs(restated - 0.13) < 1e-9,
+    "dividing (not multiplying) restates the dividend to a comparable per-current-share basis",
+    String(restated));
 }
 
 /* -------------------------------- beta ----------------------------------- */
