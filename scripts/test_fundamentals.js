@@ -17,7 +17,8 @@
 
 const { _internals } = require("../api/fundamentals.js");
 const { resolveTicker, pickInstant, pickAnnualSeries, detectReportingCurrency,
-        benchmarkFor, monthlyReturns, MIN_BETA_OBSERVATIONS } = _internals;
+        benchmarkFor, monthlyReturns, MIN_BETA_OBSERVATIONS,
+        ADR_LOCAL_LISTINGS, ADR_RATIO_CANDIDATES, ADR_RATIO_TOLERANCE } = _internals;
 
 let passed = 0, failed = 0;
 function ok(cond, label, detail) {
@@ -282,6 +283,68 @@ console.log("\n· Per-share amounts are denominated <CCY>/shares, not <CCY>");
     "INR/shares is still rejected when USD is pinned");
   eq(pickAnnualSeries(facts, ["CommonStockDividendsPerShareDeclared"], 6, "INR").series[0].val, 11.0,
     "INR/shares is accepted when INR is pinned");
+}
+
+/* ------------------------------- ADR ratios ------------------------------- */
+console.log("\n· Depositary ratios: derived and verified, never assumed");
+{
+  // Only listings whose ratio has been reconciled against live quotes belong
+  // in the map; an unreconcilable entry is refused at request time anyway.
+  const known = Object.keys(ADR_LOCAL_LISTINGS);
+  ok(known.includes("HDB") && known.includes("IBN") && known.includes("INFY"),
+    "the verified Indian ADRs are mapped to their home listings");
+  eq(ADR_LOCAL_LISTINGS.HDB, "HDFCBANK.NS", "HDB maps to its NSE listing");
+  eq(ADR_LOCAL_LISTINGS.WIT, "WIPRO.NS", "the ADR ticker is NOT assumed to match the local one");
+  ok(!known.includes("AAPL"), "an ordinary US listing is not treated as a depositary receipt");
+}
+{
+  // Tolerance has to admit real-world noise (non-simultaneous closes, FX
+  // timing: measured 0.1-3.1%) while still rejecting a genuinely wrong ratio.
+  // Adjacent candidates never sit closer than 25% apart, so 8% cannot
+  // accidentally snap one onto its neighbour.
+  ok(ADR_RATIO_TOLERANCE >= 0.03 && ADR_RATIO_TOLERANCE <= 0.12,
+    "tolerance admits quote noise without reaching the next candidate",
+    String(ADR_RATIO_TOLERANCE));
+  const sorted = [...ADR_RATIO_CANDIDATES].sort((a, b) => a - b);
+  let tightest = Infinity;
+  for (let i = 1; i < sorted.length; i++) {
+    tightest = Math.min(tightest, (sorted[i] - sorted[i - 1]) / sorted[i]);
+  }
+  ok(tightest > ADR_RATIO_TOLERANCE * 2,
+    "no two candidate ratios are close enough for the tolerance to confuse them",
+    `tightest gap ${(tightest * 100).toFixed(0)}%`);
+}
+
+/* --------------------- share counts: fragments and staleness -------------- */
+console.log("\n· Share counts: a tranche row is not a total");
+{
+  // Wipro has no NumberOfSharesOutstanding, so the cascade reaches
+  // NumberOfSharesIssuedAndFullyPaid — which carries a 1,274,805 issuance
+  // tranche dated one day AFTER... i.e. whichever row happens to be latest
+  // decides between the real count and one 4,000x too small.
+  const facts = {
+    NumberOfSharesIssuedAndFullyPaid: { units: { shares: [
+      { end: "2024-12-04", val: 5_232_094_402, form: "20-F", filed: "2025-05-22" },
+      { end: "2024-12-05", val: 1_274_805, form: "20-F", filed: "2025-05-22" },
+    ] } },
+  };
+  eq(pickInstant(facts, ["NumberOfSharesIssuedAndFullyPaid"], null, 0.01).value,
+    5_232_094_402, "the tranche row is skipped and the real total is returned");
+  // Without the guard the bug reproduces — proving the guard is load-bearing.
+  eq(pickInstant(facts, ["NumberOfSharesIssuedAndFullyPaid"]).value, 1_274_805,
+    "unguarded, the later tranche row wins (this is the bug)");
+}
+{
+  // A guard that eats real data is worse than none: an ordinary series with
+  // no fragments must be untouched, including a genuine large buyback.
+  const facts = {
+    CommonStockSharesOutstanding: { units: { shares: [
+      { end: "2024-09-28", val: 15_408_000_000, form: "10-K", filed: "2024-11-01" },
+      { end: "2025-09-27", val: 14_608_963_000, form: "10-K", filed: "2025-10-30" },
+    ] } },
+  };
+  eq(pickInstant(facts, ["CommonStockSharesOutstanding"], null, 0.01).value, 14_608_963_000,
+    "a 5% buyback is still a total and is kept");
 }
 
 /* -------------------------------- beta ----------------------------------- */

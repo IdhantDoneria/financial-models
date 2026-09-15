@@ -192,8 +192,19 @@ function detectReportingCurrency(facts, revenueTags) {
   return seen.includes("USD") ? "USD" : seen[0];
 }
 
-/** Latest non-null numeric, restatement-aware. */
-function pickInstant(facts, tags, prefer = null) {
+/**
+ * Latest non-null numeric, restatement-aware.
+ *
+ * `minRelative` guards against a tag that mixes totals with fragments. Wipro
+ * has no NumberOfSharesOutstanding at all, so the cascade falls to
+ * NumberOfSharesIssuedAndFullyPaid — which carries a 1,274,805 row (an
+ * issuance tranche) one day before the 5,232,094,402 total. Taking whichever
+ * happens to be latest is a coin flip between the share count and a number
+ * four thousand times too small, and nothing downstream would question it.
+ * Rows below `minRelative` of the series maximum are therefore not totals and
+ * are skipped.
+ */
+function pickInstant(facts, tags, prefer = null, minRelative = 0) {
   for (const tag of tags) {
     const f = facts[tag];
     if (!f) continue;
@@ -206,8 +217,13 @@ function pickInstant(facts, tags, prefer = null) {
       unit = Object.keys(f.units).find((u) => u === "USD" || u === "shares")
           || Object.keys(f.units)[0];
     }
-    const rows = (f.units[unit] || []).filter((r) => typeof r.val === "number");
+    let rows = (f.units[unit] || []).filter((r) => typeof r.val === "number");
     if (!rows.length) continue;
+    if (minRelative > 0) {
+      const peak = Math.max(...rows.map((r) => Math.abs(r.val)));
+      rows = rows.filter((r) => Math.abs(r.val) >= peak * minRelative);
+      if (!rows.length) continue;
+    }
     // Two rows can share an `end` when a later filing restates it. Sort by end,
     // then by `filed`, and take the last — i.e. the most recently filed view of
     // the most recent period.
@@ -407,6 +423,96 @@ async function computeBeta(symbol) {
   return { beta, observations: n, benchmark: bench.name, benchmarkSymbol: bench.symbol };
 }
 
+/* ------------------------------- ADR ratios ------------------------------- *
+ * A depositary receipt is not one ordinary share. HDFC Bank's ADS represents
+ * three equity shares, ICICI's two; Infosys, Wipro and Dr Reddy's are 1:1.
+ * EDGAR reports the company's TOTAL ORDINARY shares while the quote fetched
+ * beside it is per ADS, so multiplying the two overstates market cap — and
+ * every per-share figure derived from it — by exactly that ratio. For HDB
+ * that is a 3x error on the headline number, with nothing in the output to
+ * suggest anything is wrong.
+ *
+ * The ratio is NOT hardcoded from memory. It is DERIVED at request time from
+ * the two live prices:
+ *
+ *     ratio = (adr_price_usd x usd_inr) / local_price_inr
+ *
+ * then snapped to the nearest conventional ratio only if it lands close to
+ * one. Measured against real quotes this comes out at 1.028 (INFY), 0.999
+ * (WIT), 3.043 (HDB), 2.063 (IBN) and 0.989 (RDY) — within ~3%, the rest
+ * being non-simultaneous closes and FX timing.
+ *
+ * That arithmetic is what makes the mapping below safe to maintain: if a
+ * company changes its ratio, or an entry here is simply wrong, the implied
+ * figure stops landing near a clean value and the whole conversion is
+ * refused rather than applied on a stale assumption.                        */
+
+//: ADR ticker -> its home listing. Only entries whose ratio has actually been
+//  reconciled against live quotes belong here; a guess adds no coverage,
+//  because an unreconcilable entry is refused at request time anyway.
+const ADR_LOCAL_LISTINGS = {
+  INFY: "INFY.NS",        // Infosys
+  WIT: "WIPRO.NS",        // Wipro
+  HDB: "HDFCBANK.NS",     // HDFC Bank
+  IBN: "ICICIBANK.NS",    // ICICI Bank
+  RDY: "DRREDDY.NS",      // Dr Reddy's Laboratories
+};
+
+//: Conventional depositary ratios. A derived figure that matches none of
+//  these within tolerance is treated as unverified, not rounded to the
+//  closest anyway.
+const ADR_RATIO_CANDIDATES = [0.5, 1, 2, 3, 4, 5, 6, 10];
+
+//: Real-quote error was 0.1-3.1%; 8% leaves room for a volatile day and a
+//  stale FX print while still rejecting a ratio that is genuinely wrong (the
+//  gap between adjacent candidates is never smaller than 25%).
+const ADR_RATIO_TOLERANCE = 0.08;
+
+let fxCache = null, fxCacheAt = 0;
+const FX_TTL = 3600 * 1000;
+
+async function usdTo(currency) {
+  if (currency === "USD") return 1;
+  if (fxCache && Date.now() - fxCacheAt < FX_TTL && fxCache[currency]) return fxCache[currency];
+  try {
+    const r = await fetch("https://open.er-api.com/v6/latest/USD",
+      { signal: AbortSignal.timeout(8000) });
+    if (!r.ok) return null;
+    const j = await r.json();
+    if (!j || !j.rates) return null;
+    fxCache = j.rates; fxCacheAt = Date.now();
+    return fxCache[currency] || null;
+  } catch { return null; }
+}
+
+/**
+ * Ordinary shares represented by one ADS, or null when it cannot be verified.
+ *
+ * Returning null is a real outcome, not a failure to try: the caller drops
+ * the share count entirely rather than publishing one that cannot be
+ * reconciled with the price beside it.
+ */
+async function deriveAdrRatio(adrSymbol, adrPrice) {
+  const local = ADR_LOCAL_LISTINGS[adrSymbol.toUpperCase()];
+  if (!local || !adrPrice || adrPrice.currency !== "USD") return null;
+
+  const localQuote = await fetchPrice(local);
+  if (!localQuote || !localQuote.price) return null;
+  const fx = await usdTo(localQuote.currency);
+  if (!fx) return null;
+
+  const implied = (adrPrice.price * fx) / localQuote.price;
+  if (!Number.isFinite(implied) || implied <= 0) return null;
+
+  const nearest = ADR_RATIO_CANDIDATES
+    .reduce((a, b) => (Math.abs(b - implied) < Math.abs(a - implied) ? b : a));
+  const error = Math.abs(nearest - implied) / nearest;
+  if (error > ADR_RATIO_TOLERANCE) return null;   // no conventional ratio fits
+
+  return { ratio: nearest, implied, error, localSymbol: local,
+           localPrice: localQuote.price, localCurrency: localQuote.currency, fx };
+}
+
 /** Live share price — the one figure EDGAR structurally cannot provide. */
 async function fetchPrice(ticker) {
   try {
@@ -588,13 +694,15 @@ module.exports = async (req, res) => {
     flows[k] = pickAnnualSeries(facts, tags, 6, reportingCurrency);
   }
   for (const [k, tags] of Object.entries(stockTags)) {
-    stocks[k] = pickInstant(facts, tags, k === "shares_outstanding" ? null : reportingCurrency);
+    //: Share counts are unit-'shares' so the currency pin doesn't apply, and
+    //  they get the fragment guard — see pickInstant's minRelative.
+    stocks[k] = k === "shares_outstanding"
+      ? pickInstant(facts, tags, null, 0.01)
+      : pickInstant(facts, tags, reportingCurrency);
   }
   if (taxonomy === "ifrs-full") {
     notes.push("Figures come from a Form 20-F filed under IFRS and denominated in USD, "
-      + "as is the ADR price shown. Share count is total ordinary shares, while the price "
-      + "is per ADR — confirm the ADR ratio before relying on per-share or market-cap "
-      + "outputs. Enterprise-value results are unaffected.");
+      + "the same currency as the quoted price.");
   }
 
   const latestFlow = (k) => {
@@ -673,6 +781,9 @@ module.exports = async (req, res) => {
     fetchPrice(entry.symbol),
     computeBeta(entry.symbol).catch(() => null),
   ]);
+  //: Needs the ADR price, so it runs after that resolves rather than beside it.
+  const adr = await deriveAdrRatio(entry.symbol, priceInfo).catch(() => null);
+  const isKnownAdr = !!ADR_LOCAL_LISTINGS[entry.symbol.toUpperCase()];
   if (!priceInfo) {
     notes.push("Live share price unavailable; enter it manually or the models will use their documented fallback.");
   }
@@ -691,6 +802,52 @@ module.exports = async (req, res) => {
     notes.push("Beta could not be computed from price history (too few observations or no price series); the sector-median fallback will apply instead.");
   }
 
+  /* ---- reconcile the share count with the price it will be multiplied by --
+   * EDGAR reports total ORDINARY shares. The quote is per ADS. Publishing the
+   * two together without converting overstates market cap by the depositary
+   * ratio — 3x for HDFC Bank — and every per-share figure with it.          */
+  const ordinaryShares = stocks.shares_outstanding?.value ?? null;
+  let adsShares = ordinaryShares;
+  if (isKnownAdr && ordinaryShares !== null) {
+    if (adr) {
+      adsShares = ordinaryShares / adr.ratio;
+      notes.push(adr.ratio === 1
+        ? `Depositary ratio verified as 1 ADS = 1 ordinary share (implied `
+          + `${adr.implied.toFixed(3)} from the ${adr.localSymbol} price), so the share `
+          + `count needs no adjustment.`
+        : `Share count converted to an ADS basis: 1 ADS = ${adr.ratio} ordinary shares, `
+          + `derived from this listing's price against ${adr.localSymbol} and verified to `
+          + `${(adr.error * 100).toFixed(1)}%. Reported ordinary shares `
+          + `${ordinaryShares.toLocaleString("en-US")} become `
+          + `${Math.round(adsShares).toLocaleString("en-US")} ADS, so market cap and every `
+          + `per-share figure line up with the quoted price.`);
+    } else {
+      //: Known ADR, unverifiable ratio — withhold rather than publish a count
+      //  that silently disagrees with the price. A missing input falls back to
+      //  a documented default; a wrong one is presented as a finding.
+      adsShares = null;
+      notes.push("This is a depositary receipt and the ADS-to-ordinary-share ratio could not "
+        + "be verified against the home listing right now, so the share count is withheld "
+        + "rather than reported on a basis that may not match the quoted price. Enter it "
+        + "manually on an ADS basis if you need per-share or market-cap output.");
+    }
+  }
+
+  //: A share count is an instant, and EDGAR's most recent one can predate the
+  //  live price by a year or more — Wipro's newest is Dec 2024, before its
+  //  1:1 bonus issue, so market cap computed from it understates by half.
+  //  Nothing in the arithmetic can detect that, so it is disclosed.
+  const sharesAsOf = stocks.shares_outstanding?.end || null;
+  if (sharesAsOf && adsShares !== null) {
+    const monthsOld = (Date.now() - Date.parse(sharesAsOf)) / (30.44 * 86_400_000);
+    if (monthsOld > 15) {
+      notes.push(`Share count is as of ${sharesAsOf}, ${Math.round(monthsOld)} months old — `
+        + `older than one annual reporting cycle. Any split, bonus issue or buyback since `
+        + `then is not reflected, so verify it before relying on market cap or per-share `
+        + `figures.`);
+    }
+  }
+
   const latestEnd = revSeries.length ? revSeries[revSeries.length - 1].end
                                      : (stocks.cash_and_equivalents?.end || null);
 
@@ -701,12 +858,14 @@ module.exports = async (req, res) => {
     company_name: entityName,
     ticker: entry.symbol,
     fiscal_year: latestEnd ? Number(latestEnd.slice(0, 4)) : null,
+    shares_as_of: sharesAsOf,
     revenue,
     free_cash_flows: freeCashFlows,
     net_income: netIncome,
     total_debt: totalDebt,
     cash_and_equivalents: cash === null && sti === null ? null : (cash || 0) + (sti || 0),
-    shares_outstanding: stocks.shares_outstanding?.value ?? null,
+    //: On the SAME basis as the price beside it — see adsShares below.
+    shares_outstanding: adsShares,
     //: Only when the quote and the filing are in the same currency. A USD ADR
     //  price beside INR financials would silently corrupt every per-share and
     //  market-implied result; reporting it missing is the honest outcome.
@@ -761,6 +920,8 @@ module.exports = async (req, res) => {
     missing,
     notes,
     beta: betaInfo || null,
+    adr: adr ? { ratio: adr.ratio, implied: Number(adr.implied.toFixed(4)),
+                 localSymbol: adr.localSymbol } : null,
     sources: [
       { name: "SEC EDGAR XBRL companyfacts", url: `https://data.sec.gov/api/xbrl/companyfacts/CIK${entry.cik}.json` },
       ...(priceInfo ? [{ name: "Share price", url: "Yahoo Finance chart API" }] : []),
@@ -774,6 +935,7 @@ module.exports = async (req, res) => {
 //  parts that are easy to get subtly wrong (share-class spelling, restatement
 //  dedup, period alignment) and impossible to check by eyeballing a live
 //  response, so they are tested directly rather than only through the handler.
-module.exports._internals = { resolveTicker, detectReportingCurrency, pickInstant, pickAnnualSeries, FLOW_TAGS, STOCK_TAGS,
+module.exports._internals = { resolveTicker, detectReportingCurrency, deriveAdrRatio,
+                              ADR_LOCAL_LISTINGS, ADR_RATIO_CANDIDATES, ADR_RATIO_TOLERANCE, pickInstant, pickAnnualSeries, FLOW_TAGS, STOCK_TAGS,
                               IFRS_FLOW_TAGS, IFRS_STOCK_TAGS,
                               benchmarkFor, monthlyReturns, monthKey, BENCHMARKS, MIN_BETA_OBSERVATIONS };
