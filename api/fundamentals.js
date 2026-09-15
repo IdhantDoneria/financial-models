@@ -544,11 +544,18 @@ const SPLIT_ALLOTMENT_LAG_MS = 14 * 86_400_000;
  * split/bonus multiplier for whatever hadn't yet been allotted at that date.
  * Separated from the fetch below so it can be tested against real fixture
  * data without a network call.
+ *
+ * `splitsObj === null` means the lookup COULDN'T be done (the fetch failed)
+ * and is distinct from `{}`, which means it succeeded and genuinely found
+ * nothing — collapsing the two would silently present an unverified share
+ * count as though it had been checked, so null propagates rather than being
+ * treated as "no splits".
  */
 function computeSplitAdjustment(splitsObj, sinceISODate) {
   const sinceMs = Date.parse(sinceISODate);
   if (!Number.isFinite(sinceMs)) return null;
-  if (!splitsObj || typeof splitsObj !== "object") return { ratio: 1, events: [] };
+  if (splitsObj == null) return null;                        // fetch failed — unknown, not "none"
+  if (typeof splitsObj !== "object") return { ratio: 1, events: [] };
 
   const events = Object.values(splitsObj)
     .filter(s => typeof s?.date === "number" && s.numerator > 0 && s.denominator > 0
@@ -561,15 +568,15 @@ function computeSplitAdjustment(splitsObj, sinceISODate) {
 }
 
 /**
- * Cumulative split/bonus multiplier for `symbol` covering any corporate
- * action not yet reflected in a share count filed `sinceISODate`, or null if
- * it can't be determined (network failure, bad date, no event data).
- *
- * Returning { ratio: 1, events: [] } is the common, real outcome — most
- * filings have no split in the gap — not a failure to find one.
+ * `symbol`'s raw split history from Yahoo's keyless chart endpoint, or null
+ * on failure. Fetched ONCE and shared: the share count and the disclosed
+ * dividend can each predate a different corporate action (a filing's balance
+ * sheet and income statement don't always carry the same as-of date), so
+ * each needs its own call to computeSplitAdjustment() against its own
+ * reference date — refetching per figure would double the network cost for
+ * data that doesn't change.
  */
-async function fetchSplitAdjustment(symbol, sinceISODate) {
-  if (!sinceISODate) return null;
+async function fetchRawSplits(symbol) {
   try {
     const r = await fetch(
       `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}`
@@ -578,7 +585,7 @@ async function fetchSplitAdjustment(symbol, sinceISODate) {
         signal: AbortSignal.timeout(8000) });
     if (!r.ok) return null;
     const j = await r.json();
-    return computeSplitAdjustment(j?.chart?.result?.[0]?.events?.splits, sinceISODate);
+    return j?.chart?.result?.[0]?.events?.splits || {};
   } catch { return null; }
 }
 
@@ -854,11 +861,12 @@ module.exports = async (req, res) => {
   //: Price, beta and the split check are all independent market lookups,
   //  fetched together — this endpoint is already the slowest thing in the
   //  intake, and none of the three depends on another.
-  const [priceInfo, betaInfo, splitAdj] = await Promise.all([
+  const [priceInfo, betaInfo, rawSplits] = await Promise.all([
     fetchPrice(entry.symbol),
     computeBeta(entry.symbol).catch(() => null),
-    fetchSplitAdjustment(splitCheckSymbol, sharesAsOf).catch(() => null),
+    fetchRawSplits(splitCheckSymbol).catch(() => null),
   ]);
+  const splitAdj = computeSplitAdjustment(rawSplits, sharesAsOf);
   //: Needs the ADR price, so it runs after that resolves rather than beside it.
   const adr = await deriveAdrRatio(entry.symbol, priceInfo).catch(() => null);
   if (!priceInfo) {
@@ -956,6 +964,40 @@ module.exports = async (req, res) => {
       + "the share count above has not been adjusted for one.");
   }
 
+  //: A per-share dividend has the OPPOSITE exposure to a split from the share
+  //  count: more shares now split the same payout, so a dividend disclosed
+  //  BEFORE a bonus issue is DIVIDED by the ratio, not multiplied, to state
+  //  it on the same per-share basis as the (already-adjusted) current price.
+  //  Left uncorrected this doesn't fail loudly — it feeds straight into the
+  //  Gordon Growth Model (assumptions.py) as `dividend`, which scales
+  //  linearly with it, so a stale pre-bonus dividend would silently double
+  //  that model's fair-value output for exactly the tickers this fix targets.
+  //  Checked against the dividend's OWN period end, not the share count's —
+  //  a filing's income statement and balance sheet don't always carry the
+  //  same as-of date, so the two can need different corrections.
+  let dividendPerShare = latestFlow("dividends_per_share");
+  const dividendPeriodEnd = flows.dividends_per_share?.series?.length
+    ? flows.dividends_per_share.series[flows.dividends_per_share.series.length - 1].end
+    : null;
+  if (dividendPerShare !== null && dividendPeriodEnd) {
+    const dividendSplitAdj = computeSplitAdjustment(rawSplits, dividendPeriodEnd);
+    const dividendSplitEvents = dividendSplitAdj?.events || [];
+    if (dividendSplitEvents.length) {
+      const before = dividendPerShare;
+      dividendPerShare = dividendPerShare / dividendSplitAdj.ratio;
+      const desc = dividendSplitEvents.map(s => {
+        const d = new Date(s.date * 1000).toISOString().slice(0, 10);
+        return `${s.numerator}:${s.denominator} on ${d}`;
+      }).join(", ");
+      notes.push(`Dividend per share adjusted for a corporate action since it was declared `
+        + `(${desc}): ${before.toFixed(4)} becomes ${dividendPerShare.toFixed(4)} per `
+        + `current share, so it is comparable to today's price rather than overstating yield.`);
+    } else if (dividendSplitAdj === null) {
+      notes.push("Could not check for a stock split or bonus issue since the dividend was "
+        + "declared; the dividend per share above has not been adjusted for one.");
+    }
+  }
+
   const latestEnd = revSeries.length ? revSeries[revSeries.length - 1].end
                                      : (stocks.cash_and_equivalents?.end || null);
 
@@ -993,7 +1035,8 @@ module.exports = async (req, res) => {
     operating_margin: operatingMargin,
     //: Annual figure only — see the dividends_per_share comment in FLOW_TAGS
     //  for why taking the most recent row instead would understate it 4x.
-    dividend_per_share: latestFlow("dividends_per_share"),
+    //  Split-adjusted above when a corporate action postdates the disclosure.
+    dividend_per_share: dividendPerShare,
     //: Always true for anything this endpoint returns: pickAnnualSeries only
     //  admits ~365-day periods, so a quarterly declaration can't leak through
     //  and be re-annualised a second time downstream.
