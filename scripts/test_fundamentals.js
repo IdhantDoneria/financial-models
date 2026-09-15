@@ -18,7 +18,8 @@
 const { _internals } = require("../api/fundamentals.js");
 const { resolveTicker, pickInstant, pickAnnualSeries, detectReportingCurrency,
         benchmarkFor, monthlyReturns, MIN_BETA_OBSERVATIONS,
-        ADR_LOCAL_LISTINGS, ADR_RATIO_CANDIDATES, ADR_RATIO_TOLERANCE } = _internals;
+        ADR_LOCAL_LISTINGS, ADR_RATIO_CANDIDATES, ADR_RATIO_TOLERANCE,
+        computeSplitAdjustment, SPLIT_ALLOTMENT_LAG_MS } = _internals;
 
 let passed = 0, failed = 0;
 function ok(cond, label, detail) {
@@ -345,6 +346,90 @@ console.log("\n· Share counts: a tranche row is not a total");
   };
   eq(pickInstant(facts, ["CommonStockSharesOutstanding"], null, 0.01).value, 14_608_963_000,
     "a 5% buyback is still a total and is kept");
+}
+
+/* ------------------------ share-count freshness --------------------------- *
+ * Fixtures below are real `events.splits` payloads pulled live from Yahoo's
+ * chart endpoint (verified 2026-09-15) for the tickers that motivated this:
+ * Wipro's 1:1 bonus issue (Dec 2024) and HDFC Bank's 1:1 bonus (Aug 2025)
+ * each doubled shares outstanding after EDGAR's on-file count — confirmed
+ * against each company's real post-bonus share count via public reporting,
+ * not assumed.                                                              */
+console.log("\n· Share-count freshness: corporate actions since the filing date are applied, not just flagged");
+{
+  // Wipro: bonus record date 2024-12-03, one day BEFORE EDGAR's own as-of
+  // date of 2024-12-04 — yet the filed count (5,232,094,402) was still the
+  // pre-bonus figure. A same-side date comparison would miss this entirely;
+  // the allotment-lag buffer is what catches it.
+  const wiproSplits = {
+    "1733197500": { date: 1733197500, numerator: 2, denominator: 1, splitRatio: "2:1" },
+  };
+  const adj = computeSplitAdjustment(wiproSplits, "2024-12-04");
+  ok(adj !== null && adj.events.length === 1, "the bonus is found despite filing 1 day after the record date");
+  eq(adj.ratio, 2, "1:1 bonus doubles the multiplier");
+  const adjusted = Math.round(5_232_094_402 * adj.ratio);
+  ok(Math.abs(adjusted - 10_472_085_808) / 10_472_085_808 < 0.01,
+    "adjusted Wipro count lands within 1% of its real post-bonus count", String(adjusted));
+}
+{
+  // HDFC Bank: two splits on file, only the second (Aug 2025) postdates the
+  // Mar-2025 filing. Only that one may apply — applying both would double
+  // the count a second time on top of an already-correct earlier split.
+  const hdfcSplits = {
+    "1567276200": { date: 1568864700, numerator: 2, denominator: 1, splitRatio: "2:1" }, // 2019, must be ignored
+    "1753986600": { date: 1756179900, numerator: 2, denominator: 1, splitRatio: "2:1" }, // 2025, must apply
+  };
+  const adj = computeSplitAdjustment(hdfcSplits, "2025-03-31");
+  eq(adj.events.length, 1, "only the split after the filing date is applied, not the 2019 one too");
+  eq(adj.ratio, 2, "the 2019 split does not compound into the multiplier");
+  const adjustedOrdinary = Math.round(7_652_221_674 * adj.ratio);
+  ok(Math.abs(adjustedOrdinary - 15_354_079_522) / 15_354_079_522 < 0.01,
+    "adjusted HDFC Bank ordinary count lands within 1% of its real post-bonus count",
+    String(adjustedOrdinary));
+}
+{
+  // Dr Reddy's: split (Oct 2024) predates its own filing's as-of date
+  // (Mar 2025) by 5 months, well outside the allotment-lag buffer — the
+  // filed count already reflects it, so applying it again would be wrong.
+  const rdySplits = {
+    "1727721000": { date: 1730087100, numerator: 5, denominator: 1, splitRatio: "5:1" },
+  };
+  const adj = computeSplitAdjustment(rdySplits, "2025-03-31");
+  eq(adj.events.length, 0, "a split well before the filing date is not re-applied");
+  eq(adj.ratio, 1, "no adjustment when the filing already postdates the split");
+}
+{
+  // No corporate action at all — the common case (Infosys, AAPL) — must be
+  // silent: ratio 1, no events, nothing for the caller to narrate.
+  const adj = computeSplitAdjustment({}, "2025-03-31");
+  eq(adj.ratio, 1, "an empty split history yields no adjustment");
+  eq(adj.events.length, 0, "and reports no events to describe");
+}
+{
+  // Malformed inputs must degrade safely rather than throw or silently
+  // fabricate a ratio.
+  ok(computeSplitAdjustment({ a: {} }, "2025-03-31").ratio === 1,
+    "a split entry missing numerator/denominator is skipped, not NaN-multiplied");
+  ok(computeSplitAdjustment(null, "2025-03-31").ratio === 1,
+    "no split data at all yields no adjustment, not a crash");
+  ok(computeSplitAdjustment({}, "not-a-date") === null,
+    "an unparseable as-of date returns null rather than guessing");
+  ok(computeSplitAdjustment({}, null) === null,
+    "a missing as-of date returns null rather than guessing");
+}
+{
+  // A reverse split must shrink the count, not just be ignored for having
+  // numerator < denominator.
+  const reverseSplit = { "1": { date: Math.floor(Date.now() / 1000) - 86400,
+                                 numerator: 1, denominator: 5, splitRatio: "1:5" } };
+  const yesterday = new Date(Date.now() - 2 * 86_400_000).toISOString().slice(0, 10);
+  const adj = computeSplitAdjustment(reverseSplit, yesterday);
+  eq(adj.ratio, 0.2, "a 1:5 reverse split shrinks the multiplier to a fifth");
+}
+{
+  ok(SPLIT_ALLOTMENT_LAG_MS >= 7 * 86_400_000 && SPLIT_ALLOTMENT_LAG_MS <= 21 * 86_400_000,
+    "the allotment-lag buffer is on the order of the real record-to-credit gap (about 2 weeks)",
+    String(SPLIT_ALLOTMENT_LAG_MS / 86_400_000) + " days");
 }
 
 /* -------------------------------- beta ----------------------------------- */

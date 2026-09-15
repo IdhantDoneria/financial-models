@@ -513,6 +513,75 @@ async function deriveAdrRatio(adrSymbol, adrPrice) {
            localPrice: localQuote.price, localCurrency: localQuote.currency, fx };
 }
 
+/* ----------------------------- share freshness ----------------------------- *
+ * A filed share count is an instant that can predate the live price by a year
+ * or more, and the dominant thing that goes wrong in that gap is a corporate
+ * action: a split or bonus issue mechanically multiplies the count, dwarfing
+ * gradual drift from buybacks or fresh issuance. HDFC Bank's own 1:1 bonus
+ * (Aug 2025) and Wipro's (Dec 2024) each doubled shares outstanding after the
+ * filing EDGAR had on hand — one testable case (Wipro) understated its market
+ * cap by half, the other (HDFC Bank, only discovered while verifying this fix)
+ * was silently wrong the same way and had gone unnoticed.
+ *
+ * This is fixable rather than just flaggable: Yahoo's keyless chart endpoint
+ * (already used for price and beta — no new external dependency) discloses
+ * `events.splits`, so a share count can be rolled forward instead of merely
+ * captioned as stale.                                                        */
+
+//: A split's "record date" and the date a filing's cover page can truthfully
+//  call the new count "outstanding" are not the same day — Wipro's bonus
+//  record date was 2024-12-03, one day before EDGAR's own as-of date of
+//  2024-12-04, yet the filed count was still the PRE-bonus figure (verified
+//  against Wipro's actual ~10.47B post-bonus count). Allotment lags the
+//  record date by up to about two weeks, so a split just inside that window
+//  is treated as not yet reflected rather than skipped on a same-side date
+//  comparison that would otherwise miss exactly the case this exists for.
+const SPLIT_ALLOTMENT_LAG_MS = 14 * 86_400_000;
+
+/**
+ * Pure half of the split lookup: given Yahoo's raw `events.splits` object and
+ * the ISO date a share count was filed as-of, return the cumulative
+ * split/bonus multiplier for whatever hadn't yet been allotted at that date.
+ * Separated from the fetch below so it can be tested against real fixture
+ * data without a network call.
+ */
+function computeSplitAdjustment(splitsObj, sinceISODate) {
+  const sinceMs = Date.parse(sinceISODate);
+  if (!Number.isFinite(sinceMs)) return null;
+  if (!splitsObj || typeof splitsObj !== "object") return { ratio: 1, events: [] };
+
+  const events = Object.values(splitsObj)
+    .filter(s => typeof s?.date === "number" && s.numerator > 0 && s.denominator > 0
+      && s.date * 1000 > sinceMs - SPLIT_ALLOTMENT_LAG_MS)
+    .sort((a, b) => a.date - b.date);
+  if (!events.length) return { ratio: 1, events: [] };
+
+  const ratio = events.reduce((acc, s) => acc * (s.numerator / s.denominator), 1);
+  return { ratio, events };
+}
+
+/**
+ * Cumulative split/bonus multiplier for `symbol` covering any corporate
+ * action not yet reflected in a share count filed `sinceISODate`, or null if
+ * it can't be determined (network failure, bad date, no event data).
+ *
+ * Returning { ratio: 1, events: [] } is the common, real outcome — most
+ * filings have no split in the gap — not a failure to find one.
+ */
+async function fetchSplitAdjustment(symbol, sinceISODate) {
+  if (!sinceISODate) return null;
+  try {
+    const r = await fetch(
+      `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}`
+        + `?interval=1mo&range=10y&events=split`,
+      { headers: { "User-Agent": "Mozilla/5.0 (compatible; FinModelsTerminal/1.0)" },
+        signal: AbortSignal.timeout(8000) });
+    if (!r.ok) return null;
+    const j = await r.json();
+    return computeSplitAdjustment(j?.chart?.result?.[0]?.events?.splits, sinceISODate);
+  } catch { return null; }
+}
+
 /** Live share price — the one figure EDGAR structurally cannot provide. */
 async function fetchPrice(ticker) {
   try {
@@ -772,18 +841,26 @@ module.exports = async (req, res) => {
     notes.push("Operating margin shown is a net-income margin derived from the income statement, not a tagged operating margin.");
   }
 
+  const isKnownAdr = !!ADR_LOCAL_LISTINGS[entry.symbol.toUpperCase()];
+  const sharesAsOf = stocks.shares_outstanding?.end || null;
+  //: EDGAR reports the underlying company's own share count, so a corporate
+  //  action on that count happens on ITS listing, not the ADR ticker traded
+  //  in New York — checking splits on the ADR itself would miss every one.
+  const splitCheckSymbol = isKnownAdr ? ADR_LOCAL_LISTINGS[entry.symbol.toUpperCase()]
+                                       : entry.symbol;
+
   //: entry.symbol, not the raw input — Yahoo also spells share classes
   //  with a hyphen, so a user's "BRK.B" must become "BRK-B" here too.
-  //: Price and beta are both market facts, fetched together. Beta needs two
-  //  chart calls of its own, so all three run concurrently rather than
-  //  serially — this endpoint is already the slowest thing in the intake.
-  const [priceInfo, betaInfo] = await Promise.all([
+  //: Price, beta and the split check are all independent market lookups,
+  //  fetched together — this endpoint is already the slowest thing in the
+  //  intake, and none of the three depends on another.
+  const [priceInfo, betaInfo, splitAdj] = await Promise.all([
     fetchPrice(entry.symbol),
     computeBeta(entry.symbol).catch(() => null),
+    fetchSplitAdjustment(splitCheckSymbol, sharesAsOf).catch(() => null),
   ]);
   //: Needs the ADR price, so it runs after that resolves rather than beside it.
   const adr = await deriveAdrRatio(entry.symbol, priceInfo).catch(() => null);
-  const isKnownAdr = !!ADR_LOCAL_LISTINGS[entry.symbol.toUpperCase()];
   if (!priceInfo) {
     notes.push("Live share price unavailable; enter it manually or the models will use their documented fallback.");
   }
@@ -802,11 +879,33 @@ module.exports = async (req, res) => {
     notes.push("Beta could not be computed from price history (too few observations or no price series); the sector-median fallback will apply instead.");
   }
 
+  //: A filed share count is an instant. Roll it forward through any split or
+  //  bonus issue EDGAR's snapshot predates, BEFORE the ADR ratio is applied —
+  //  the ratio is a fixed multiple of the ordinary count, so getting the
+  //  ordinary count right first is what makes the ADS figure right too.
+  //  Confirmed live: Wipro's Dec-2024 filing (5.23B) understated its real
+  //  ~10.47B post-bonus count by exactly its 1:1 bonus; HDFC Bank's Mar-2025
+  //  filing (7.65B ordinary) understated its real ~15.35B post-bonus count
+  //  the same way — the second only surfaced while verifying this fix.
+  let ordinaryShares = stocks.shares_outstanding?.value ?? null;
+  const splitEvents = splitAdj?.events || [];
+  if (ordinaryShares !== null && splitEvents.length) {
+    const before = ordinaryShares;
+    ordinaryShares = ordinaryShares * splitAdj.ratio;
+    const desc = splitEvents.map(s => {
+      const d = new Date(s.date * 1000).toISOString().slice(0, 10);
+      return `${s.numerator}:${s.denominator} on ${d}`;
+    }).join(", ");
+    notes.push(`Share count adjusted for a corporate action not yet reflected in the filing `
+      + `(${desc}, from ${splitCheckSymbol}'s public trading history): `
+      + `${Math.round(before).toLocaleString("en-US")} becomes `
+      + `${Math.round(ordinaryShares).toLocaleString("en-US")} ordinary shares.`);
+  }
+
   /* ---- reconcile the share count with the price it will be multiplied by --
    * EDGAR reports total ORDINARY shares. The quote is per ADS. Publishing the
    * two together without converting overstates market cap by the depositary
    * ratio — 3x for HDFC Bank — and every per-share figure with it.          */
-  const ordinaryShares = stocks.shares_outstanding?.value ?? null;
   let adsShares = ordinaryShares;
   if (isKnownAdr && ordinaryShares !== null) {
     if (adr) {
@@ -814,13 +913,12 @@ module.exports = async (req, res) => {
       notes.push(adr.ratio === 1
         ? `Depositary ratio verified as 1 ADS = 1 ordinary share (implied `
           + `${adr.implied.toFixed(3)} from the ${adr.localSymbol} price), so the share `
-          + `count needs no adjustment.`
+          + `count needs no further adjustment.`
         : `Share count converted to an ADS basis: 1 ADS = ${adr.ratio} ordinary shares, `
           + `derived from this listing's price against ${adr.localSymbol} and verified to `
-          + `${(adr.error * 100).toFixed(1)}%. Reported ordinary shares `
-          + `${ordinaryShares.toLocaleString("en-US")} become `
-          + `${Math.round(adsShares).toLocaleString("en-US")} ADS, so market cap and every `
-          + `per-share figure line up with the quoted price.`);
+          + `${(adr.error * 100).toFixed(1)}%. ${Math.round(ordinaryShares).toLocaleString("en-US")} `
+          + `ordinary shares become ${Math.round(adsShares).toLocaleString("en-US")} ADS, so `
+          + `market cap and every per-share figure line up with the quoted price.`);
     } else {
       //: Known ADR, unverifiable ratio — withhold rather than publish a count
       //  that silently disagrees with the price. A missing input falls back to
@@ -833,19 +931,29 @@ module.exports = async (req, res) => {
     }
   }
 
-  //: A share count is an instant, and EDGAR's most recent one can predate the
-  //  live price by a year or more — Wipro's newest is Dec 2024, before its
-  //  1:1 bonus issue, so market cap computed from it understates by half.
-  //  Nothing in the arithmetic can detect that, so it is disclosed.
-  const sharesAsOf = stocks.shares_outstanding?.end || null;
+  //: The split check only catches a corporate action — it cannot see a
+  //  buyback or fresh issuance, which change the count gradually with no
+  //  discrete event to look up. So a materially old filing still gets
+  //  flagged even after adjustment, just with an accurate caveat about what
+  //  was and wasn't corrected for.
   if (sharesAsOf && adsShares !== null) {
     const monthsOld = (Date.now() - Date.parse(sharesAsOf)) / (30.44 * 86_400_000);
     if (monthsOld > 15) {
+      const caveat = splitEvents.length
+        ? "Known splits and bonus issues since then have been applied above, but a buyback "
+          + "or fresh share issuance would not be reflected."
+        : "No split or bonus issue was found in the meantime, but a buyback or fresh share "
+          + "issuance would not be reflected.";
       notes.push(`Share count is as of ${sharesAsOf}, ${Math.round(monthsOld)} months old — `
-        + `older than one annual reporting cycle. Any split, bonus issue or buyback since `
-        + `then is not reflected, so verify it before relying on market cap or per-share `
-        + `figures.`);
+        + `older than one annual reporting cycle. ${caveat} Verify it before relying on `
+        + `market cap or per-share figures.`);
     }
+  } else if (splitAdj === null && sharesAsOf) {
+    //: The split lookup itself failed (network/parse error, not "no splits
+    //  found") — say so rather than silently presenting an unadjusted count
+    //  as if it had already been checked.
+    notes.push("Could not check for a stock split or bonus issue since the filing date; "
+      + "the share count above has not been adjusted for one.");
   }
 
   const latestEnd = revSeries.length ? revSeries[revSeries.length - 1].end
@@ -938,4 +1046,5 @@ module.exports = async (req, res) => {
 module.exports._internals = { resolveTicker, detectReportingCurrency, deriveAdrRatio,
                               ADR_LOCAL_LISTINGS, ADR_RATIO_CANDIDATES, ADR_RATIO_TOLERANCE, pickInstant, pickAnnualSeries, FLOW_TAGS, STOCK_TAGS,
                               IFRS_FLOW_TAGS, IFRS_STOCK_TAGS,
-                              benchmarkFor, monthlyReturns, monthKey, BENCHMARKS, MIN_BETA_OBSERVATIONS };
+                              benchmarkFor, monthlyReturns, monthKey, BENCHMARKS, MIN_BETA_OBSERVATIONS,
+                              computeSplitAdjustment, SPLIT_ALLOTMENT_LAG_MS };
