@@ -98,6 +98,52 @@ def test_pdf_sourced_data_still_cites_the_pdf():
     assert "SEC XBRL" not in citations
 
 
+def test_a_regressed_beta_is_never_described_as_a_filing_disclosure():
+    """Beta has no XBRL concept — searching a filer's whole us-gaap taxonomy
+    for "beta" returns nothing, because no company reports how its returns
+    co-move with the market. The ticker path computes it; calling that "from
+    the company's SEC XBRL filing data" would be a false citation on the one
+    input most likely to be challenged."""
+    label = AutoAssumer._beta_source(_edgar())
+    assert "XBRL" not in label
+    assert "regression" in label.lower()
+    assert "market statistic" in label.lower()
+
+
+def test_market_only_listings_describe_beta_the_same_way():
+    """A non-US listing gets price + beta and nothing else; its beta is
+    computed by the same regression and must say so."""
+    label = AutoAssumer._beta_source(ExtractedFinancials(backends_used=["market-data"]))
+    assert "regression" in label.lower()
+
+
+def test_a_pdf_sourced_beta_still_cites_the_pdf():
+    """Filings do occasionally quote a beta in a valuation note, and that one
+    really was read off the document."""
+    assert AutoAssumer._beta_source(_pdf()) == "Scraped from PDF."
+    assert AutoAssumer._beta_source(ExtractedFinancials()) == "Scraped from PDF."
+
+
+def test_beta_and_general_provenance_do_not_share_wording():
+    """The two must stay distinct: a filing figure and a regressed statistic
+    have genuinely different origins, and collapsing them is how the false
+    citation got introduced in the first place."""
+    data = _edgar()
+    assert AutoAssumer._beta_source(data) != AutoAssumer._disclosed_source(data)
+
+
+def test_full_rationale_with_a_beta_names_the_regression_not_the_filing():
+    data = _edgar(
+        company_name="Apple Inc.", revenue=416_161_000_000.0, beta=1.087,
+        free_cash_flows=[98_767_000_000.0, 108_807_000_000.0],
+        depreciation_amortization=11_445_000_000.0, rd_expense=34_550_000_000.0,
+        capital_expenditures=12_715_000_000.0,
+    )
+    beta_line = AutoAssumer().build(data).rationale[("CAPM", "beta")]
+    assert "XBRL" not in beta_line, f"beta must not claim a filing source: {beta_line}"
+    assert "regression" in beta_line.lower()
+
+
 # --------------------------------------------------------------------------- #
 # The lazy-pandas breakage
 # --------------------------------------------------------------------------- #

@@ -16,7 +16,8 @@
 // error, which is the failure mode this whole product exists to avoid.
 
 const { _internals } = require("../api/fundamentals.js");
-const { resolveTicker, pickInstant, pickAnnualSeries } = _internals;
+const { resolveTicker, pickInstant, pickAnnualSeries, detectReportingCurrency,
+        benchmarkFor, monthlyReturns, MIN_BETA_OBSERVATIONS } = _internals;
 
 let passed = 0, failed = 0;
 function ok(cond, label, detail) {
@@ -176,6 +177,137 @@ console.log("\n· Scale — EDGAR reports raw currency units and must NOT be res
   const v = pickAnnualSeries(facts, ["Revenues"]).series[0].val;
   ok(v > 1e11, "Apple-scale revenue stays in raw dollars (~4.2e11), not millions", String(v));
   eq(v, 416161000000, "value passes through untouched");
+}
+
+/* --------------------------- tag migration / staleness ------------------- */
+console.log("\n· Cascade prefers the FRESHEST tag, not the first one listed");
+{
+  // Infosys tagged `Revenue` until IFRS 15 (2018) and
+  // `RevenueFromContractsWithCustomers` after. First-match order returned
+  // FY2018's $10.9bn as if it were current — seven-year-old revenue in a
+  // perfectly ordinary shape.
+  const facts = {
+    Revenue: { units: { USD: [
+      { start: "2017-04-01", end: "2018-03-31", val: 10_939_000_000, form: "20-F", filed: "2018-06-01" },
+    ] } },
+    RevenueFromContractsWithCustomers: { units: { USD: [
+      { start: "2024-04-01", end: "2025-03-31", val: 19_277_000_000, form: "20-F", filed: "2025-06-01" },
+    ] } },
+  };
+  // Cascade deliberately lists the newer tag FIRST here, but the guarantee is
+  // recency, so it must also hold with the stale tag listed first.
+  const got = pickAnnualSeries(facts, ["Revenue", "RevenueFromContractsWithCustomers"]);
+  eq(got.tag, "RevenueFromContractsWithCustomers", "abandoned tag loses to the current one");
+  eq(got.series[0].val, 19_277_000_000, "returns FY2025 revenue, not FY2018");
+}
+{
+  // Ties on fiscal year fall back to cascade order, so one stray datapoint in
+  // a less-preferred tag cannot hijack a well-maintained one.
+  const facts = {
+    Revenues: { units: { USD: [
+      { start: "2024-01-01", end: "2024-12-31", val: 500, form: "10-K", filed: "2025-02-01" },
+    ] } },
+    SalesRevenueNet: { units: { USD: [
+      { start: "2024-01-01", end: "2024-12-31", val: 999, form: "10-K", filed: "2025-02-01" },
+    ] } },
+  };
+  eq(pickAnnualSeries(facts, ["Revenues", "SalesRevenueNet"]).val
+     || pickAnnualSeries(facts, ["Revenues", "SalesRevenueNet"]).series[0].val, 500,
+    "same-year tie keeps the preferred tag");
+}
+
+/* ------------------------------ currency -------------------------------- */
+console.log("\n· One reporting currency, enforced as a hard constraint");
+{
+  // Wipro: RevenueFromContractsWithCustomers is INR-only, Revenue has both.
+  // Treating the INR figure as USD produced $890bn of revenue for a company
+  // that earns about $10bn — an 82x error that looks like a big normal number.
+  const facts = {
+    RevenueFromContractsWithCustomers: { units: { INR: [
+      { start: "2024-04-01", end: "2025-03-31", val: 890_880_000_000, form: "20-F", filed: "2025-06-01" },
+    ] } },
+    Revenue: { units: {
+      INR: [{ start: "2024-04-01", end: "2025-03-31", val: 890_880_000_000, form: "20-F", filed: "2025-06-01" }],
+      USD: [{ start: "2024-04-01", end: "2025-03-31", val: 10_430_000_000, form: "20-F", filed: "2025-06-01" }],
+    } },
+  };
+  const tags = ["RevenueFromContractsWithCustomers", "Revenue"];
+  eq(detectReportingCurrency(facts, tags), "USD", "USD is preferred when the filer offers it");
+  const got = pickAnnualSeries(facts, tags, 6, "USD");
+  eq(got.unit, "USD", "picked series is in the pinned currency");
+  eq(got.series[0].val, 10_430_000_000, "returns the USD figure, not the INR one");
+  eq(got.tag, "Revenue", "skips the INR-only tag entirely rather than falling back to its unit");
+}
+{
+  // An INR-only filer: the currency stands, and nothing is silently converted.
+  const facts = { Revenue: { units: { INR: [
+    { start: "2024-04-01", end: "2025-03-31", val: 890_880_000_000, form: "20-F", filed: "2025-06-01" },
+  ] } } };
+  eq(detectReportingCurrency(facts, ["Revenue"]), "INR", "a single-currency filer reports its own");
+  eq(pickAnnualSeries(facts, ["Revenue"], 6, "INR").series[0].val, 890_880_000_000,
+    "INR figures pass through when INR is the pinned currency");
+  ok(pickAnnualSeries(facts, ["Revenue"], 6, "USD") === null,
+    "pinning USD on an INR-only filer yields NOTHING, never a mislabelled number");
+}
+{
+  ok(detectReportingCurrency({}, ["Revenue"]) === null, "no revenue tags -> no currency claim");
+}
+
+/* ----------------------------- per-share units --------------------------- */
+console.log("\n· Per-share amounts are denominated <CCY>/shares, not <CCY>");
+{
+  // Dividends per share are tagged USD/shares. Matching the pinned currency
+  // exactly and nothing else silently dropped every dividend on every filer.
+  const facts = {
+    CommonStockDividendsPerShareDeclared: { units: { "USD/shares": [
+      { start: "2024-09-29", end: "2025-09-27", val: 1.02, form: "10-K", filed: "2025-10-30" },
+      { start: "2026-03-29", end: "2026-06-27", val: 0.27, form: "10-Q", filed: "2026-07-31" },
+    ] } },
+  };
+  const got = pickAnnualSeries(facts, ["CommonStockDividendsPerShareDeclared"], 6, "USD");
+  ok(got !== null, "a USD/shares tag is found when USD is the pinned currency");
+  eq(got.unit, "USD/shares", "the per-share unit is reported as such");
+  eq(got.series[0].val, 1.02, "annual declaration wins over the quarterly one (1.02, not 0.27)");
+  eq(got.series.length, 1, "the quarterly row is excluded by the duration filter");
+}
+{
+  // ...but the pinning must still bite: a rupee-per-share amount is not a
+  // dollar-per-share amount just because both end in "/shares".
+  const facts = {
+    CommonStockDividendsPerShareDeclared: { units: { "INR/shares": [
+      { start: "2024-04-01", end: "2025-03-31", val: 11.0, form: "20-F", filed: "2025-06-01" },
+    ] } },
+  };
+  ok(pickAnnualSeries(facts, ["CommonStockDividendsPerShareDeclared"], 6, "USD") === null,
+    "INR/shares is still rejected when USD is pinned");
+  eq(pickAnnualSeries(facts, ["CommonStockDividendsPerShareDeclared"], 6, "INR").series[0].val, 11.0,
+    "INR/shares is accepted when INR is pinned");
+}
+
+/* -------------------------------- beta ----------------------------------- */
+console.log("\n· Beta is computed, benchmarked per market, and refuses thin samples");
+{
+  eq(benchmarkFor("AAPL").symbol, "^GSPC", "US listings benchmark against the S&P 500");
+  eq(benchmarkFor("RELIANCE.NS").symbol, "^NSEI", "NSE listings benchmark against the NIFTY 50");
+  eq(benchmarkFor("RELIANCE.BO").symbol, "^BSESN", "BSE listings benchmark against the SENSEX");
+  // Reporting a Nifty-relative beta as an S&P-relative one would be a
+  // different number presented under the wrong name.
+  ok(benchmarkFor("TCS.NS").name !== benchmarkFor("AAPL").name,
+    "an Indian listing never silently inherits the US benchmark");
+}
+{
+  // Returns are joined on calendar month, not by array position: a series
+  // missing one month would otherwise pair March against April forever after.
+  const mk = (startUnix, vals) => vals.map((c, i) => ({ t: startUnix + i * 2_678_400, c }));
+  const r = monthlyReturns(mk(1_600_000_000, [100, 110, 121]));
+  eq(r.size, 2, "n closes yield n-1 returns");
+  const vals = [...r.values()];
+  ok(Math.abs(vals[0] - 0.10) < 1e-9 && Math.abs(vals[1] - 0.10) < 1e-9,
+    "simple returns computed correctly");
+}
+{
+  ok(MIN_BETA_OBSERVATIONS >= 24,
+    "beta needs at least two years of monthly points before it means anything");
 }
 
 console.log(`\n${passed} passed · ${failed} failed`);

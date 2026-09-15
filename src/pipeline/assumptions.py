@@ -274,6 +274,31 @@ class AutoAssumer:
         return SECTOR_BASELINES.get(data.sector) if data.sector else None
 
     @staticmethod
+    def _beta_source(data: ExtractedFinancials) -> str:
+        """How to describe a beta that arrived with the extraction.
+
+        Beta needs its own wording because it is the one input that is NOT a
+        disclosure. There is no XBRL concept for it — searching a filer's
+        entire us-gaap taxonomy for "beta" returns nothing — because beta
+        describes how a stock's returns co-move with its market, which no
+        company reports about itself. The ticker path therefore COMPUTES it by
+        regression from price history; only the PDF path can read one off a
+        document (filings occasionally quote a beta in a valuation note).
+
+        Describing a regressed beta as "from the company's SEC XBRL filing
+        data" would be exactly the authoritative-sounding false citation
+        :meth:`_disclosed_source` exists to prevent, just aimed at a different
+        field — so the general helper deliberately is not reused here.
+        """
+        backends = getattr(data, "backends_used", None) or []
+        joined = " ".join(str(b).lower() for b in backends)
+        if "sec-edgar" in joined or "market-data" in joined:
+            return ("Computed by OLS regression of five years of monthly returns "
+                    "against the listing's market index — beta is a market "
+                    "statistic, not a figure any company discloses.")
+        return "Scraped from PDF."
+
+    @staticmethod
     def _disclosed_source(data: ExtractedFinancials) -> str:
         """How to describe a figure that came from the company itself.
 
@@ -636,7 +661,7 @@ class AutoAssumer:
         if o.beta is not None:
             rationale[("CAPM", "beta")] = f"Manually overridden = {beta}."
         elif data.beta is not None:
-            rationale[("CAPM", "beta")] = self._disclosed_source(data)
+            rationale[("CAPM", "beta")] = self._beta_source(data)
         elif sector_baseline:
             rationale[("CAPM", "beta")] = (
                 f"{data.sector} sector median (Damodaran, Jan 2026) = {beta}."
