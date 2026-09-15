@@ -1470,12 +1470,14 @@ function buildIBForm() {
   body.insertAdjacentHTML("beforeend", `<div class="ibsec">1 · SOURCE DOCUMENT</div>
     <div class="tick">
       <input id="ibticker" type="text" maxlength="12" spellcheck="false"
-             placeholder="TICKER — e.g. AAPL, MSFT, BRK.B" aria-label="US ticker symbol">
+             placeholder="TICKER — e.g. AAPL, INFY, RELIANCE" aria-label="US ticker symbol">
       <button id="ibtickgo">LOAD</button>
     </div>
     <div class="ibhint">Pulls the latest annual figures straight from the company's
-      <b>SEC XBRL filing data</b> (EDGAR) — US-listed companies only. For any other
-      market, or for a specific filing, upload the PDF below.</div>
+      <b>SEC XBRL filing data</b> — US filers and IFRS 20-F filers alike, so most Indian
+      ADRs (INFY, WIT, HDB) work too. A listing with no SEC filings (say RELIANCE on the
+      NSE) returns its <b>live price and a computed beta</b>; upload the annual report
+      PDF for the financials.</div>
     <div class="ibor">— or —</div>
     <div class="upl">
       <button id="ibupl">⬆ UPLOAD 10-K / 10-Q PDF</button>
@@ -1670,8 +1672,17 @@ function ensureAnalyzerPackages() {
           //  Scoped to the session deliberately: this forgives fat-fingers, it
           //  does not turn one credit into permanent free access.
           const alreadyBilled = symbol && state.ib.billedTickers.has(symbol);
+          //: A market-only load (a listing outside EDGAR's coverage: price and
+          //  beta, no financials) is a lookup, not an analysis — and the user
+          //  still has to upload the filing to get anything modelled. Billing
+          //  for both would charge twice for one company, so this one is free
+          //  and the upload that follows is what's metered.
+          let marketOnly = false;
+          try {
+            marketOnly = (JSON.parse(fieldsJson).backends_used || []).includes("market-data");
+          } catch { /* treat an unparseable payload as a normal load */ }
           const result = rawLoadFundamentals(fieldsJson);
-          if (gate.metered && !alreadyBilled) {
+          if (gate.metered && !alreadyBilled && !marketOnly) {
             try {
               if (JSON.parse(result).ok) {
                 await consumeUpload();
@@ -1790,8 +1801,10 @@ async function onIBTicker() {
   ibStatus(`FETCHING ${esc(raw)} FROM SEC EDGAR…`);
   let payload;
   try {
+    //: no-store for the same reason the endpoint sends max-age=0 — this
+    //  response carries a live price, and a cached one silently ages.
     const r = await fetch(`api/fundamentals?ticker=${encodeURIComponent(raw)}`,
-      { signal: AbortSignal.timeout(25_000) });
+      { cache: "no-store", signal: AbortSignal.timeout(25_000) });
     payload = await r.json();
     if (!payload.ok) throw new Error(payload.error || `HTTP ${r.status}`);
   } catch (err) {
@@ -1816,8 +1829,16 @@ async function onIBTicker() {
     //  that doesn't, and the user is the one who has to judge that.
     state.ib.sourceNotes = Array.isArray(payload.notes) ? payload.notes : [];
     renderIBExtracted();
-    const fy = payload.fiscal_year ? ` · FY${payload.fiscal_year}` : "";
-    ibStatus(`LOADED ${payload.ticker} — ${String(payload.company_name).slice(0, 40)}${fy} · SEC XBRL`);
+    if (payload.partial) {
+      //: Say plainly that this is price + beta only. Presenting it like a full
+      //  extraction would have the user run a DCF on an empty income
+      //  statement and read the sector-default output as their company's.
+      ibStatus(`${payload.ticker} — MARKET DATA ONLY (PRICE + BETA). `
+        + `UPLOAD THE ANNUAL REPORT PDF FOR THE FINANCIALS.`);
+    } else {
+      const fy = payload.fiscal_year ? ` · FY${payload.fiscal_year}` : "";
+      ibStatus(`LOADED ${payload.ticker} — ${String(payload.company_name).slice(0, 40)}${fy} · SEC XBRL`);
+    }
     $("#ostat").className = "meta";
   } catch (err) {
     state.ib.extracted = null;
@@ -2015,15 +2036,20 @@ function renderIBContext() {
   if (out) {
     let src = $("#ibsrc");
     if (!src) { src = document.createElement("tr"); src.id = "ibsrc"; }
-    const fromEdgar = (out.backends || []).some((b) => String(b).includes("sec-edgar"));
-    const label = fromEdgar
-      ? `SEC XBRL COMPANY FACTS${state.ib.ticker ? " · " + esc(state.ib.ticker) : ""}`
-      : `UPLOADED FILING · ${esc((out.backends || []).join("+") || "no backend")}`;
+    const backends = out.backends || [];
+    const fromEdgar = backends.some((b) => String(b).includes("sec-edgar"));
+    const marketOnly = backends.some((b) => String(b) === "market-data");
+    const sym = state.ib.ticker ? " · " + esc(state.ib.ticker) : "";
+    const label = marketOnly
+      ? `MARKET DATA ONLY — PRICE &amp; BETA${sym}`
+      : fromEdgar
+        ? `SEC XBRL COMPANY FACTS${backends.some((b) => String(b).includes("ifrs")) ? " (IFRS 20-F)" : ""}${sym}`
+        : `UPLOADED FILING · ${esc(backends.join("+") || "no backend")}`;
     const notes = (state.ib.sourceNotes || []).length
       ? `<div class="srcnote">${(state.ib.sourceNotes || [])
           .map((n) => "• " + esc(String(n))).join("<br>")}</div>` : "";
     src.innerHTML = `<td class="k">DATA SOURCE</td><td class="v">${label}
-      <span class="badge live">${fromEdgar ? "OFFICIAL FILING DATA" : "SCRAPED"}</span>${notes}</td>`;
+      <span class="badge live">${marketOnly ? "NO FILING DATA" : fromEdgar ? "OFFICIAL FILING DATA" : "SCRAPED"}</span>${notes}</td>`;
     grid.appendChild(src);
   }
 }
