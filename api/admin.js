@@ -17,6 +17,23 @@
 // from /api/geo (IP-derived, hour-deduplicated) — real geography data for
 // conversion tracking, not tied to any one user account.
 //
+// INTERIM manual-UPI flow (see api/_handlers/billing-claim.js) — a stopgap
+// so we can take payments now WITHOUT the Razorpay integration; the
+// Razorpay path stays fully intact and comes back with PAYMENTS_MODE=razorpay.
+// This desk is where a filed claim actually turns into a granted plan —
+// billing-claim.js itself never grants, by design.
+//
+//   GET  ?action=claims                        -> every upiclaim record
+//        (pending first), for the "Pending UPI claims" admin UI.
+//   POST {action:"approve_claim", id}          -> grants the claimed plan
+//        (via B.grant, same call the email `grant` action uses) and marks
+//        the claim approved. IDEMPOTENT: approving an already-approved
+//        claim is a no-op — it never grants a second time.
+//   POST {action:"reject_claim", id, reason?}  -> marks the claim rejected.
+//        NEVER grants, under any circumstance.
+// These are id-based, not email-based, so the email-address validation
+// below only runs for the three email actions (grant/revoke/reset_password).
+//
 // NOTE — no endpoint here ever returns a password, hashed or otherwise.
 // Passwords are stored as scrypt(salt, 64) (api/_lib/auth.js) and the
 // plaintext is never retained anywhere, by design — there is nothing to
@@ -112,6 +129,25 @@ async function geoBreakdown() {
   return { total: parseInt(totalRaw || "0", 10) || 0, countries };
 }
 
+//: Claim ids are crypto.randomBytes(9).toString("hex") — 18 lowercase hex
+//  chars — but a loose range keeps this from breaking if that length ever
+//  changes; it only needs to reject non-hex junk before it reaches a store key.
+const CLAIM_ID_RE = /^[a-f0-9]{8,64}$/;
+
+async function listClaims() {
+  const ids = await store.smembers("upiclaims:index");
+  const raws = await store.mget(ids.map((id) => `upiclaim:${id}`));
+  const claims = ids.map((id, i) => {
+    try { return JSON.parse(raws[i] || "null"); } catch { return null; }
+  }).filter(Boolean);
+  // Pending first (the operator's actual to-do list), most recent first
+  // within each status group.
+  claims.sort((a, b) =>
+    (a.status === "pending" ? 0 : 1) - (b.status === "pending" ? 0 : 1)
+    || String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+  return claims;
+}
+
 module.exports = async (req, res) => {
   if (!KEY || !store.configured())
     return A.json(res, 503, { error: "ADMIN DESK NOT CONFIGURED — set ADMIN_KEY (and a store) in Vercel env vars" });
@@ -147,8 +183,12 @@ module.exports = async (req, res) => {
   }
 
   try {
-    if (req.method === "GET")
+    if (req.method === "GET") {
+      const url = new URL(req.url || "/", "http://internal");
+      if (url.searchParams.get("action") === "claims")
+        return A.json(res, 200, { ok: true, claims: await listClaims() });
       return A.json(res, 200, { ok: true, ...(await listUsers()), geo: await geoBreakdown() });
+    }
     if (req.method !== "POST") return A.json(res, 405, { error: "GET or POST" });
 
     let body;
@@ -156,26 +196,38 @@ module.exports = async (req, res) => {
       if (err instanceof A.BodyTooLargeError) return A.json(res, 413, { error: "REQUEST BODY TOO LARGE" });
       return A.json(res, 400, { error: "invalid JSON" });
     }
-    const email = String(body.email || "").trim().toLowerCase();
-    if (!A.EMAIL_RE.test(email)) return A.json(res, 400, { error: "ENTER A VALID EMAIL" });
 
-    if (body.action === "grant") {
-      const plan = String(body.plan || "unlimited");
-      if (!["pro", "unlimited", "boutique", "enterprise"].includes(plan))
-        return A.json(res, 400, { error: "PLAN MUST BE pro, unlimited, boutique, OR enterprise" });
-      const days = Math.round(Number(body.days));
-      if (!Number.isFinite(days) || days < 1 || days > 365)
-        return A.json(res, 400, { error: "DAYS MUST BE 1–365" });
-      const sub = await B.grant(email, plan, days, "grant");
-      await store.sadd("users:index", email);   // visible even pre-signup
-      return A.json(res, 200, { ok: true, granted: plan, email, days,
-                                expiresAt: sub.expiresAt });
-    }
-    if (body.action === "revoke") {
-      await store.del(`sub:${email}`);
-      return A.json(res, 200, { ok: true, revoked: email });
-    }
-    if (body.action === "reset_password") {
+    // "claims" is a plain list (no email, no id): accept it on POST as well as
+    // GET, so the admin UI's api("POST", {action:"claims"}) call works — same
+    // listClaims() the GET ?action=claims path returns.
+    if (body.action === "claims")
+      return A.json(res, 200, { ok: true, claims: await listClaims() });
+
+    // approve_claim/reject_claim are id-based, not email-based — the email
+    // extraction+validation below only gates the three email actions, so an
+    // id-only claim-review request isn't rejected for lacking an `email`.
+    const EMAIL_ACTIONS = new Set(["grant", "revoke", "reset_password"]);
+    if (EMAIL_ACTIONS.has(body.action)) {
+      const email = String(body.email || "").trim().toLowerCase();
+      if (!A.EMAIL_RE.test(email)) return A.json(res, 400, { error: "ENTER A VALID EMAIL" });
+
+      if (body.action === "grant") {
+        const plan = String(body.plan || "unlimited");
+        if (!["pro", "unlimited", "boutique", "enterprise"].includes(plan))
+          return A.json(res, 400, { error: "PLAN MUST BE pro, unlimited, boutique, OR enterprise" });
+        const days = Math.round(Number(body.days));
+        if (!Number.isFinite(days) || days < 1 || days > 365)
+          return A.json(res, 400, { error: "DAYS MUST BE 1–365" });
+        const sub = await B.grant(email, plan, days, "grant");
+        await store.sadd("users:index", email);   // visible even pre-signup
+        return A.json(res, 200, { ok: true, granted: plan, email, days,
+                                  expiresAt: sub.expiresAt });
+      }
+      if (body.action === "revoke") {
+        await store.del(`sub:${email}`);
+        return A.json(res, 200, { ok: true, revoked: email });
+      }
+      // body.action === "reset_password" (the only remaining member of EMAIL_ACTIONS)
       let user;
       try { user = JSON.parse((await store.get(`user:${email}`)) || "null"); } catch { user = null; }
       if (!user) return A.json(res, 404, { error: "NO ACCOUNT FOR THIS EMAIL" });
@@ -184,7 +236,44 @@ module.exports = async (req, res) => {
       await store.set(`user:${email}`, JSON.stringify(user));
       return A.json(res, 200, { ok: true, resetPassword: email });
     }
-    return A.json(res, 400, { error: "action MUST BE grant, revoke OR reset_password" });
+
+    if (body.action === "approve_claim" || body.action === "reject_claim") {
+      const id = String(body.id || "");
+      if (!CLAIM_ID_RE.test(id)) return A.json(res, 400, { error: "INVALID CLAIM ID" });
+      let claim;
+      try { claim = JSON.parse((await store.get(`upiclaim:${id}`)) || "null"); } catch { claim = null; }
+      if (!claim) return A.json(res, 404, { error: "NO SUCH CLAIM" });
+
+      if (body.action === "approve_claim") {
+        // IDEMPOTENT: a second approve (double click, retry) must NOT grant
+        // a second time — the plan/days are already active from the first.
+        if (claim.status === "approved") return A.json(res, 200, { ok: true, status: "approved" });
+        const term = B.PLANS[claim.plan] && B.PLANS[claim.plan].periods[claim.period];
+        if (!term) return A.json(res, 502, { error: "CLAIM REFERENCES AN UNKNOWN PLAN/PERIOD" });
+        await B.grant(claim.email, claim.plan, term.days, "upi-manual",
+          { upiRef: claim.upiRef, amountInr: claim.amountInr });
+        claim.status = "approved";
+        claim.approvedAt = new Date().toISOString();
+        await store.set(`upiclaim:${id}`, JSON.stringify(claim));
+        await store.sadd("users:index", claim.email);   // visible even pre-signup
+        return A.json(res, 200, { ok: true, status: "approved" });
+      }
+
+      // reject_claim: only a still-pending claim actually transitions — this
+      // NEVER grants, and it never overwrites an already-approved claim's
+      // record with "rejected" (which would misleadingly suggest the grant
+      // it already made had been undone; it hasn't — use `revoke` for that).
+      if (claim.status === "pending") {
+        claim.status = "rejected";
+        claim.rejectedAt = new Date().toISOString();
+        claim.reason = String(body.reason || "").slice(0, 140);
+        await store.set(`upiclaim:${id}`, JSON.stringify(claim));
+      }
+      return A.json(res, 200, { ok: true, status: "rejected" });
+    }
+
+    return A.json(res, 400,
+      { error: "action MUST BE grant, revoke, reset_password, approve_claim OR reject_claim" });
   } catch (err) {
     return A.json(res, 502, { error: String(err.message || err).slice(0, 180) });
   }

@@ -3090,6 +3090,12 @@ async function renderPlanTab(body) {
   ];
   const salesEmail = (cfg && cfg.contactEmail) || "sales@finmodels.app";
   const canBuy = cfg && cfg.billing && isOtp;
+  //: INTERIM manual-UPI flow for early users — a stopgap so we can take
+  //  payments now WITHOUT the Razorpay integration. This is NOT a replacement
+  //  for Razorpay: buyButtons()/startCheckout() below stay fully intact and
+  //  are re-enabled by setting PAYMENTS_MODE=razorpay (+ the Razorpay keys)
+  //  server-side. Do not delete the Razorpay path.
+  const isUpiManual = !!(cfg && cfg.paymentMode === "upi-manual");
   //: One buy button per billing period on paid plans, instead of duplicating
   //  the whole card — keeps a single "current plan" per plan family and a
   //  single stable .pcard.<id> selector regardless of which period a buyer picks.
@@ -3103,6 +3109,59 @@ async function renderPlanTab(body) {
       <button class="pbuy" data-plan="${p.id}" data-period="annual" ${canBuy ? "" : "disabled"}>
         ANNUAL — ${fmtPlanPrice(p.periods.annual, cur)}</button>
     </div>`;
+  };
+  //: One collapsible <details> panel per billing period, each self-contained
+  //  (VPA, exact ₹ amount, tappable UPI intent link, QR, and the claim form)
+  //  since the amount differs by period and there's no reactive framework
+  //  here to swap it in place. Data attrs (data-plan/period/intent) live on
+  //  the <details>/<form>, never on a `.pbuy`-classed element — the razorpay
+  //  wiring below selects `.pbuy[data-plan]` unconditionally, and this keeps
+  //  these UPI-only buttons from being picked up by that selector too.
+  const upiPeriodPanel = (p, periodKey, periodLabel, upi) => {
+    const period = p.periods[periodKey];
+    const amountInr = period.priceInr;
+    const amountStr = amountInr.toLocaleString("en-IN");
+    const note = `${upi.note || "FINMODELS plan"} - ${p.name} ${periodLabel}`;
+    const intent = `upi://pay?pa=${encodeURIComponent(upi.vpa)}` +
+      `&pn=${encodeURIComponent(upi.name || "FINMODELS")}` +
+      `&am=${encodeURIComponent(amountInr.toFixed(2))}&cu=INR&tn=${encodeURIComponent(note)}`;
+    const dis = canBuy ? "" : "disabled";
+    return `<details class="upi-panel" data-plan="${esc(p.id)}" data-period="${esc(periodKey)}" data-intent="${esc(intent)}">
+      <summary class="pbuy upi-summary">${esc(periodLabel)} — PAY ₹${esc(amountStr)} VIA UPI</summary>
+      <div class="upi-body" style="border:1px solid var(--border); padding:10px; margin:6px 0 2px;">
+        <div class="purow"><span>UPI ID</span><b>${esc(upi.vpa)}</b></div>
+        <div class="purow"><span>AMOUNT</span><b>₹${esc(amountStr)}</b></div>
+        <div style="margin:8px 0;">
+          <a class="pbuy" href="${esc(intent)}" target="_blank" rel="noopener noreferrer">OPEN IN UPI APP</a>
+        </div>
+        <div class="upi-qr-wrap" style="background:#fff; padding:8px; display:inline-block; min-width:100px; min-height:20px;">
+          <span style="color:#000; font-size:10px;">TAP TO LOAD QR</span>
+        </div>
+        <form class="upi-claim-form" data-plan="${esc(p.id)}" data-period="${esc(periodKey)}" style="margin-top:10px; max-width:260px;">
+          <input type="text" class="upi-ref-input" placeholder="UPI REFERENCE / UTR" maxlength="25" autocomplete="off" ${dis}
+            style="background:transparent; border:1px solid var(--border); color:inherit; padding:6px 8px; font:inherit; width:100%; box-sizing:border-box;">
+          <button type="submit" class="pbuy" style="margin-top:6px;" ${dis}>I'VE PAID</button>
+          <div class="upi-claim-msg pnote" style="min-height:14px; margin:6px 0 0;"></div>
+        </form>
+      </div>
+    </details>`;
+  };
+  //: Renders in place of buyButtons(p) when the operator has PAYMENTS_MODE=
+  //  upi-manual set server-side (see api/billing-config.js). Never calls
+  //  buyPlan()/ensureRazorpay()/startCheckout() — filing a claim here never
+  //  grants a plan; an operator approves it from the admin desk.
+  const upiPayHTML = (p) => {
+    if (current === p.id) return `<button class="pbuy" disabled>CURRENT PLAN</button>`;
+    if (!cfg || !cfg.billing) return `<button class="pbuy" disabled>OFFLINE</button>`;
+    const upi = cfg.upi || {};
+    if (!upi.vpa) {
+      return `<div class="pnote warn">UPI PAYMENT DETAILS NOT CONFIGURED — CONTACT ${esc(salesEmail)}.</div>`;
+    }
+    const gate = canBuy ? "" :
+      `<div class="pnote warn">SIGN IN WITH EMAIL OR GOOGLE TO SUBMIT A PAYMENT CLAIM.</div>`;
+    return gate +
+      upiPeriodPanel(p, "monthly", "MONTHLY", upi) +
+      upiPeriodPanel(p, "annual", "ANNUAL", upi);
   };
   body.innerHTML = `<h3>PLANS &amp; USAGE</h3>${head}
     <div class="pcards">${plans.map((p) => `
@@ -3118,17 +3177,39 @@ async function renderPlanTab(body) {
           ? `<a class="pbuy contact" href="mailto:${salesEmail}?subject=${encodeURIComponent("Enterprise enquiry — FINMODELS TERMINAL")}">CONTACT SALES</a>`
           : p.id === "free"
             ? `<button class="pbuy" disabled>${current === "free" ? "CURRENT PLAN" : "INCLUDED"}</button>`
-            : buyButtons(p)}
+            : isUpiManual
+              ? upiPayHTML(p)
+              : buyButtons(p)}
       </div>`).join("")}</div>
-    <div class="pnote" id="pmsg">Paid plans are day-based passes (30 for monthly, 365 for annual) —
+    <div class="pnote" id="pmsg">${isUpiManual
+      ? `Paid plans are day-based passes (30 for monthly, 365 for annual) — renewing or
+      upgrading early credits your unused days. <b>Payments are handled manually while we
+      finish our card/UPI gateway integration:</b> pay the exact amount shown to the UPI ID
+      above, then submit the UPI reference/UTR from your payment app so we can verify it —
+      plans are usually activated within a few hours of a valid submission.`
+      : `Paid plans are day-based passes (30 for monthly, 365 for annual) —
       renewing or upgrading early credits your unused days. Payments are processed by Razorpay
       (UPI · cards · netbanking · wallets); this site never sees card details. An upload = one
       IB-desk PDF analysis; model runs and the SCEN engine are never metered. Prices are shown
       in ${planCurrency() === "inr" ? "₹" : "$"} based on your location, but it's the same real
       price everywhere — no regional discount; checkout always settles in ₹ (Razorpay does not
-      support other settlement currencies).</div>`;
+      support other settlement currencies).`}</div>`;
   body.querySelectorAll(".pbuy[data-plan]").forEach((b) => {
     b.onclick = () => startCheckout(b.dataset.plan, b.dataset.period);
+  });
+  //: UPI-manual wiring — lazy-loads the vendored QR lib only when a period
+  //  panel is actually opened, and intercepts the claim form's submit.
+  //  No-ops (empty NodeLists) when paymentMode !== "upi-manual".
+  body.querySelectorAll(".upi-panel").forEach((d) => {
+    d.addEventListener("toggle", () => {
+      if (d.open && !d.dataset.qrDone) {
+        d.dataset.qrDone = "1";
+        renderUpiQr(d.querySelector(".upi-qr-wrap"), d.dataset.intent);
+      }
+    });
+  });
+  body.querySelectorAll(".upi-claim-form").forEach((f) => {
+    f.onsubmit = (e) => { e.preventDefault(); submitUpiClaim(f); };
   });
 }
 
@@ -3222,4 +3303,98 @@ async function startCheckout(plan, period) {
     handler: finalize,
     modal: { ondismiss: () => planMsg("PAYMENT CANCELLED — no charge made") },
   }).open();
+}
+
+/* ------------------------- UPI manual claim (interim) --------------------
+ * INTERIM manual-UPI flow for early users — a stopgap so we can take
+ * payments now WITHOUT the Razorpay integration. This is NOT a replacement
+ * for Razorpay: everything above (buyButtons/startCheckout/loadCheckoutJs)
+ * stays fully intact and is re-enabled by setting PAYMENTS_MODE=razorpay
+ * (+ the Razorpay keys) server-side. Do not delete the Razorpay path.
+ *
+ * Filing a claim via /api/billing-claim NEVER grants a plan by itself — an
+ * operator reviews and approves it from the admin desk (api/admin.js). This
+ * file only renders the affordance and posts the claim; see
+ * upiPayHTML()/upiPeriodPanel() in renderPlanTab() above for the markup.
+ * ------------------------------------------------------------------------- */
+
+//: Vendored MIT QR generator (public/assets/qrcode.min.js, kazuhikoarase/
+//  qrcode-generator, pinned tag js2.0.4) — served from 'self', no new CDN,
+//  so it satisfies the hardened script-src CSP. Lazy-loaded only when a
+//  buyer actually opens a UPI period panel (see the `.upi-panel` "toggle"
+//  listener in renderPlanTab()), same load-on-demand idiom as loadCheckoutJs().
+function loadQrLib() {
+  return new Promise((resolve, reject) => {
+    if (window.qrcode) return resolve(window.qrcode);
+    const s = document.createElement("script");
+    s.src = "assets/qrcode.min.js";
+    s.onload = () => (window.qrcode ? resolve(window.qrcode) : reject(new Error("qrcode lib did not register")));
+    s.onerror = () => reject(new Error("QR library failed to load"));
+    document.head.appendChild(s);
+  });
+}
+
+//: Renders the UPI intent string as a scannable QR into `wrapEl`. The QR is
+//  an enhancement, not the critical path — the tappable intent link, VPA and
+//  amount above it in the panel work with no JS beyond what's already on the
+//  page, so a QR-lib load failure (offline CSP misconfig, blocked script,
+//  etc.) degrades to a text fallback rather than breaking the pay flow.
+async function renderUpiQr(wrapEl, intent) {
+  if (!wrapEl) return;
+  try {
+    const qrcodeLib = await loadQrLib();
+    const qr = qrcodeLib(0, "M");   // typeNumber 0 = auto-size to fit the data
+    qr.addData(intent);
+    qr.make();
+    const dataUrl = qr.createDataURL(4, 4);   // data:image/gif;base64,... — no <canvas> needed
+    wrapEl.innerHTML = `<img src="${dataUrl}" width="148" height="148" alt="UPI payment QR code">`;
+  } catch {
+    wrapEl.innerHTML = `<span style="color:#000; font-size:10px;">QR UNAVAILABLE — use the link or UPI ID above.</span>`;
+  }
+}
+
+function upiClaimMsg(el, text, isErr) {
+  if (!el) return;
+  el.textContent = text;
+  el.classList.toggle("warn", !!isErr);
+}
+
+//: POSTs {plan, period, upiRef} to /api/billing-claim. Every response branch
+//  the contract calls for: 401 -> prompt sign-in, 400 -> show the server's
+//  validation error verbatim (capped), 429 -> rate-limited, else network
+//  error. On {ok:true} the claim is merely FILED — it is pending until an
+//  operator approves it from the admin desk; this never grants a plan.
+async function submitUpiClaim(form) {
+  const plan = form.dataset.plan;
+  const period = form.dataset.period;
+  const input = form.querySelector(".upi-ref-input");
+  const msgEl = form.querySelector(".upi-claim-msg");
+  const btn = form.querySelector("button[type=submit]");
+  const upiRef = (input && input.value || "").trim();
+  if (!upiRef) { upiClaimMsg(msgEl, "ENTER YOUR UPI REFERENCE / UTR", true); return; }
+  if (btn) btn.disabled = true;
+  upiClaimMsg(msgEl, "SUBMITTING…", false);
+  try {
+    const r = await fetch("api/billing-claim", {
+      method: "POST", credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ plan, period, upiRef }),
+      signal: AbortSignal.timeout(15000),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (r.status === 401) {
+      upiClaimMsg(msgEl, "SIGN IN FIRST, THEN SUBMIT YOUR PAYMENT REFERENCE.", true);
+    } else if (r.status === 429) {
+      upiClaimMsg(msgEl, "TOO MANY ATTEMPTS — TRY AGAIN LATER.", true);
+    } else if (r.ok && j && j.ok) {
+      upiClaimMsg(msgEl, "REQUEST RECEIVED — YOUR PLAN IS USUALLY ACTIVATED WITHIN A FEW HOURS.", false);
+      if (input) input.value = "";
+    } else {
+      upiClaimMsg(msgEl, String((j && j.error) || `HTTP ${r.status}`).slice(0, 160), true);
+    }
+  } catch (err) {
+    upiClaimMsg(msgEl, "NETWORK ERROR — " + String(err.message || err).slice(0, 100), true);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }

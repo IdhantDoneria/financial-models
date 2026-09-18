@@ -11,6 +11,9 @@ const HANDLERS = {
   "order": require("./_handlers/billing-order.js"),
   "verify": require("./_handlers/billing-verify.js"),
   "webhook": require("./_handlers/billing-webhook.js"),
+  // INTERIM manual-UPI flow (see api/_handlers/billing-claim.js) — files a
+  // pending payment claim only; never grants (that stays admin.js-only).
+  "claim": require("./_handlers/billing-claim.js"),
 };
 
 module.exports = async (req, res) => {

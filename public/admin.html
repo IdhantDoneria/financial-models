@@ -44,6 +44,9 @@
     .tag.founder { border-color:var(--amber); color:var(--amber); }
     .tag.grant { border-color:var(--cyan); color:var(--cyan); }
     .tag.checkout { border-color:var(--green); color:var(--green); }
+    .tag.pending { border-color:var(--amber); color:var(--amber); }
+    .tag.approved { border-color:var(--green); color:var(--green); }
+    .tag.rejected { border-color:var(--red); color:var(--red); }
     .plan-free { color:var(--dim); } .plan-pro, .plan-unlimited { color:var(--green); }
     .ghosted { color:var(--dim); font-style:italic; }
     #grantbox { border:1px solid var(--border); background:var(--panel); padding:14px; margin:18px 0; }
@@ -114,6 +117,19 @@
       Passwords are never stored or shown in plaintext (scrypt-hashed, one-way) — there is
       nothing to display here by design. RESET clears the current password and forces the
       owner back through EMAIL CODE to set a new one; use it if an account may be compromised.</div>
+
+    <div class="bar" style="margin-top:28px">
+      <div class="t" style="color:var(--cyan);font-size:11px;letter-spacing:.12em">PENDING UPI CLAIMS</div>
+      <span id="claims-asof" style="color:var(--dim);font-size:10px"></span>
+    </div>
+    <div style="color:var(--dim);font-size:10px;line-height:1.6;margin-bottom:8px">
+      INTERIM manual-UPI flow — a stopgap while Razorpay is off (<b>PAYMENTS_MODE=upi-manual</b>).
+      A buyer files a claim with their UPI reference (UTR); APPROVE grants the plan immediately,
+      REJECT never grants. Neither action can be undone from here — approving twice is a safe no-op.</div>
+    <table id="claims"><thead><tr>
+      <th>EMAIL</th><th>PLAN</th><th>PERIOD</th><th class="num-h">₹ AMOUNT</th>
+      <th>UPI REF</th><th>NOTE</th><th>SUBMITTED</th><th>STATUS</th><th></th>
+    </tr></thead><tbody></tbody></table>
 
     <div class="bar" style="margin-top:28px">
       <div class="t" style="color:var(--cyan);font-size:11px;letter-spacing:.12em">VISITOR GEOGRAPHY</div>
