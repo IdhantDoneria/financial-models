@@ -77,6 +77,48 @@ function render(data) {
   ).join("") || `<tr><td colspan="3" class="ghosted">No tracked visits yet.</td></tr>`;
 }
 
+//: INTERIM manual-UPI flow for early users — a stopgap so we can take
+//  payments now WITHOUT the Razorpay integration. This is NOT a replacement
+//  for Razorpay: the Razorpay code path stays fully intact and is
+//  re-enabled by setting PAYMENTS_MODE=razorpay (+ the Razorpay keys).
+//  email/upiRef/note below come straight from the buyer's claim form via
+//  /api/billing-claim — they are just as attacker-controlled as the users
+//  table's email/name, so every field gets the same esc() treatment.
+function renderClaims(data) {
+  const rows = (data && data.claims) || [];
+  const tb = $("#claims tbody");
+  tb.innerHTML = rows.map((c) => `
+    <tr>
+      <td>${esc(c.email)}</td>
+      <td>${esc(c.plan)}</td>
+      <td>${esc(c.period)}</td>
+      <td class="num">₹${esc(String(c.amountInr))}</td>
+      <td>${esc(c.upiRef)}</td>
+      <td>${c.note ? esc(c.note) : `<span class="ghosted">—</span>`}</td>
+      <td>${fdate(c.createdAt)}</td>
+      <td><span class="tag ${esc(c.status)}">${esc(String(c.status).toUpperCase())}</span></td>
+      <td>${c.status === "pending"
+        ? `<button data-approve="${esc(c.id)}">APPROVE</button>
+           <button class="danger" data-reject="${esc(c.id)}">REJECT</button>`
+        : "—"}</td>
+    </tr>`).join("") || `<tr><td colspan="9" class="ghosted">No UPI claims yet — they appear
+      here the moment a buyer submits a payment reference from the PLAN tab.</td></tr>`;
+  tb.querySelectorAll("[data-approve]").forEach((b) => b.onclick = async () => {
+    const id = b.dataset.approve;
+    if (!confirm(`Approve claim ${id}? This immediately grants the plan to the buyer.`)) return;
+    await act({ action: "approve_claim", id }, `APPROVED CLAIM ${id}`);
+  });
+  tb.querySelectorAll("[data-reject]").forEach((b) => b.onclick = async () => {
+    const id = b.dataset.reject;
+    const reason = prompt("Reason for rejecting this claim (internal note, not shown to buyer):", "");
+    if (reason === null) return; // cancelled
+    await act({ action: "reject_claim", id, reason }, `REJECTED CLAIM ${id}`);
+  });
+  $("#claims-asof").textContent = `${rows.length} CLAIM${rows.length === 1 ? "" : "S"}`;
+}
+
+async function refreshClaims() { renderClaims(await api("POST", { action: "claims" })); }
+
 function msg(text, cls) { const el = $("#msg"); el.textContent = text; el.className = cls || ""; }
 
 async function act(body, okText) {
@@ -84,7 +126,10 @@ async function act(body, okText) {
   catch (e) { msg("✗ " + e.message, "err"); }
 }
 
-async function refresh() { render(await api("GET")); }
+async function refresh() {
+  render(await api("GET"));
+  await refreshClaims();
+}
 
 function saveKey(key) {
   localStorage.setItem(LSK, JSON.stringify({ key, ts: Date.now() }));

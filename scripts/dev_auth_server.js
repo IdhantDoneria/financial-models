@@ -27,6 +27,7 @@ const API = {
   "billing": billing,
   "billing-config": billing, "billing-order": billing,
   "billing-verify": billing, "billing-webhook": billing,
+  "billing-claim": billing,
   "admin": require("../api/admin.js"),
   "quotes": require("../api/quotes.js"),
   "usage": require("../api/usage.js"),
