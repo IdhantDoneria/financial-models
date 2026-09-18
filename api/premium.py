@@ -55,6 +55,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -117,19 +118,32 @@ REDIS_TOKEN = os.environ.get("KV_REST_API_TOKEN") or os.environ.get("UPSTASH_RED
 def _redis_get(key: str) -> str | None:
     """GET one key via the Upstash Redis REST API — the same store
     api/_lib/store.js talks to, read directly since this function runs in a
-    separate Python runtime with no access to the Node process's state."""
-    if not (REDIS_URL and REDIS_TOKEN):
-        return None
-    req = urllib.request.Request(
-        f"{REDIS_URL.rstrip('/')}/get/{key}",
-        headers={"Authorization": f"Bearer {REDIS_TOKEN}"},
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=6) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            return data.get("result")
-    except (urllib.error.URLError, TimeoutError, ValueError, json.JSONDecodeError):
-        return None
+    separate Python runtime with no access to the Node process's state.
+
+    `key` is built from attacker-controlled input (the fm_sess cookie /
+    Authorization bearer token feeds the `sess:` lookup below, before any
+    auth check runs), so it is sent in the JSON command BODY via
+    _redis_pipeline — the same POST-body transport store.js and this file's
+    own rate limiter already use — and is never interpolated into the request
+    URL. That removes the path-injection surface entirely (a crafted token
+    cannot add path segments or a query string) with no dependence on how
+    Upstash URL-decodes a key in the path."""
+    results = _redis_pipeline([["GET", key]])
+    return results[0] if results else None
+
+
+_GENERIC_CALC_ERROR = "INTERNAL ERROR — CALCULATION FAILED, THIS HAS BEEN LOGGED"
+
+
+def _log_server_error(context: str, exc: BaseException) -> None:
+    """Print the real exception server-side (stderr — captured in Vercel
+    function logs) instead of returning it to the client. The three
+    do_POST/_run_raw/_run_extracted catch-alls below used to echo
+    f"{type(exc).__name__}: {exc}" straight into the JSON response; that's
+    an information-disclosure leak (stack-trace-adjacent detail handed to
+    whoever can reach this endpoint), so callers of this helper substitute
+    _GENERIC_CALC_ERROR for the client-visible message instead."""
+    print(f"[api/premium] {context}: {type(exc).__name__}: {exc}", file=sys.stderr)
 
 
 def _parse_cookie(header: str | None, name: str) -> str | None:
@@ -294,9 +308,10 @@ def _run_extracted(mnemonic: str, model_name: str, body: dict) -> dict:
         model = PREMIUM_CLASSES[mnemonic](**model_kwargs)
         results = _clean(model.calculate())
     except Exception as exc:
-        err = f"{type(exc).__name__}: {exc}"
-        return {"ok": True, "model": model_name, "headline": "-", "status": err,
-                "results": None, "errors": err, "rationale": {}}
+        _log_server_error("_run_extracted", exc)
+        return {"ok": True, "model": model_name, "headline": "-",
+                "status": _GENERIC_CALC_ERROR, "results": None,
+                "errors": _GENERIC_CALC_ERROR, "rationale": {}}
 
     rationale = {f"{m} · {p}": text for (m, p), text in assumptions.rationale.items()
                  if m == mnemonic}
@@ -358,9 +373,10 @@ def _run_raw(mnemonic: str, model_name: str, body: dict) -> dict:
         calc_ms = round((time.perf_counter() - t0) * 1000.0, 2)
         explain = model.explain()
     except Exception as exc:
-        err = f"{type(exc).__name__}: {exc}"
-        return {"ok": True, "model": model_name, "headline": "-", "status": err,
-                "results": None, "errors": err, "rationale": {}}
+        _log_server_error("_run_raw", exc)
+        return {"ok": True, "model": model_name, "headline": "-",
+                "status": _GENERIC_CALC_ERROR, "results": None,
+                "errors": _GENERIC_CALC_ERROR, "rationale": {}}
 
     # Chart rendering is a nice-to-have, not needed for the numbers — and
     # plotly isn't part of this function's dependency budget (see the
@@ -446,8 +462,9 @@ class handler(BaseHTTPRequestHandler):
             else:
                 result = _run_extracted(mnemonic, model_name, body)
         except Exception as exc:  # a bad/malformed request shouldn't 500
+            _log_server_error("do_POST", exc)
             result = {"ok": True, "model": model_name, "headline": "-",
-                      "status": f"{type(exc).__name__}: {exc}",
-                      "results": None, "errors": f"{type(exc).__name__}: {exc}", "rationale": {}}
+                      "status": _GENERIC_CALC_ERROR,
+                      "results": None, "errors": _GENERIC_CALC_ERROR, "rationale": {}}
 
         return self._json(200, result)

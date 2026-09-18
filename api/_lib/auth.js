@@ -39,6 +39,16 @@ function verifyPasswordRecord(password, rec) {
   return timingSafeEq(crypto.scryptSync(password, rec.salt, 64).toString("hex"), rec.hash);
 }
 
+// Fixed decoy record for auth-login.js's enumeration-resistant timing fix.
+// scrypt (above) is the expensive part of a login attempt, so an endpoint
+// that only calls it when a real password record exists leaks "this
+// account has a password" through response latency alone — even once the
+// JSON body is made identical for both cases. Computed once at module load
+// (not per request, so its own cost doesn't add jitter) from a random
+// throwaway password nobody could guess; only its salt+hash *shape* is
+// used, so every login attempt pays the same scrypt cost either way.
+const DUMMY_PW_RECORD = hashPasswordRecord(crypto.randomBytes(32).toString("hex"));
+
 // The raw-stream fallback path (used whenever Vercel hasn't already
 // pre-parsed req.body — every non-Vercel host, and the raw-signature path
 // billing-webhook.js reads for itself) buffered without limit until this
@@ -148,5 +158,5 @@ module.exports = {
   PW_MIN, PW_MAX_TRIES, PW_TRY_WINDOW, MAX_BODY_BYTES, BodyTooLargeError,
   hashOtp, newToken, newOtp, timingSafeEq, readBody, readRawBody, json, bearer, cookieToken, getSession,
   setSessionCookie, clearSessionCookie,
-  hashPasswordRecord, verifyPasswordRecord,
+  hashPasswordRecord, verifyPasswordRecord, DUMMY_PW_RECORD,
 };

@@ -102,6 +102,11 @@ const terminalSinks = [
   /<span class="badge \$\{badgeClass\}">\$\{esc\(status\)\}<\/span>/,
   /md \+= `\| \$\{esc\(key\)\} \| \$\{esc\(text\)\} \|\\n`/,
   /md \+= `- \*\*\$\{esc\(name\)\}\*\*: \$\{esc\(err\)\}\\n`/,
+  // deep-build hardening pass (SEC-C P8): external/dynamic values wrapped in esc() at their innerHTML sinks
+  /\$\{esc\(reason\)\}/,
+  /\$\{esc\(r\.solver_note\)\}/,
+  /esc\(state\.ib\.rfSource \|\| "FETCHING/,
+  /\$\{esc\(us\.planName\)\}/,
 ];
 terminalSinks.forEach((re, i) => check(`terminal.js sink ${i + 1}/${terminalSinks.length} still escaped`,
   re.test(termSrc), `pattern not found: ${re}`));

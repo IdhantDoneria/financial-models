@@ -40,7 +40,7 @@
        the connection now rather than paying DNS+TLS at the moment of render. -->
   <link rel="preconnect" href="https://cdn.plot.ly" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/katex.min.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/katex.min.css" integrity="sha384-zh0CIslj+VczCZtlzBcjt5ppRcsAmDnRem7ESsYwWwg3m/OaJ2l4x7YBZl9Kxxib" crossorigin="anonymous">
   <link rel="stylesheet" href="assets/terminal.css">
 
   <!-- Structured data. Two graphs, both describing things a human can also
@@ -304,14 +304,14 @@
        marked/FINMODELS_CORE_PACKAGES being defined by the time it runs, same
        as when these were blocking scripts loaded one at a time. -->
   <script defer src="assets/boot-packages.js"></script>
-  <script defer src="https://cdn.jsdelivr.net/pyodide/v0.28.2/full/pyodide.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/pyodide/v0.28.2/full/pyodide.js" integrity="sha384-TxAJpclxcSefRC2TGQWWyfpQPm6eLSr9fUPEAGETMFdsgI20wbP4X3vQSfGINmpU" crossorigin="anonymous"></script>
   <!-- Plotly (1.4 MB) is NOT loaded here on purpose. It dominated first-paint
        bandwidth for every visitor even though nothing is plotted until a model
        has run, so terminal.js's ensurePlotly() fetches it on the first chart
        instead. The preconnect above keeps that on-demand fetch quick. -->
-  <script defer src="https://cdn.jsdelivr.net/npm/marked@15.0.12/marked.min.js"></script>
-  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/katex.min.js"></script>
-  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/contrib/auto-render.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/marked@15.0.12/marked.min.js" integrity="sha384-948ahk4ZmxYVYOc+rxN1H2gM1EJ2Duhp7uHtZ4WSLkV4Vtx5MUqnV+l7u9B+jFv+" crossorigin="anonymous"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/katex.min.js" integrity="sha384-Rma6DA2IPUwhNxmrB/7S3Tno0YY7sFu9WSYMCuulLhIqYSGZ2gKCJWIqhBWqMQfh" crossorigin="anonymous"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/contrib/auto-render.min.js" integrity="sha384-hCXGrW6PitJEwbkoStFjeJxv+fSOOQKOPbJxSfM6G5sWZjAyWhXiTIIAmQqnlLlh" crossorigin="anonymous"></script>
   <script defer src="assets/terminal.js"></script>
   <script defer src="assets/walkthrough.js"></script>
 </body>
