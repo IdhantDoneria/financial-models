@@ -524,15 +524,14 @@ def _fmt(x: float) -> str:
 # session cookie is deliberately ignored on this endpoint.
 # --------------------------------------------------------------------------- #
 def _redis_get(key: str) -> str | None:
-    if not (REDIS_URL and REDIS_TOKEN):
-        return None
-    req = urllib.request.Request(f"{REDIS_URL.rstrip('/')}/get/{key}",
-                                 headers={"Authorization": f"Bearer {REDIS_TOKEN}"})
-    try:
-        with urllib.request.urlopen(req, timeout=6) as resp:
-            return json.loads(resp.read().decode("utf-8")).get("result")
-    except (urllib.error.URLError, TimeoutError, ValueError, json.JSONDecodeError):
-        return None
+    """Read one key via _redis_pipeline (POST JSON command body) rather than
+    the /get/<key> URL path: `key` is built from the caller-supplied bearer
+    token (`sess:` lookup below, before any auth check), so keeping it in the
+    command body — the same transport store.js and this file's rate limiter
+    use — removes the URL path-injection surface a crafted token would
+    otherwise have (see api/premium.py's twin for the fuller writeup)."""
+    results = _redis_pipeline([["GET", key]])
+    return results[0] if results else None
 
 
 def _effective_plan(email: str) -> str:

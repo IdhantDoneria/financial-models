@@ -892,7 +892,7 @@ function buildModelForm(model, mn) {
 //  selected model lingers behind the lock notice.
 function renderPremiumLocked(reason) {
   const body = $("#pform");
-  body.innerHTML = `<div class="plan-lock"><b>🔒 ANALYST PRO REQUIRED.</b> ${reason}</div>`;
+  body.innerHTML = `<div class="plan-lock"><b>🔒 ANALYST PRO REQUIRED.</b> ${esc(reason)}</div>`;
   const btn = document.createElement("button");
   btn.type = "button";
   btn.textContent = "VIEW PLANS";
@@ -1127,7 +1127,7 @@ async function runCurrent() {
         body: JSON.stringify({ model: model.mn, params: state.values }),
       });
       const j = await r.json();
-      if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+      if (!r.ok) { console.error("premium compute failed — HTTP", r.status); throw new Error(j.error || "PREMIUM COMPUTE TEMPORARILY UNAVAILABLE — PLEASE RETRY IN A MOMENT"); }
       if (j.status && j.status !== "OK") throw new Error(j.status);
       payload = { results: j.results, figure: j.figure, explain: j.explain,
                   calc_ms: j.calc_ms, extras: j.extras };
@@ -1257,7 +1257,7 @@ function renderResults(model, payload) {
     const note = document.createElement("tr");
     note.className = "advisory";
     if (r.implied_fcf_cagr === null) {
-      note.innerHTML = `<td colspan="2">⚠ ${r.solver_note}</td>`;
+      note.innerHTML = `<td colspan="2">⚠ ${esc(r.solver_note)}</td>`;
     } else {
       const cagrPct = (r.implied_fcf_cagr * 100).toFixed(2) + "%";
       const tamPct = typeof r.implied_tam_capture === "number"
@@ -2016,7 +2016,7 @@ function renderIBContext() {
   const rf = state.ib.liveRf;
   ctx.innerHTML = `<td class="k">RISK-FREE (${c.code})</td><td class="v">${
     rf !== null && rf !== undefined ? (rf * 100).toFixed(3) + "%" : "—"
-  } <span class="badge live">${state.ib.rfSource || "FETCHING…"}</span></td>`;
+  } <span class="badge live">${esc(state.ib.rfSource || "FETCHING…")}</span></td>`;
   grid.appendChild(ctx);
 
   let mkt = $("#ibmkt");
@@ -2943,7 +2943,7 @@ function syncPlanChip() {
   const us = state.billing.usage;
   if (!us || !us.metered) { el.innerHTML = `PLAN <b>FREE · SIGN IN</b>`; return; }
   const lim = us.limit === null ? "∞" : us.limit;
-  el.innerHTML = `PLAN <b class="${us.plan !== "free" ? "paid" : ""}">${us.planName} · ${us.used}/${lim}</b>`;
+  el.innerHTML = `PLAN <b class="${us.plan !== "free" ? "paid" : ""}">${esc(us.planName)} · ${us.used}/${lim}</b>`;
 }
 
 /* ----------------------------- upload gate ------------------------------ */

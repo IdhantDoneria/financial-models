@@ -674,6 +674,8 @@ async function marketOnly(ticker) {
   return null;
 }
 
+const { clientIp, withinLimitLayered } = require("./_lib/net");
+
 module.exports = async (req, res) => {
   res.setHeader("Content-Type", "application/json; charset=utf-8");
   // Fundamentals change quarterly at most, so the CDN caches hard and SEC sees
@@ -695,6 +697,31 @@ module.exports = async (req, res) => {
   const ticker = String(url.searchParams.get("ticker") || "").trim().toUpperCase();
   if (!/^[A-Z0-9.\-]{1,12}$/.test(ticker)) {
     return res.status(400).json({ ok: false, error: "PASS A TICKER, e.g. ?ticker=AAPL" });
+  }
+
+  // Every ticker here is uncached-per-caller upstream work (unlike quotes.js's
+  // fixed tape basket, which is one shared CDN-cached fetch for everyone) —
+  // and the heaviest of any endpoint in this app: a cold hit fans out to a
+  // multi-MB SEC companyfacts JSON, SEC's ~1MB ticker directory (until warm),
+  // a Yahoo price lookup, and sometimes an er-api FX/dividend lookup. That
+  // makes it the cheapest-to-trigger, most-expensive-to-serve request in the
+  // product, so it gets the tightest per-IP budget of any endpoint (versus
+  // quotes.js's 30/60s and rates.js's 20/60s) — a human analyst pulling up
+  // companies one at a time reads each result for a while before typing the
+  // next ticker; a handful a minute, not a dozen a second. Layered with a
+  // global backstop since clientIp() is only as trustworthy as whatever's in
+  // front of this function — see the comment in _lib/net.js. The backstop's
+  // window is kept short (5s) so a burst that exhausts the shared budget
+  // self-clears in a few seconds rather than locking out every OTHER visitor
+  // for up to a minute; its cap is sized down from quotes/rates' (50, 35) to
+  // reflect that each fundamentals hit costs several times as much upstream
+  // work as a quote or a rate lookup.
+  //
+  // Placed before loadTickerMap()/resolveTicker() below — the first upstream
+  // fetch this handler can trigger — so a 429 short-circuits before any SEC,
+  // Yahoo, or er-api call is made.
+  if (!(await withinLimitLayered(`fundamentals:rl:${clientIp(req)}`, 10, 60, "fundamentals:rl:global", 20, 5))) {
+    return res.status(429).json({ ok: false, error: "rate limited" });
   }
 
   let entry;
