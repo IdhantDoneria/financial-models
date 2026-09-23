@@ -57,6 +57,13 @@ html, body {
 #bootbar { width: min(680px, 90vw); height: 3px; background: var(--border); }
 #bootbar div { height: 100%; width: 0%; background: var(--amber); transition: width 0.4s; }
 #boot .hint { color: var(--text-dim); font-size: 11px; letter-spacing: 0.1em; }
+#boot .boot-help { width: min(680px, 90vw); text-align: center; }
+#boot .boot-help p { color: var(--text-dim); font-size: 12px; line-height: 1.6; margin: 0 0 12px; }
+#boot .boot-retry {
+  background: transparent; color: var(--amber); border: 1px solid var(--amber);
+  font: inherit; font-size: 12px; letter-spacing: 0.2em; padding: 8px 22px; cursor: pointer;
+}
+#boot .boot-retry:hover { background: var(--amber); color: var(--bg, #000); }
 
 /* ---------------------------------------------------------------- app --- */
 #app {
