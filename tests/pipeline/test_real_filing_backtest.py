@@ -37,6 +37,7 @@ from pathlib import Path
 import pytest
 
 from src.pipeline import AnalysisRunner, AutoAssumer, PDFExtractor
+from src.pipeline.pdf_extractor import ExtractedFinancials
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 
@@ -57,6 +58,17 @@ def caplin_text() -> str:
 
 
 CR = 1e7   # one crore, the unit this filing reports in
+
+
+def _fade(base: float, g0: float, g_terminal: float = 0.025, years: int = 10) -> list[float]:
+    """The approved projection convention, written out independently: growth
+    starts at g0 in year 1 and falls in equal steps to g_terminal in the last
+    explicit year (AutoAssumer's default terminal g is min(4.25%, 2.5%))."""
+    out, v = [], base
+    for t in range(years):
+        v *= 1 + g0 + (g_terminal - g0) * t / (years - 1)
+        out.append(v)
+    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -321,12 +333,13 @@ def test_caplin_ratios_match_the_filings_own_stated_percentages(caplin_text):
 def test_caplin_dcf_runs_on_a_projection_seeded_by_the_real_fcf(caplin_text):
     """A single disclosed FCF is a base, not a trajectory. Handing the DCF a
     one-element list would quietly reduce it to one explicit year plus a
-    terminal value; it must be grown into the five-year path instead."""
+    terminal value; it must be grown into the full explicit path instead."""
     data = PDFExtractor().scrape_figures(caplin_text)
     assumptions = AutoAssumer().build(data)
     fcfs = assumptions.kwargs_by_model["Discounted Cash Flow"]["free_cash_flows"]
-    assert len(fcfs) == 5
+    assert len(fcfs) == 10
     assert fcfs[0] == pytest.approx(40 * CR * (1 + data.revenue_growth), rel=0.01)
+    assert fcfs == pytest.approx(_fade(40 * CR, data.revenue_growth), rel=0.01)
     report = AnalysisRunner(data).run(assumptions, ["Discounted Cash Flow"], mode="auto")
     assert "Discounted Cash Flow" not in report.errors
     assert report.results["Discounted Cash Flow"]["enterprise_value"] > 0
@@ -469,16 +482,45 @@ def test_gated_dcf_reports_the_explanation_not_a_raw_exception():
     assert "Traceback" not in status and "ValidationError" not in status
 
 
-def test_a_turnaround_series_ending_positive_is_not_gated():
+def test_a_turnaround_history_ending_positive_is_not_gated():
     """Burning early and turning cash-positive is an ordinary, valuable
-    company — only the FINAL year drives the terminal perpetuity, so a
-    [-10, -5, 3, 8] path must still produce a real valuation."""
+    company. The series is REPORTED history, so only the most recent year
+    seeds the projection: a history whose latest year is positive must
+    still produce a real valuation."""
     data = PDFExtractor().scrape_figures(_BURN_FILING)
     data.free_cash_flows = [-10 * CR, -5 * CR, 3 * CR, 8 * CR]
+    data.fcf_history_order = "oldest_first"
     assumptions = AutoAssumer().build(data)
     assert DCF_MODEL not in assumptions.unavailable
     report = AnalysisRunner(data).run(assumptions, [DCF_MODEL], mode="auto")
     assert report.results[DCF_MODEL]["enterprise_value"] > 0
+
+
+def test_a_history_whose_latest_year_burns_cash_is_gated():
+    """The mirror case: the same four years in the filing's usual
+    newest-first column order make -10 the latest year, and a perpetuity on
+    a cash burn is arithmetic, not a valuation."""
+    data = PDFExtractor().scrape_figures(_BURN_FILING)
+    data.free_cash_flows = [-10 * CR, -5 * CR, 3 * CR, 8 * CR]
+    data.fcf_history_order = "newest_first"
+    assert DCF_MODEL in AutoAssumer().build(data).unavailable
+
+
+@pytest.mark.parametrize("order,history", [
+    ("oldest_first", [70.0, 90.0, 110.0, 100.0]),
+    ("newest_first", [100.0, 110.0, 90.0, 70.0]),
+])
+def test_reported_history_is_a_base_never_the_forecast(order, history):
+    """Regression for the ticker-load DCF: six years of reported FCF were
+    discounted as FCF_1..FCF_6, valuing AAPL at $84 against a $337 price.
+    Whichever order the history arrives in, the forecast must be the latest
+    year grown forward — and must not contain the history itself."""
+    data = ExtractedFinancials(free_cash_flows=history, fcf_history_order=order,
+                               revenue_growth=0.10)
+    a = AutoAssumer().build(data)
+    fcfs = a.kwargs_by_model[DCF_MODEL]["free_cash_flows"]
+    assert fcfs == pytest.approx(_fade(100.0, 0.10))
+    assert a.kwargs_by_model["Reverse DCF / Market-Implied Expectations"]["base_fcf"] == 100.0
 
 
 def test_negative_fcf_never_derives_a_negative_revenue():
@@ -823,7 +865,7 @@ def test_synthesised_fcf_uses_the_sector_margin_and_growth_on_tesla():
     margin = SECTOR_BASELINES["Auto & Truck"]["operating_margin"]
     growth = SECTOR_BASELINES["Auto & Truck"]["revenue_growth"]
     base = data.revenue * margin
-    expected_fcfs = [base * (1 + growth) ** t for t in range(1, 6)]
+    expected_fcfs = _fade(base, growth)
     assert a.kwargs_by_model[DCF_MODEL]["free_cash_flows"] == pytest.approx(expected_fcfs)
 
 
@@ -854,7 +896,7 @@ def test_air_transport_sector_growth_is_capped_not_used_raw():
     a = AutoAssumer().build(data)
     fcfs = a.kwargs_by_model[DCF_MODEL]["free_cash_flows"]
     base = fcfs[0] / (1 + _MAX_SECTOR_GROWTH)
-    expected = [base * (1 + _MAX_SECTOR_GROWTH) ** t for t in range(1, 6)]
+    expected = _fade(base, _MAX_SECTOR_GROWTH)
     assert fcfs == pytest.approx(expected)
     assert "capped" in a.rationale[("DCF", "free_cash_flows")]
 
@@ -873,7 +915,7 @@ def test_a_legitimately_volatile_sector_growth_is_not_capped():
     a = AutoAssumer().build(data)
     fcfs = a.kwargs_by_model[DCF_MODEL]["free_cash_flows"]
     base = fcfs[0] / (1 + growth)
-    expected = [base * (1 + growth) ** t for t in range(1, 6)]
+    expected = _fade(base, growth)
     assert fcfs == pytest.approx(expected)
     assert "capped" not in a.rationale[("DCF", "free_cash_flows")]
 
@@ -973,3 +1015,24 @@ def test_web_bridge_assumed_preview_matches_what_autoassumer_actually_uses():
     # — the actual bug: these silently used to disagree.
     implied_margin = preview["free_cash_flows"][0] / (1 + preview["revenue_growth"]) / data.revenue
     assert implied_margin == pytest.approx(preview["operating_margin"])
+
+
+def test_assumed_preview_follows_the_selected_market():
+    """The preview used AutoAssumer() defaults (US rf, 2.5% cap) whatever
+    market was selected, so an Indian filing's previewed FCF path faded to a
+    terminal growth the report would never use. set_market() now carries the
+    selection, and the preview must equal what AutoAssumer.build projects."""
+    wb = _web_bridge()
+    data = PDFExtractor().scrape_figures(
+        (FIXTURES / "tesla_10k_fy2025_raw_text_excerpts.txt").read_text())
+    assert not data.free_cash_flows          # the preview synthesises the path
+    us = wb._assumed_preview(data)["free_cash_flows"]
+    wb.set_market('{"rf": 0.069, "erp": 0.078, "lt_growth": 0.05}')
+    india = wb._assumed_preview(data)["free_cash_flows"]
+    built = AutoAssumer(risk_free_rate=0.069, equity_risk_premium=0.078,
+                        terminal_growth_cap=0.05).build(data)
+    assert india == pytest.approx(built.kwargs_by_model["Discounted Cash Flow"]["free_cash_flows"],
+                                  rel=1e-4)
+    assert india[-1] / india[-2] - 1 == pytest.approx(0.05, abs=1e-3)   # fades to India's cap
+    assert us[-1] / us[-2] - 1 == pytest.approx(0.025, abs=1e-3)
+    wb.set_market("{}")

@@ -185,25 +185,32 @@ const MODELS = [
  * premium (Damodaran country ratings). Selecting a country repoints every
  * risk-free / discount input and the IB desk's live rate so the terminal
  * works from the chosen market's cost of capital — dissolving the default
- * US-only geographic assumption. The US rate can still refresh LIVE from the
- * Treasury FiscalData API; others use these curated sovereign baselines.
+ * US-only geographic assumption. The US rate refreshes LIVE from Treasury's
+ * daily par yield curve (10Y); others use these curated sovereign baselines.
+ *
+ * `ltg` is the market's long-run NOMINAL growth ceiling for a DCF terminal
+ * value (central-bank inflation target + trend real growth, rounded down):
+ * terminal growth = min(rf, ltg). One flat 2.5% used to apply everywhere,
+ * which undervalued every rupee valuation — India's nominal economy grows far
+ * faster than 2.5% and its rf is 6.9%. These are judgement defaults, shown in
+ * the report rationale and overridable in MANUAL mode.
  * ------------------------------------------------------------------------ */
 const COUNTRIES = [
-  { code: "US", name: "United States", flag: "🇺🇸", market: "NYSE / NASDAQ", ccy: "USD", rf: 0.0425, erp: 0.050, live: true },
-  { code: "CN", name: "China",         flag: "🇨🇳", market: "SSE / SZSE",    ccy: "CNY", rf: 0.0230, erp: 0.061 },
-  { code: "JP", name: "Japan",         flag: "🇯🇵", market: "JPX (Tokyo)",   ccy: "JPY", rf: 0.0105, erp: 0.056 },
-  { code: "IN", name: "India",         flag: "🇮🇳", market: "NSE / BSE",     ccy: "INR", rf: 0.0690, erp: 0.078 },
-  { code: "HK", name: "Hong Kong",     flag: "🇭🇰", market: "HKEX",          ccy: "HKD", rf: 0.0350, erp: 0.059 },
-  { code: "FR", name: "France",        flag: "🇫🇷", market: "Euronext Paris", ccy: "EUR", rf: 0.0310, erp: 0.055 },
-  { code: "GB", name: "United Kingdom", flag: "🇬🇧", market: "LSE",          ccy: "GBP", rf: 0.0410, erp: 0.055 },
-  { code: "CA", name: "Canada",        flag: "🇨🇦", market: "TSX",           ccy: "CAD", rf: 0.0335, erp: 0.052 },
-  { code: "SA", name: "Saudi Arabia",  flag: "🇸🇦", market: "Tadawul",       ccy: "SAR", rf: 0.0500, erp: 0.066 },
-  { code: "DE", name: "Germany",       flag: "🇩🇪", market: "Deutsche Börse", ccy: "EUR", rf: 0.0245, erp: 0.050 },
-  { code: "CH", name: "Switzerland",   flag: "🇨🇭", market: "SIX Swiss",     ccy: "CHF", rf: 0.0060, erp: 0.050 },
-  { code: "TW", name: "Taiwan",        flag: "🇹🇼", market: "TWSE",          ccy: "TWD", rf: 0.0150, erp: 0.061 },
-  { code: "AU", name: "Australia",     flag: "🇦🇺", market: "ASX",           ccy: "AUD", rf: 0.0430, erp: 0.052 },
-  { code: "KR", name: "South Korea",   flag: "🇰🇷", market: "KRX",           ccy: "KRW", rf: 0.0290, erp: 0.058 },
-  { code: "NL", name: "Netherlands",   flag: "🇳🇱", market: "Euronext Amsterdam", ccy: "EUR", rf: 0.0270, erp: 0.050 },
+  { code: "US", name: "United States", flag: "🇺🇸", market: "NYSE / NASDAQ", ccy: "USD", rf: 0.0425, erp: 0.050, ltg: 0.025, live: true },
+  { code: "CN", name: "China",         flag: "🇨🇳", market: "SSE / SZSE",    ccy: "CNY", rf: 0.0230, erp: 0.061, ltg: 0.030 },
+  { code: "JP", name: "Japan",         flag: "🇯🇵", market: "JPX (Tokyo)",   ccy: "JPY", rf: 0.0105, erp: 0.056, ltg: 0.010 },
+  { code: "IN", name: "India",         flag: "🇮🇳", market: "NSE / BSE",     ccy: "INR", rf: 0.0690, erp: 0.078, ltg: 0.050 },
+  { code: "HK", name: "Hong Kong",     flag: "🇭🇰", market: "HKEX",          ccy: "HKD", rf: 0.0350, erp: 0.059, ltg: 0.025 },
+  { code: "FR", name: "France",        flag: "🇫🇷", market: "Euronext Paris", ccy: "EUR", rf: 0.0310, erp: 0.055, ltg: 0.020 },
+  { code: "GB", name: "United Kingdom", flag: "🇬🇧", market: "LSE",          ccy: "GBP", rf: 0.0410, erp: 0.055, ltg: 0.025 },
+  { code: "CA", name: "Canada",        flag: "🇨🇦", market: "TSX",           ccy: "CAD", rf: 0.0335, erp: 0.052, ltg: 0.025 },
+  { code: "SA", name: "Saudi Arabia",  flag: "🇸🇦", market: "Tadawul",       ccy: "SAR", rf: 0.0500, erp: 0.066, ltg: 0.030 },
+  { code: "DE", name: "Germany",       flag: "🇩🇪", market: "Deutsche Börse", ccy: "EUR", rf: 0.0245, erp: 0.050, ltg: 0.020 },
+  { code: "CH", name: "Switzerland",   flag: "🇨🇭", market: "SIX Swiss",     ccy: "CHF", rf: 0.0060, erp: 0.050, ltg: 0.010 },
+  { code: "TW", name: "Taiwan",        flag: "🇹🇼", market: "TWSE",          ccy: "TWD", rf: 0.0150, erp: 0.061, ltg: 0.020 },
+  { code: "AU", name: "Australia",     flag: "🇦🇺", market: "ASX",           ccy: "AUD", rf: 0.0430, erp: 0.052, ltg: 0.025 },
+  { code: "KR", name: "South Korea",   flag: "🇰🇷", market: "KRX",           ccy: "KRW", rf: 0.0290, erp: 0.058, ltg: 0.020 },
+  { code: "NL", name: "Netherlands",   flag: "🇳🇱", market: "Euronext Amsterdam", ccy: "EUR", rf: 0.0270, erp: 0.050, ltg: 0.020 },
 ];
 //: Parameter ids that represent a risk-free / short rate across the models.
 const RF_PARAM_IDS = new Set(["risk_free_rate", "rate"]);
@@ -1424,27 +1431,55 @@ const IB_OVERRIDES = [
 
 const IB_FIELD_LABELS = {
   company_name: "COMPANY", ticker: "TICKER", fiscal_year: "FISCAL YEAR",
-  revenue: "REVENUE", free_cash_flows: "FREE CASH FLOWS", net_income: "NET INCOME",
+  revenue: "REVENUE", free_cash_flows: "FCF (REPORTED HISTORY)", net_income: "NET INCOME",
   total_debt: "TOTAL DEBT", cash_and_equivalents: "CASH & EQUIV",
   net_debt: "NET DEBT", shares_outstanding: "SHARES OUT",
   current_price: "SHARE PRICE", dividend_per_share: "DIVIDEND / SH",
   beta: "BETA", revenue_growth: "REV GROWTH", operating_margin: "OP MARGIN",
   tax_rate: "TAX RATE", depreciation_amortization: "D&A",
   rd_expense: "R&D EXPENSE", capital_expenditures: "CAPEX",
+  finance_lease_liabilities: "FINANCE LEASES", operating_lease_liabilities: "OPERATING LEASES",
+  stock_based_compensation: "STOCK COMP", realized_volatility: "VOLATILITY (5Y MONTHLY)",
 };
+
+//: Inputs the ticker path MEASURES or reads that have no auto-assumed
+//  stand-in (a PDF upload simply doesn't have them). Missing ones render as
+//  NOT REPORTED rather than an AUTO-ASSUMED badge promising a value that
+//  doesn't exist.
+const IB_INFO_FIELDS = new Set([
+  "finance_lease_liabilities", "operating_lease_liabilities",
+  "stock_based_compensation", "realized_volatility",
+]);
 
 /* ------------------------- live market data ---------------------------- */
 //: Anchor the IB desk to the selected country: baseline sovereign yield takes
 //  effect IMMEDIATELY (so an upload can never run on another market's rate),
-//  then /api/rates upgrades it to a live figure — US Treasury FiscalData for
-//  the US, FRED/OECD 10Y govt yields elsewhere (free FRED_API_KEY), plus the
+//  then /api/rates upgrades it to a live figure — Treasury's daily 10Y par
+//  yield for the US, FRED/OECD 10Y govt yields elsewhere (free FRED_API_KEY), plus the
 //  keyless er-api USD fix for FX context. Any fetch failure keeps the
 //  curated Damodaran baseline, clearly labelled as such.
+//: Push the selected market into the Python bridge so the AUTO-ASSUMED
+//  preview uses the same rf / ERP / terminal-growth cap the report will, and
+//  re-render it if a filing is on screen. Best-effort: a failure here only
+//  leaves the preview on its previous market, never blocks the rate update.
+function syncIBMarket(c) {
+  try {
+    if (!state.pyodide) return;
+    const out = JSON.parse(state.pyodide.runPython("web_bridge.set_market")(
+      JSON.stringify({ rf: state.ib.liveRf, erp: c.erp, lt_growth: c.ltg })));
+    if (out.ok && out.assumed && state.ib.extracted) {
+      state.ib.extracted.assumed = out.assumed;
+      if (state.view === "ib") renderIBExtracted();
+    }
+  } catch (e) { console.warn("market sync failed:", e); }
+}
+
 async function applyCountryToIB(c) {
   const seq = (state.ib.rateSeq = (state.ib.rateSeq || 0) + 1);
   state.ib.liveRf = c.rf;
   state.ib.rfSource = `${c.name.toUpperCase()} 10Y SOVEREIGN BASELINE (DAMODARAN)`;
   state.ib.fx = null; state.ib.fxDate = null;
+  syncIBMarket(c);
   renderIBContext();
   try {
     const r = await fetch(`api/rates?cc=${c.code}`, { signal: AbortSignal.timeout(9000) });
@@ -1456,6 +1491,7 @@ async function applyCountryToIB(c) {
       state.ib.rfSource = j.rfSource || state.ib.rfSource;
       //: live yield also re-anchors the manual sliders' defaults
       applyCountryDefaults({ ...c, rf: j.rf });
+      syncIBMarket(c);
     }
     if (typeof j.fx === "number") { state.ib.fx = j.fx; state.ib.fxDate = j.fxDate; }
     renderIBContext();
@@ -1534,10 +1570,12 @@ function buildIBForm() {
   if (state.ib.mode === "auto") {
     const c = state.country || COUNTRIES[0];
     body.insertAdjacentHTML("beforeend",
-      `<div class="ibhint">IB BOT: CAPM WACC (80/20 equity-debt, +150bp credit spread), terminal g ≤ r_f
-       (Gordon constraint), sector-neutral β fallback. Anchored to <b>${c.flag} ${c.name.toUpperCase()}</b>:
-       ERP ${(c.erp * 100).toFixed(1)}% (Damodaran country rating), risk-free from the live 10Y
-       sovereign yield (US Treasury FiscalData / FRED-OECD), baseline fallback offline.
+      `<div class="ibhint">IB BOT: CAPM WACC (Blume-adjusted β, lease liabilities as debt), FCF to the firm
+       (3-year average, interest added back, stock comp deducted) projected 10 years with growth fading
+       to terminal g = min(r_f, ${(c.ltg * 100).toFixed(1)}% long-run growth). Anchored to
+       <b>${c.flag} ${c.name.toUpperCase()}</b>: ERP ${(c.erp * 100).toFixed(1)}% (Damodaran country rating),
+       risk-free from the live 10Y sovereign yield (US Treasury par yield curve / FRED-OECD), baseline
+       fallback offline.
        Change the market with the country button (top-right).</div>`);
   } else {
     body.insertAdjacentHTML("beforeend",
@@ -1923,7 +1961,8 @@ async function onIBUpload() {
 const IB_MONEY_FIELDS = new Set([
   "revenue", "free_cash_flows", "net_income", "total_debt",
   "cash_and_equivalents", "net_debt", "current_price", "dividend_per_share",
-  "interest_expense",
+  "interest_expense", "finance_lease_liabilities", "operating_lease_liabilities",
+  "stock_based_compensation",
 ]);
 //: Fields with no direct manual override: text/derived/synthesised.
 const IB_NO_OVERRIDE = new Set([
@@ -1962,6 +2001,13 @@ function renderIBExtracted() {
         ? `${fmtValue(key, value)} <span class="badge user clickable" data-key="${key}"
              title="manually set — click to edit or revert to auto">USER</span>`
         : `${fmtValue(key, value)} <span class="badge found">PDF</span>`;
+      //: A live price without its timestamp can't be judged for staleness.
+      if (key === "current_price" && out.fields.price_as_of) {
+        const t = new Date(out.fields.price_as_of);
+        if (!isNaN(t)) shown += ` <span class="asof">AS OF ${esc(t.toISOString().slice(0, 16).replace("T", " "))} UTC</span>`;
+      }
+    } else if (IB_INFO_FIELDS.has(key)) {
+      shown = `— <span class="badge">NOT REPORTED</span>`;
     } else {
       //: Transparency: show the exact number the bot will assume, and let the
       //  user click AUTO-ASSUMED to take that field over manually.
@@ -1974,7 +2020,11 @@ function renderIBExtracted() {
                           : key === "free_cash_flows" ? "synthesised from revenue × margin × growth"
                           : "not used by the models"}">AUTO-ASSUMED</span>`;
     }
-    tr.innerHTML = `<td class="k">${label}${ccyTag}</td><td class="v">${shown}</td>`;
+    //: IFRS 16 has no finance/operating split — its single lease liability
+    //  lands in the finance field, and is labelled for what it is.
+    const shownLabel = key === "finance_lease_liabilities" && out.fields.accounting_standard === "ifrs-full"
+      ? "LEASE LIABILITIES (IFRS 16)" : label;
+    tr.innerHTML = `<td class="k">${shownLabel}${ccyTag}</td><td class="v">${shown}</td>`;
     grid.appendChild(tr);
   });
   grid.querySelectorAll(".badge.clickable").forEach((b) => {
@@ -2096,6 +2146,7 @@ async function runIBReport() {
       live_rf: state.ib.liveRf,
       rf_source: state.ib.rfSource,
       erp: c.erp,                       // country equity risk premium (Damodaran)
+      lt_growth: c.ltg,                 // long-run nominal growth cap for terminal g
       country: c.name, country_code: c.code,
       //: The figures in this report are denominated in whatever the UPLOADED
       //  FILING reports in — the country selector drives the cost of capital

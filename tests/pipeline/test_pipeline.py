@@ -838,26 +838,32 @@ def test_option_models_not_flagged_when_a_real_share_price_is_known():
         assert model not in assumptions.partial, f"{model} should not be flagged"
 
 
-def test_rdcf_tam_is_not_fabricated_and_blocks_auto_mode(synthetic_pdf):
+def test_rdcf_tam_is_not_fabricated_and_does_not_block_auto_mode(synthetic_pdf):
     """No filing states its own TAM in a form a regex can trust, and unlike
     WACC/terminal growth there's no formula-based proxy that's meaningfully
     better than a guess — a 10x-revenue placeholder looked precise but
-    wasn't. TAM is now a required MANUAL input: left unset (not fabricated)
-    in auto mode, and Reverse DCF is marked unavailable until it's
-    supplied, even when price/shares are both known (as they are in this
-    fixture)."""
+    wasn't. So TAM stays unset (never fabricated) in auto mode.
+
+    It no longer blocks the model, though: TAM feeds only the implied
+    market-share read, and the implied growth rate needs just price, shares,
+    net debt and base FCF (all present in this fixture). Gating the whole
+    model on it meant Reverse DCF never ran on an automatic analysis."""
     data = PDFExtractor().extract(synthetic_pdf)
     assumptions = AutoAssumer().build(data)
     kw = assumptions.kwargs_by_model["Reverse DCF / Market-Implied Expectations"]
     assert kw["total_addressable_market"] is None
-    reason = assumptions.unavailable["Reverse DCF / Market-Implied Expectations"]
-    assert "addressable market" in reason
+    assert "Reverse DCF / Market-Implied Expectations" not in assumptions.unavailable
+    report = AnalysisRunner(data).run(
+        assumptions, ["Reverse DCF / Market-Implied Expectations"], mode="auto")
+    res = report.results["Reverse DCF / Market-Implied Expectations"]
+    assert res["implied_tam_capture"] is None
 
-    # Supplying TAM manually (with price/shares already present from the
-    # filing) is enough to make it available again.
+    # Supplying TAM manually adds the market-share read.
     ov = ManualOverrides(total_addressable_market=200_000_000_000)
     manual = ManualAssumer().build(data, ov)
-    assert "Reverse DCF / Market-Implied Expectations" not in manual.unavailable
+    manual_res = AnalysisRunner(data).run(
+        manual, ["Reverse DCF / Market-Implied Expectations"], mode="manual").results
+    assert manual_res["Reverse DCF / Market-Implied Expectations"]["implied_tam_capture"] > 0
 
 
 def test_rdcf_marked_unavailable_when_price_and_shares_both_undisclosed():
@@ -969,20 +975,20 @@ def test_hdebt_rdcf_manual_overrides_reach_kwargs(synthetic_pdf):
 # 4. Runner executes every model without exceptions
 # --------------------------------------------------------------------------- #
 def test_runner_all_models_produce_results(synthetic_pdf):
-    """Reverse DCF and Gordon Growth are the expected exceptions in pure
-    auto mode — no filing states a trustworthy TAM (see
-    test_rdcf_tam_is_not_fabricated_and_blocks_auto_mode) or, on this
-    fixture, a dividend per share (see
-    test_gordon_growth_blocked_when_no_dividend_disclosed) — both are
-    required manual inputs and correctly land in errors, not results,
-    until supplied."""
+    """Gordon Growth is the one expected exception in pure auto mode on this
+    fixture — it discloses no dividend per share (see
+    test_gordon_growth_blocked_when_no_dividend_disclosed), a required
+    manual input that correctly lands in errors, not results, until
+    supplied. Reverse DCF runs: this fixture states a price and share count,
+    and TAM is optional (see
+    test_rdcf_tam_is_not_fabricated_and_does_not_block_auto_mode)."""
     data = PDFExtractor().extract(synthetic_pdf)
     assumptions = AutoAssumer().build(data)
     report = AnalysisRunner(data).run(assumptions, list(AVAILABLE_MODELS), mode="auto")
     rdcf = "Reverse DCF / Market-Implied Expectations"
     gordon = "Gordon Growth Model"
-    assert set(report.errors) == {rdcf, gordon}, f"unexpected failures: {report.errors}"
-    assert set(report.results) == set(AVAILABLE_MODELS) - {rdcf, gordon}
+    assert set(report.errors) == {gordon}, f"unexpected failures: {report.errors}"
+    assert set(report.results) == set(AVAILABLE_MODELS) - {gordon}
     for name, res in report.results.items():
         assert res and isinstance(res, dict)
 

@@ -112,6 +112,10 @@ const FLOW_TAGS = {
   interest_expense: ["InterestExpense", "InterestExpenseDebt",
                      "InterestIncomeExpenseNet"],
   income_tax_expense: ["IncomeTaxExpenseBenefit"],
+  //: Positive-only expense. ShareBasedCompensation is by far the dominant
+  //  tag; AllocatedShareBasedCompensationExpense is the fallback some filers
+  //  use when the expense is broken out by segment/allocation instead.
+  stock_based_compensation: ["ShareBasedCompensation", "AllocatedShareBasedCompensationExpense"],
   //: Dividends are the sharpest annual-vs-quarterly trap in this file. Apple
   //  tags CommonStockDividendsPerShareDeclared 61 times at annual length AND
   //  187 times at quarterly length in the same series; taking "the latest
@@ -149,6 +153,7 @@ const IFRS_FLOW_TAGS = {
   income_tax_expense: ["IncomeTaxExpenseContinuingOperations"],
   dividends_per_share: ["DividendsPaidOrdinarySharePerShare", "DividendsRecognisedAsDistributionsToOwnersOfParentPerShare"],
   pretax_income: ["ProfitLossBeforeTax"],
+  stock_based_compensation: ["AdjustmentsForSharebasedPayments"],
 };
 
 const IFRS_STOCK_TAGS = {
@@ -170,6 +175,28 @@ const STOCK_TAGS = {
                     "ShortTermBorrowings", "OtherShortTermBorrowings"],
   shares_outstanding: ["CommonStockSharesOutstanding", "CommonStockSharesIssued"],
 };
+
+/* ---------------------------- lease liabilities ---------------------------- *
+ * Leases sit outside FLOW_TAGS/STOCK_TAGS because they need a THIRD shape:
+ * some filers disclose one total tag, others only a current/noncurrent pair,
+ * and the right answer depends on which is present — see pickLeaseLiability().
+ * IFRS 16 collapses the finance/operating distinction entirely (a single
+ * on-balance-sheet lease liability), so IFRS filers are handled separately in
+ * the handler rather than through this cascade. */
+const LEASE_TAGS = {
+  financeTotal: ["FinanceLeaseLiability"],
+  financeCurrent: ["FinanceLeaseLiabilityCurrent"],
+  financeNoncurrent: ["FinanceLeaseLiabilityNoncurrent"],
+  operatingTotal: ["OperatingLeaseLiability"],
+  operatingCurrent: ["OperatingLeaseLiabilityCurrent"],
+  operatingNoncurrent: ["OperatingLeaseLiabilityNoncurrent"],
+};
+
+//: SBUX (CIK 829224) has no OperatingLeaseLiability total tag — only current
+//  + noncurrent — while AAPL reports OperatingLeaseLiabilityNoncurrent plus a
+//  current portion folded into "other current liabilities" (no current lease
+//  tag at all), so the noncurrent-only branch below is a real, not
+//  theoretical, code path.
 
 /**
  * The currency a filing actually reports in.
@@ -308,6 +335,135 @@ function pickAnnualSeries(facts, tags, maxYears = 6, prefer = null) {
   return { series: best.series, tag: best.tag, unit: best.unit };
 }
 
+/**
+ * Total lease liability from whichever shape a filer actually discloses.
+ *
+ * Preferring the total tag when it exists avoids double-summing a company
+ * that also tags a total alongside the split (some filers do both); falling
+ * back to current+noncurrent covers the common case where only the split is
+ * tagged. Noncurrent-only is accepted (not refused) because several large
+ * filers — AAPL's operating lease among them — never tag a current lease
+ * liability separately, folding it into "other current liabilities" instead;
+ * refusing the figure entirely would be worse than a caveated understatement.
+ */
+function pickLeaseLiability(facts, totalTags, currentTags, noncurrentTags, prefer = null) {
+  const total = pickInstant(facts, totalTags, prefer);
+  if (total) return { value: total.value, end: total.end, source: "total" };
+
+  const cur = pickInstant(facts, currentTags, prefer);
+  const nc = pickInstant(facts, noncurrentTags, prefer);
+  if (!cur && !nc) return null;
+  if (nc && !cur) return { value: nc.value, end: nc.end, source: "noncurrent-only" };
+  if (cur && !nc) return { value: cur.value, end: cur.end, source: "current-only" };
+  return { value: cur.value + nc.value, end: nc.end, source: "sum" };
+}
+
+//: A debt tag whose NAME already says "Lease" (e.g.
+//  LongTermDebtAndCapitalLeaseObligations) already folds finance-lease
+//  liabilities into total_debt. Reporting finance_lease_liabilities
+//  alongside it would double-count the same dollars under two field names —
+//  a wrong balance sheet that would look like a complete one. This cascade
+//  does not currently select such a tag, but the guard is cheap and the
+//  failure mode (silent double-count) is exactly the kind this file exists
+//  to prevent, so it stays live rather than only documented.
+function debtTagIncludesLeases(tag) {
+  return typeof tag === "string" && /lease/i.test(tag);
+}
+
+//: us-gaap tags whose value is a NET figure (income minus expense, or vice
+//  versa) rather than a pure expense. A positive value here means net
+//  interest INCOME, not expense — treating it as expense (the historical
+//  bug) turns a company with more interest income than expense into one
+//  reporting a large interest cost. Only a NEGATIVE net value (net expense)
+//  is a valid interest_expense; a positive one is reported missing rather
+//  than flipped, because the sign is the one part of a net figure that
+//  cannot be silently reinterpreted as its opposite.
+const NET_INTEREST_TAGS = ["InterestIncomeExpenseNet"];
+
+/**
+ * Interest expense from one raw XBRL row, applying the net-tag sign rule.
+ * `tag` is the SERIES' tag (pickAnnualSeries picks one tag for the whole
+ * series), so the rule is evaluated once per series, not per row — but is
+ * expressed as a per-row function since it is applied to every row when
+ * building interest_expense_series.
+ */
+function interestExpenseFromRow(val, tag) {
+  if (val == null) return null;
+  if (NET_INTEREST_TAGS.includes(tag)) return val < 0 ? Math.abs(val) : null;
+  return Math.abs(val);
+}
+
+/**
+ * Project a pickAnnualSeries() result onto an externally-supplied list of
+ * period ends (typically free_cash_flows' own ends), so a second series can
+ * be reported ONE-TO-ONE with a first — null at any index whose period this
+ * series didn't report, never shifted to fill the gap. `transform` lets the
+ * caller apply a per-row rule (e.g. interestExpenseFromRow's sign check)
+ * while still going through the same end-keyed lookup.
+ */
+function seriesAlignedTo(flowResult, ends, transform = (v) => v) {
+  if (!flowResult) return ends.map(() => null);
+  const byEnd = new Map(flowResult.series.map((r) => [r.end, transform(r.val, flowResult.tag)]));
+  return ends.map((e) => (byEnd.has(e) ? byEnd.get(e) : null));
+}
+
+//: IFRS classification tags are disclosure flags, not monetary facts — some
+//  filers tag them with a boolean-ish "pure" unit and no numeric magnitude at
+//  all. Presence of ANY row is therefore what "disclosed" means here; there
+//  is no amount to filter by duration or restatement the way pickAnnualSeries
+//  does for real financial concepts.
+function ifrsInterestClassification(facts) {
+  const hasDisclosure = (tag) => {
+    const f = facts[tag];
+    if (!f || !f.units) return false;
+    return Object.values(f.units).some((rows) => Array.isArray(rows) && rows.length > 0);
+  };
+  if (hasDisclosure("InterestPaidClassifiedAsOperatingActivities")) return "operating";
+  if (hasDisclosure("InterestPaidClassifiedAsFinancingActivities")) return "financing";
+  return null;
+}
+
+//: Many ifrs-full filers (Infosys among them) tag neither
+//  InterestPaidClassifiedAs* disclosure at all, even though IAS 7 still
+//  requires them to classify interest paid consistently — the classification
+//  exists as a real policy, it's just not named directly. Lease cash flows
+//  give indirect evidence of it: a filer whose PAYMENTS classified as
+//  financing activities cover (nearly) all of its total lease cash outflow
+//  must be including lease INTEREST inside that financing figure too, since
+//  principal alone is only part of a lease payment — covering ~100% of the
+//  total this way is the entity's policy showing through, not a coincidence.
+//  A financing figure materially BELOW the total means the missing piece
+//  (interest) is booked elsewhere — operating activities, by elimination.
+//  A ratio in between is too close to call from this evidence alone and
+//  stays null rather than guessing.
+const LEASE_INTEREST_FINANCING_RATIO = 0.99;
+const LEASE_INTEREST_OPERATING_RATIO = 0.90;
+
+/**
+ * Fallback for ifrsInterestClassification() when no explicit
+ * InterestPaidClassifiedAs* tag is disclosed. Compares the SAME latest
+ * period's CashOutflowForLeases (total) against
+ * PaymentsOfLeaseLiabilitiesClassifiedAsFinancingActivities (financing-only)
+ * — both required, and required to share a period end, since comparing
+ * different years would compare unrelated numbers. Verified live: INFY
+ * FY2025-03-31 tags both at 278,000,000 (ratio 1.00) -> "financing".
+ */
+function inferIfrsLeaseInterestClassification(facts, prefer) {
+  const total = pickAnnualSeries(facts, ["CashOutflowForLeases"], 1, prefer);
+  const financing = pickAnnualSeries(
+    facts, ["PaymentsOfLeaseLiabilitiesClassifiedAsFinancingActivities"], 1, prefer);
+  if (!total || !financing) return null;
+  const totalRow = total.series[total.series.length - 1];
+  const financingRow = financing.series[financing.series.length - 1];
+  if (totalRow.end !== financingRow.end) return null;   // different periods aren't comparable
+  const totalVal = Math.abs(totalRow.val);
+  if (totalVal <= 0) return null;
+  const ratio = Math.abs(financingRow.val) / totalVal;
+  if (ratio >= LEASE_INTEREST_FINANCING_RATIO) return "financing";
+  if (ratio <= LEASE_INTEREST_OPERATING_RATIO) return "operating";
+  return null;
+}
+
 /* --------------------------------- beta ---------------------------------- *
  * Beta is NOT an XBRL concept and never will be. Searching Apple's 503
  * us-gaap tags for "beta" returns nothing, because beta is not a disclosure —
@@ -342,6 +498,21 @@ function benchmarkFor(symbol) {
 }
 
 /** Monthly closes for a symbol, as {t: unixSeconds, c: close} sorted by time. */
+//: Yahoo's chart endpoint fails intermittently (observed: the same AAPL
+//  request returning no series, then a full 58-month one seconds later).
+//  One failure used to silently cost that load its beta, realised
+//  volatility, correlation and real Fama-French regression — every model
+//  fell back to its fixed guesses. One short retry absorbs the transient
+//  case; a persistent failure still degrades to null, as before.
+async function fetchMonthlyClosesWithRetry(symbol) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const series = await fetchMonthlyCloses(symbol).catch(() => null);
+    if (series && series.length) return series;
+    if (attempt === 0) await new Promise((r) => setTimeout(r, 400));
+  }
+  return null;
+}
+
 async function fetchMonthlyCloses(symbol, range = "5y") {
   const r = await fetch(
     `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}`
@@ -369,19 +540,72 @@ async function fetchMonthlyCloses(symbol, range = "5y") {
 //  they're bucketed to their calendar month before joining. Zipping the two
 //  arrays positionally instead would silently pair a stock's March with the
 //  index's April the moment one series is missing a month.
+//: Yahoo bars are stamped at the month START but their close is the month-
+//  END close (a 2026-08-01T04:00Z bar's close IS August's month-end price,
+//  not July's) — so the return from the July bar to the August bar is
+//  August's return, and monthKey of the LATER point in a pair is the right
+//  label for that pair's return. Verified live: KO's Aug-2026 bar close vs
+//  its Jul-2026 bar close reproduces the same return this function labels
+//  202608, matching the change in KO's independently-fetched adjusted closes
+//  for that month.
 const monthKey = (unixSeconds) => {
   const d = new Date(unixSeconds * 1000);
   return d.getUTCFullYear() * 12 + d.getUTCMonth();
 };
 
-/** Simple returns from a close series, keyed by the month they END in. */
-function monthlyReturns(series) {
+//: monthKey (year*12 + zero-based month) back to a YYYYMM integer label,
+//  e.g. 2026*12+7 -> 202608.
+const monthKeyToLabel = (key) => Math.floor(key / 12) * 100 + (key % 12) + 1;
+
+//: The current UTC calendar month. A month equal to this one is still open —
+//  its bar (if any) reflects a mid-month price, not a real month-end close —
+//  so every caller below excludes it rather than reporting a partial return
+//  as if it were a completed one.
+const currentMonthKey = () => monthKey(Date.now() / 1000);
+
+//: Yahoo's `interval=1mo` chart response ends with one extra LIVE point
+//  stamped inside the still-open current month, appended after that month's
+//  regular bar (e.g. a 2026-09-01T04:00Z bar, then a live 2026-09-23T16:26Z
+//  quote — both fall in the same calendar month). Left alone, that live
+//  point becomes a second observation bucketed under the same monthKey and,
+//  joined into a return pair, silently overwrites the real month's return
+//  with a near-zero month-to-date figure. Collapse to one close per calendar
+//  month FIRST — the last observation seen in it — before any return is
+//  computed from the series.
+function dedupeMonthlyCloses(series) {
   const byMonth = new Map();
-  for (let i = 1; i < series.length; i++) {
-    const prev = series[i - 1].c, cur = series[i].c;
-    if (prev > 0) byMonth.set(monthKey(series[i].t), cur / prev - 1);
+  for (const pt of series) byMonth.set(monthKey(pt.t), pt); // series is ascending; last write wins
+  return [...byMonth.values()].sort((a, b) => a.t - b.t);
+}
+
+/**
+ * Simple returns from a close series, one per calendar month, keyed by the
+ * month they END in (the later bar's month — see monthKey above). Restricted
+ * to COMPLETED months: the still-open current month is dropped, since its
+ * "return" so far is a partial month-to-date figure that would otherwise
+ * enter beta/vol/correlation as an artificially small (or occasionally
+ * large) observation.
+ */
+function monthlyReturns(series) {
+  const deduped = dedupeMonthlyCloses(series);
+  const cur = currentMonthKey();
+  const byMonth = new Map();
+  for (let i = 1; i < deduped.length; i++) {
+    const key = monthKey(deduped[i].t);
+    if (key === cur) continue;
+    const prev = deduped[i - 1].c, close = deduped[i].c;
+    if (prev > 0) byMonth.set(key, close / prev - 1);
   }
   return byMonth;
+}
+
+//: [YYYYMM, r] pairs, ascending, r rounded to 6dp — the shape exposed on the
+//  response as `monthly_returns`. Built from the same Map monthlyReturns()
+//  already produces, so no extra network call or recomputation is involved.
+function monthlyReturnPairs(returnsMap) {
+  return [...returnsMap.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([key, r]) => [monthKeyToLabel(key), Number(r.toFixed(6))]);
 }
 
 //: A beta needs enough observations to mean anything. 24 monthly points is
@@ -390,11 +614,78 @@ function monthlyReturns(series) {
 //  letting the documented sector median apply.
 const MIN_BETA_OBSERVATIONS = 24;
 
+//: Sample standard deviation (n-1 denominator) of a list of monthly simple
+//  returns, annualised by the usual sqrt(12) scaling of i.i.d. monthly vol.
+//  Exported standalone so it can be checked against a hand-computed series.
+function annualizedVol(xs) {
+  const n = xs.length;
+  if (n < 2) return null;
+  const mean = xs.reduce((a, b) => a + b, 0) / n;
+  const variance = xs.reduce((a, b) => a + (b - mean) ** 2, 0) / (n - 1);
+  return Math.sqrt(variance) * Math.sqrt(12);
+}
+
+/**
+ * Pure regression core: beta, realised vol (stock and market) and their
+ * correlation from aligned (xs = market, ys = stock) monthly-return pairs.
+ * Split out from computeBeta() so it can be exercised directly against a
+ * hand-computed fixture, with no network call involved.
+ *
+ * Downstream models (options, Heston, VaR, MPT) were running on fixed
+ * guesses (25% stock vol, 18% market vol, 0.6 correlation) even though this
+ * same regression already had the real, symbol-specific numbers sitting
+ * right there — they were just never returned alongside beta.
+ *
+ * Sanity guards mirror the beta guard: a vol or correlation outside a
+ * plausible range is far more likely a data artifact than a real risk
+ * profile, so it comes back null rather than as a number a model would take
+ * at face value.
+ */
+function regressionStats(xs, ys) {
+  if (xs.length < MIN_BETA_OBSERVATIONS || xs.length !== ys.length) return null;
+
+  const n = xs.length;
+  const mx = xs.reduce((a, b) => a + b, 0) / n;
+  const my = ys.reduce((a, b) => a + b, 0) / n;
+  let cov = 0, varm = 0, vars = 0;
+  for (let i = 0; i < n; i++) {
+    cov += (xs[i] - mx) * (ys[i] - my);
+    varm += (xs[i] - mx) ** 2;
+    vars += (ys[i] - my) ** 2;
+  }
+  if (varm <= 0) return null;                 // a flat market has no beta
+  const beta = cov / varm;
+  //: A beta outside this range is almost always a data artifact (a bad
+  //  split adjustment, a near-dead ticker), not a real risk profile. Reject
+  //  rather than pass a number the DCF would take at face value.
+  if (!Number.isFinite(beta) || beta < -3 || beta > 5) return null;
+
+  const stockVol = annualizedVol(ys);
+  const marketVol = annualizedVol(xs);
+  //: Pearson correlation from the same sums the regression already computed
+  //  — cov/(sd_x * sd_y), using population sd (consistent with cov/varm above)
+  //  rather than the sample sd used for the reported vols.
+  const sdxPop = Math.sqrt(varm / n), sdyPop = Math.sqrt(vars / n);
+  const correlation = sdxPop > 0 && sdyPop > 0 ? cov / n / (sdxPop * sdyPop) : null;
+
+  //: (0, 3] admits even a near-meme-stock vol (300%/yr) while rejecting a
+  //  zero or non-finite result as a data artifact, not a real profile.
+  const volOk = (v) => Number.isFinite(v) && v > 0 && v <= 3;
+  const corrOk = Number.isFinite(correlation) && correlation >= -1 && correlation <= 1;
+
+  return {
+    beta, observations: n,
+    stockVol: volOk(stockVol) ? stockVol : null,
+    marketVol: volOk(marketVol) ? marketVol : null,
+    correlation: corrOk ? correlation : null,
+  };
+}
+
 async function computeBeta(symbol) {
   const bench = benchmarkFor(symbol);
   const [stock, market] = await Promise.all([
-    fetchMonthlyCloses(symbol).catch(() => null),
-    fetchMonthlyCloses(bench.symbol).catch(() => null),
+    fetchMonthlyClosesWithRetry(symbol),
+    fetchMonthlyClosesWithRetry(bench.symbol),
   ]);
   if (!stock || !market) return null;
 
@@ -404,23 +695,14 @@ async function computeBeta(symbol) {
     const mr = rm.get(m);
     if (typeof mr === "number") { ys.push(sr); xs.push(mr); }
   }
-  if (xs.length < MIN_BETA_OBSERVATIONS) return null;
+  const stats = regressionStats(xs, ys);
+  if (!stats) return null;
 
-  const n = xs.length;
-  const mx = xs.reduce((a, b) => a + b, 0) / n;
-  const my = ys.reduce((a, b) => a + b, 0) / n;
-  let cov = 0, varm = 0;
-  for (let i = 0; i < n; i++) {
-    cov += (xs[i] - mx) * (ys[i] - my);
-    varm += (xs[i] - mx) ** 2;
-  }
-  if (varm <= 0) return null;                 // a flat market has no beta
-  const beta = cov / varm;
-  //: A beta outside this range is almost always a data artifact (a bad
-  //  split adjustment, a near-dead ticker), not a real risk profile. Reject
-  //  rather than pass a number the DCF would take at face value.
-  if (!Number.isFinite(beta) || beta < -3 || beta > 5) return null;
-  return { beta, observations: n, benchmark: bench.name, benchmarkSymbol: bench.symbol };
+  //: The stock's own completed-month returns (not intersected with the
+  //  benchmark's calendar) — exposed on the response as `monthly_returns`.
+  //  Reuses `rs`, already computed above from the same fetch; no second call.
+  return { ...stats, benchmark: bench.name, benchmarkSymbol: bench.symbol,
+           monthlyReturns: monthlyReturnPairs(rs) };
 }
 
 /* ------------------------------- ADR ratios ------------------------------- *
@@ -600,8 +882,14 @@ async function fetchPrice(ticker) {
     const j = await r.json();
     const meta = j?.chart?.result?.[0]?.meta;
     const px = meta?.regularMarketPrice;
+    //: regularMarketTime is Yahoo's epoch SECONDS for the quote, distinct from
+    //  the fetch time — a quote can be stale (last close, after-hours) even
+    //  though the request just succeeded, and nothing else in this payload
+    //  says when the price is actually as of.
+    const asOf = typeof meta?.regularMarketTime === "number"
+      ? new Date(meta.regularMarketTime * 1000).toISOString() : null;
     return typeof px === "number" && px > 0
-      ? { price: px, currency: meta.currency || "USD" } : null;
+      ? { price: px, currency: meta.currency || "USD", asOf } : null;
   } catch { return null; }
 }
 
@@ -640,6 +928,12 @@ async function marketOnly(ticker) {
       notes.push(`Beta ${betaInfo.beta.toFixed(2)} is computed by regressing `
         + `${betaInfo.observations} monthly returns against the ${betaInfo.benchmark}.`);
     }
+    if (betaInfo && (betaInfo.stockVol !== null || betaInfo.correlation !== null)) {
+      notes.push(`Realised volatility, benchmark volatility and their correlation are computed `
+        + `from the same ${betaInfo.observations} monthly returns used for beta above, rather than `
+        + `the pipeline's fixed 25%/18%/0.6 guesses that the options, Heston, VaR and MPT models `
+        + `would otherwise fall back to.`);
+    }
     return {
       ok: true,
       partial: true,                 // the UI must not present this as a full extraction
@@ -652,8 +946,28 @@ async function marketOnly(ticker) {
         ticker: symbol,
         current_price: price.price,
         beta: betaInfo ? Number(betaInfo.beta.toFixed(3)) : null,
+        realized_volatility: betaInfo && betaInfo.stockVol !== null ? Number(betaInfo.stockVol.toFixed(4)) : null,
+        market_volatility: betaInfo && betaInfo.marketVol !== null ? Number(betaInfo.marketVol.toFixed(4)) : null,
+        market_correlation: betaInfo && betaInfo.correlation !== null ? Number(betaInfo.correlation.toFixed(4)) : null,
+        return_observations: betaInfo ? betaInfo.observations : null,
+        //: Same monthly-return series beta was computed from — see computeBeta().
+        monthly_returns: betaInfo ? betaInfo.monthlyReturns : [],
+        return_benchmark: betaInfo ? betaInfo.benchmarkSymbol : null,
+        //: No EDGAR facts on this path at all, so there is no taxonomy to name.
+        accounting_standard: null,
         currency: price.currency,
         free_cash_flows: [],
+        //: This path has no EDGAR filing behind it at all, so every figure
+        //  below that only ever comes from XBRL is null rather than omitted —
+        //  same reasoning as the `missing` list below.
+        finance_lease_liabilities: null,
+        operating_lease_liabilities: null,
+        stock_based_compensation: null,
+        interest_expense_series: [],
+        sbc_series: [],
+        fcf_period_ends: [],
+        interest_paid_classification: null,
+        price_as_of: price.asOf ?? null,
         backends_used: ["market-data"],
       },
       //: Everything a full extraction would have carried is named here, so
@@ -661,13 +975,19 @@ async function marketOnly(ticker) {
       missing: ["company_name", "revenue", "free_cash_flows", "net_income", "total_debt",
                 "cash_and_equivalents", "shares_outstanding", "dividend_per_share",
                 "revenue_growth", "operating_margin", "tax_rate",
-                "depreciation_amortization", "rd_expense", "capital_expenditures"],
+                "depreciation_amortization", "rd_expense", "capital_expenditures",
+                "finance_lease_liabilities", "operating_lease_liabilities",
+                "stock_based_compensation", "interest_expense_series", "sbc_series",
+                "fcf_period_ends", "interest_paid_classification", "accounting_standard"],
       notes,
       beta: betaInfo || null,
       sources: [
         { name: "Share price", url: "Yahoo Finance chart API" },
         ...(betaInfo ? [{ name: `Beta vs ${betaInfo.benchmark} (${betaInfo.observations} monthly returns)`,
                           url: "Computed by OLS from price history" }] : []),
+        ...(betaInfo && (betaInfo.stockVol !== null || betaInfo.correlation !== null)
+          ? [{ name: "Realised volatility & correlation (same monthly return series as beta)",
+               url: "Computed from price history" }] : []),
       ],
     };
   }
@@ -818,22 +1138,77 @@ module.exports = async (req, res) => {
   // OCF for a year it didn't report capex, and zipping positionally would
   // silently pair mismatched years.
   let freeCashFlows = [];
+  //: The period `end` for each surviving row, in the SAME order — this is
+  //  what interest_expense_series/sbc_series are projected onto below, so a
+  //  year that free_cash_flows dropped (no matching capex) is dropped from
+  //  those series too, and element i of every series always refers to the
+  //  same fiscal year as free_cash_flows[i].
+  let fcfPeriodEnds = [];
   if (flows.operating_cash_flow) {
     const capexByEnd = new Map(
       (flows.capital_expenditures?.series || []).map((r) => [r.end, r.val]));
-    freeCashFlows = flows.operating_cash_flow.series.map((r) => {
+    const fcfRows = flows.operating_cash_flow.series.map((r) => {
       const capex = capexByEnd.get(r.end);
       // Capex is reported as a positive outflow in the cash-flow statement.
-      return capex == null ? null : r.val - Math.abs(capex);
+      return capex == null ? null : { end: r.end, val: r.val - Math.abs(capex) };
     }).filter((v) => v !== null);
+    freeCashFlows = fcfRows.map((r) => r.val);
+    fcfPeriodEnds = fcfRows.map((r) => r.end);
     if (flows.capital_expenditures
         && freeCashFlows.length < flows.operating_cash_flow.series.length) {
       notes.push("Some years had operating cash flow but no matching capital-expenditure disclosure; those years are omitted from the FCF series rather than assumed zero.");
     }
     if (!flows.capital_expenditures) {
       freeCashFlows = [];
+      fcfPeriodEnds = [];
       notes.push("No capital-expenditure tag found, so free cash flow could not be derived from operating cash flow.");
     }
+  }
+
+  // --- interest expense / SBC series, aligned to fcfPeriodEnds ------------
+  const interestExpenseSeries = seriesAlignedTo(flows.interest_expense, fcfPeriodEnds,
+    interestExpenseFromRow);
+  const sbcSeries = seriesAlignedTo(flows.stock_based_compensation, fcfPeriodEnds,
+    (v) => (v == null ? null : Math.abs(v)));
+
+  // --- lease liabilities ---------------------------------------------------
+  // Kept out of STOCK_TAGS's simple cascade because the right figure depends
+  // on WHICH shape a filer discloses (total tag vs. current+noncurrent split)
+  // — see pickLeaseLiability(). IFRS 16 has no finance/operating split at
+  // all, so IFRS filers get a single LeaseLiabilities lookup instead.
+  let financeLease, operatingLease;
+  if (taxonomy === "ifrs-full") {
+    financeLease = pickInstant(facts, ["LeaseLiabilities"], reportingCurrency);
+    operatingLease = null;
+    if (financeLease) {
+      notes.push("This filer reports under IFRS 16, which has no operating/finance lease "
+        + "split; the single LeaseLiabilities balance is reported as finance_lease_liabilities "
+        + "and operating_lease_liabilities is left null.");
+    }
+  } else {
+    financeLease = pickLeaseLiability(facts, LEASE_TAGS.financeTotal, LEASE_TAGS.financeCurrent,
+      LEASE_TAGS.financeNoncurrent, reportingCurrency);
+    operatingLease = pickLeaseLiability(facts, LEASE_TAGS.operatingTotal, LEASE_TAGS.operatingCurrent,
+      LEASE_TAGS.operatingNoncurrent, reportingCurrency);
+  }
+  if (operatingLease && operatingLease.source === "noncurrent-only") {
+    notes.push("operating_lease_liabilities reflects only the noncurrent portion; this filer "
+      + "has no separate current operating-lease-liability tag.");
+  }
+  if (financeLease && financeLease.source === "noncurrent-only") {
+    notes.push("finance_lease_liabilities reflects only the noncurrent portion; this filer "
+      + "has no separate current finance-lease-liability tag.");
+  }
+  //: Guard against double-counting: if the tag already feeding total_debt has
+  //  "Lease" in its own name, finance leases are already inside total_debt
+  //  and reporting them again as a separate field would double-count them.
+  let financeLeaseValue = financeLease ? financeLease.value : null;
+  if (financeLeaseValue !== null
+      && (debtTagIncludesLeases(stocks.long_term_debt?.tag) || debtTagIncludesLeases(stocks.short_term_debt?.tag))) {
+    notes.push("finance_lease_liabilities is reported null: the debt tag already used for "
+      + "total_debt appears to include finance-lease liabilities, and reporting both would "
+      + "double-count the same dollars.");
+    financeLeaseValue = null;
   }
 
   // --- debt and cash ------------------------------------------------------
@@ -910,6 +1285,12 @@ module.exports = async (req, res) => {
     notes.push(`Beta ${betaInfo.beta.toFixed(2)} is computed here by regressing `
       + `${betaInfo.observations} monthly returns against the ${betaInfo.benchmark}, `
       + `not taken from a filing — beta is a market statistic and is not disclosed in XBRL.`);
+    if (betaInfo.stockVol !== null || betaInfo.correlation !== null) {
+      notes.push(`Realised volatility, benchmark volatility and their correlation are computed `
+        + `from the same ${betaInfo.observations} monthly returns used for beta above, rather than `
+        + `the pipeline's fixed 25%/18%/0.6 guesses that the options, Heston, VaR and MPT models `
+        + `would otherwise fall back to.`);
+    }
   } else {
     notes.push("Beta could not be computed from price history (too few observations or no price series); the sector-median fallback will apply instead.");
   }
@@ -1028,6 +1409,39 @@ module.exports = async (req, res) => {
   const latestEnd = revSeries.length ? revSeries[revSeries.length - 1].end
                                      : (stocks.cash_and_equivalents?.end || null);
 
+  //: Interest expense from InterestIncomeExpenseNet, applied through the
+  //  sign rule in interestExpenseFromRow(): a positive net value is net
+  //  interest INCOME, not expense (Badger Meter FY2025, CIK 9092: +$5.124M
+  //  net, no InterestExpense tag at all — the unguarded Math.abs() reported
+  //  that income as a $5.124M interest cost). Only a negative net value
+  //  (net expense) becomes a value here; a positive one is reported missing.
+  const interestExpenseTag = flows.interest_expense?.tag;
+  const interestExpenseValue = interestExpenseTag
+    ? interestExpenseFromRow(latestFlow("interest_expense"), interestExpenseTag) : null;
+  if (interestExpenseValue === null && NET_INTEREST_TAGS.includes(interestExpenseTag)
+      && latestFlow("interest_expense") != null) {
+    notes.push("interest_expense is reported missing: the only available tag "
+      + `(${interestExpenseTag}) reported net interest INCOME for the latest year, `
+      + "not expense, and a net-income figure is not reinterpreted as an expense.");
+  }
+
+  //: us-gaap filers report under ASC 230, which requires interest paid to be
+  //  classified within operating activities — that is a rule, not a
+  //  per-filer disclosure, so it needs no XBRL lookup. IFRS (IAS 7) leaves
+  //  the choice to the filer, so ifrs-full readers look for whichever
+  //  classification tag was actually disclosed.
+  let interestPaidClassification = taxonomy === "ifrs-full"
+    ? ifrsInterestClassification(facts) : "operating";
+  if (taxonomy === "ifrs-full" && interestPaidClassification === null) {
+    const inferred = inferIfrsLeaseInterestClassification(facts, reportingCurrency);
+    if (inferred) {
+      interestPaidClassification = inferred;
+      notes.push(`interest_paid_classification "${inferred}" is inferred from lease cash-flow `
+        + `classification (CashOutflowForLeases vs PaymentsOfLeaseLiabilitiesClassifiedAsFinancingActivities), `
+        + `since no explicit InterestPaidClassifiedAs* disclosure was tagged.`);
+    }
+  }
+
   //: Field names mirror ExtractedFinancials exactly (see
   //  src/pipeline/pdf_extractor.py) so web_bridge.load_fundamentals() can
   //  rehydrate them without a second translation layer.
@@ -1053,10 +1467,23 @@ module.exports = async (req, res) => {
       const v = latestFlow("capital_expenditures");
       return v == null ? null : Math.abs(v);
     })(),
-    interest_expense: (() => {
-      const v = latestFlow("interest_expense");
+    interest_expense: interestExpenseValue,
+    interest_expense_series: interestExpenseSeries,
+    sbc_series: sbcSeries,
+    fcf_period_ends: fcfPeriodEnds,
+    interest_paid_classification: interestPaidClassification,
+    stock_based_compensation: (() => {
+      const v = latestFlow("stock_based_compensation");
       return v == null ? null : Math.abs(v);
     })(),
+    finance_lease_liabilities: financeLeaseValue,
+    operating_lease_liabilities: operatingLease ? operatingLease.value : null,
+    //: The quote's OWN as-of time (Yahoo's regularMarketTime), not the
+    //  request time — a quote can be a prior close, and nothing else here
+    //  says so. Reported whenever a price was fetched, independent of the
+    //  currency gate on current_price below, since it describes the quote
+    //  itself rather than whether it was usable alongside these financials.
+    price_as_of: priceInfo ? priceInfo.asOf : null,
     tax_rate: taxRate,
     revenue_growth: revenueGrowth,
     operating_margin: operatingMargin,
@@ -1069,6 +1496,20 @@ module.exports = async (req, res) => {
     //  and be re-annualised a second time downstream.
     dividend_is_annual: true,
     beta: betaInfo ? Number(betaInfo.beta.toFixed(3)) : null,
+    //: Same aligned monthly-return pairs and 24-observation floor as beta
+    //  above — see computeBeta(). These replace the fixed 25%/18%/0.6 guesses
+    //  the options, Heston, VaR and MPT models otherwise fall back to.
+    realized_volatility: betaInfo && betaInfo.stockVol !== null ? Number(betaInfo.stockVol.toFixed(4)) : null,
+    market_volatility: betaInfo && betaInfo.marketVol !== null ? Number(betaInfo.marketVol.toFixed(4)) : null,
+    market_correlation: betaInfo && betaInfo.correlation !== null ? Number(betaInfo.correlation.toFixed(4)) : null,
+    return_observations: betaInfo ? betaInfo.observations : null,
+    //: Same monthly-return series beta was computed from — see computeBeta().
+    monthly_returns: betaInfo ? betaInfo.monthlyReturns : [],
+    return_benchmark: betaInfo ? betaInfo.benchmarkSymbol : null,
+    //: The taxonomy the facts above were actually read from (chosen earlier,
+    //  us-gaap tried first, ifrs-full on a 20-F filer) — see the comment
+    //  above `facts = (j.facts && j.facts["us-gaap"])`.
+    accounting_standard: taxonomy,
     currency: reportingCurrency || (priceInfo ? priceInfo.currency : "USD"),
     statement_basis: "annual",
     //: Provenance. assumptions.py reads this to decide whether a figure may be
@@ -1105,6 +1546,9 @@ module.exports = async (req, res) => {
       ...(priceInfo ? [{ name: "Share price", url: "Yahoo Finance chart API" }] : []),
       ...(betaInfo ? [{ name: `Beta vs ${betaInfo.benchmark} (${betaInfo.observations} monthly returns)`,
                        url: "Computed by OLS from price history" }] : []),
+      ...(betaInfo && (betaInfo.stockVol !== null || betaInfo.correlation !== null)
+        ? [{ name: "Realised volatility & correlation (same monthly return series as beta)",
+             url: "Computed from price history" }] : []),
     ],
   });
 };
@@ -1115,6 +1559,11 @@ module.exports = async (req, res) => {
 //  response, so they are tested directly rather than only through the handler.
 module.exports._internals = { resolveTicker, detectReportingCurrency, deriveAdrRatio,
                               ADR_LOCAL_LISTINGS, ADR_RATIO_CANDIDATES, ADR_RATIO_TOLERANCE, pickInstant, pickAnnualSeries, FLOW_TAGS, STOCK_TAGS,
-                              IFRS_FLOW_TAGS, IFRS_STOCK_TAGS,
+                              IFRS_FLOW_TAGS, IFRS_STOCK_TAGS, LEASE_TAGS,
                               benchmarkFor, monthlyReturns, monthKey, BENCHMARKS, MIN_BETA_OBSERVATIONS,
-                              computeSplitAdjustment, SPLIT_ALLOTMENT_LAG_MS };
+                              computeSplitAdjustment, SPLIT_ALLOTMENT_LAG_MS, annualizedVol, regressionStats,
+                              pickLeaseLiability, debtTagIncludesLeases, NET_INTEREST_TAGS,
+                              interestExpenseFromRow, seriesAlignedTo, ifrsInterestClassification,
+                              dedupeMonthlyCloses, monthKeyToLabel, currentMonthKey, monthlyReturnPairs,
+                              inferIfrsLeaseInterestClassification, LEASE_INTEREST_FINANCING_RATIO,
+                              LEASE_INTEREST_OPERATING_RATIO };

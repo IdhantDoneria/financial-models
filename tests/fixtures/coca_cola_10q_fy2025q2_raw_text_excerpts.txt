@@ -1,0 +1,230 @@
+PROVENANCE: The Coca-Cola Company (KO) -- Form 10-Q for the fiscal quarter
+ended June 27, 2025 (calendar Q2 2025). SEC accession number
+0000021344-25-000061, filed 2025-07-24. Primary document:
+https://www.sec.gov/Archives/edgar/data/21344/000002134425000061/ko-20250627.htm
+Excerpts below are copied VERBATIM from the filed document (HTML tables
+flattened row-by-row into plain-text lines -- the shape a PDF text layer
+yields -- with the hidden inline-XBRL <ix:header> metadata block stripped,
+since that block is never visible text and no PDF text layer would contain
+it). Four sections: cover page, consolidated statement of income,
+consolidated balance sheet, consolidated statement of cash flows. Column
+order in the income statement is Three Months Ended (current, prior-year),
+then Six Months Ended (current, prior-year) -- a different YTD span (six
+months, not Apple's nine) than the other US fixture. The income statement
+also carries a consolidated pre-NCI subtotal ("Consolidated Net Income")
+ABOVE the true bottom line ("Net Income Attributable to Shareowners") --
+both contain the literal substring "net income", exercising the
+extractor's first-match-wins net-income read against a name close to, but
+not exactly, the real bottom line.
+
+~~~~~ SECTION ALPHA -- cover page ~~~~~
+UNITED STATES
+
+SECURITIES AND EXCHANGE COMMISSION
+
+WASHINGTON, D.C. 20549
+
+FORM 10-Q 
+
+(Mark One)
+
+☒ QUARTERLY REPORT PURSUANT TO SECTION 13 OR 15(d) OF THE SECURITIES EXCHANGE ACT OF 1934
+
+For the quarterly period ended June 27, 2025 
+
+OR
+
+☐ TRANSITION REPORT PURSUANT TO SECTION 13 OR 15(d) OF THE SECURITIES EXCHANGE ACT OF 1934
+
+For the transition period from                                    to                                     
+
+Commission File Number 001-02217 
+
+COCA COLA CO 
+
+(Exact name of Registrant as specified in its charter)
+
+Delaware 58-0628465
+(State or other jurisdiction of incorporation or organization) (I.R.S. Employer Identification No.)
+One Coca-Cola Plaza
+Atlanta Georgia 30313
+(Address of principal executive offices) (Zip Code)
+
+Registrant’s telephone number, including area code: (404) 676-2121 
+
+Securities registered pursuant to Section 12(b) of the Act:
+
+Title of each class Trading Symbol(s) Name of each exchange on which registered
+Common Stock, $0.25 Par Value KO New York Stock Exchange
+1.875% Notes Due 2026 KO26 New York Stock Exchange
+0.750% Notes Due 2026 KO26C New York Stock Exchange
+1.125% Notes Due 2027 KO27 New York Stock Exchange
+0.125% Notes Due 2029 KO29A New York Stock Exchange
+0.125% Notes Due 2029 KO29B New York Stock Exchange
+0.400% Notes Due 2030 KO30B New York Stock Exchange
+1.250% Notes Due 2031 KO31 New York Stock Exchange
+3.125% Notes Due 2032 KO32 New York Stock Exchange
+0.375% Notes Due 2033 KO33 New York Stock Exchange
+0.500% Notes Due 2033 KO33A New York Stock Exchange
+1.625% Notes Due 2035 KO35 New York Stock Exchange
+1.100% Notes Due 2036 KO36 New York Stock Exchange
+0.950% Notes Due 2036 KO36A New York Stock Exchange
+3.375% Notes Due 2037 KO37 New York Stock Exchange
+0.800% Notes Due 2040 KO40B New York Stock Exchange
+1.000% Notes Due 2041 KO41 New York Stock Exchange
+3.500% Notes Due 2044 KO44 New York Stock Exchange
+3.750% Notes Due 2053 KO53 New York Stock Exchange
+
+Indicate by check mark whether the Registrant (1) has filed all reports required to be filed by Section 13 or 15(d) of the Securities Exchange Act of 1934 during the preceding 12 months (or for such shorter period that the Registrant was required to file such reports), and (2) has been subject to such filing requirements for the past 90 days. Yes ☒    No ☐
+
+Indicate by check mark whether the Registrant has submitted electronically every Interactive Data File required to be submitted pursuant to Rule 405 of Regulation S-T (§ 232.405 of this chapter) during the preceding 12 months (or for such shorter period that the Registrant was required to submit such files). Yes ☒    No ☐
+
+Indicate by check mark whether the Registrant is a large accelerated filer, an accelerated filer, a non-accelerated filer, a smaller reporting company or an emerging growth company. See the definitions of “large accelerated filer,” “accelerated filer,” “smaller reporting company” and “emerging growth company” in Rule 12b-2 of the Exchange Act.
+
+Large accelerated filer ☒ Accelerated filer ☐
+Non-accelerated filer ☐ Smaller reporting company ☐
+Emerging growth company ☐
+If an emerging growth company, indicate by check mark if the Registrant has elected not to use the extended transition period for complying with any new or revised financial accounting standards provided pursuant to Section 13(a) of the Exchange Act. ☐
+
+Indicate by check mark if the Registrant is a shell company (as defined in Rule 12b-2 of the Exchange Act). Yes ☐    No ☒
+
+Indicate the number of shares outstanding of each of the issuer’s classes of common stock as of the latest practicable date.
+
+Class of Common Stock Shares Outstanding as of July 22, 2025
+$0.25 Par Value 4,303,667,252
+
+~~~~~ SECTION BRAVO -- consolidated statement of income ~~~~~
+
+Item 1. Financial Statements
+
+THE COCA-COLA COMPANY AND SUBSIDIARIES
+
+CONSOLIDATED STATEMENTS OF INCOME
+
+(In millions except per share data)
+
+Three Months Ended Six Months Ended
+
+June 27,2025 June 28,2024 June 27,2025 June 28,2024
+Net Operating Revenues $ 12,535 $ 12,363 $ 23,664 $ 23,663
+Cost of goods sold 4,714 4,812 8,877 9,047
+Gross Profit 7,821 7,551 14,787 14,616
+Selling, general and administrative expenses 3,470 3,549 6,704 6,900
+Other operating charges 71 1,370 144 2,943
+Operating Income 4,280 2,632 7,939 4,773
+Interest income 188 275 368 521
+Interest expense 445 418 832 800
+Equity income (loss) — net 561 537 912 891
+Other income (loss) — net 212 2 466 1,515
+Income Before Income Taxes 4,796 3,028 8,853 6,900
+Income taxes 993 627 1,715 1,314
+Consolidated Net Income 3,803 2,401 7,138 5,586
+Less: Net income (loss) attributable to noncontrolling interests (7) (10) (2) (2)
+Net Income Attributable to Shareowners of The Coca-Cola Company $ 3,810 $ 2,411 $ 7,140 $ 5,588
+
+Basic Net Income Per Share1 $ 0.89 $ 0.56 $ 1.66 $ 1.30
+
+Diluted Net Income Per Share1 $ 0.88 $ 0.56 $ 1.65 $ 1.29
+Average Shares Outstanding — Basic 4,304 4,309 4,303 4,309
+Effect of dilutive securities 11 10 11 12
+Average Shares Outstanding — Diluted 4,315 4,319 4,314 4,321
+
+~~~~~ SECTION CHARLIE -- consolidated balance sheet ~~~~~
+THE COCA-COLA COMPANY AND SUBSIDIARIES
+
+CONSOLIDATED BALANCE SHEETS
+
+(In millions except par value)
+
+June 27,2025 December 31,2024
+ASSETS
+Current Assets
+Cash and cash equivalents $ 9,590 $ 10,828
+Short-term investments 2,658 2,020
+Total Cash, Cash Equivalents and Short-Term Investments 12,248 12,848
+Marketable securities 2,049 1,723
+
+Trade accounts receivable, less allowances of $503 and $506, respectively 4,168 3,569
+Inventories 5,082 4,728
+Prepaid expenses and other current assets 3,062 3,129
+Total Current Assets 26,609 25,997
+Equity method investments 19,379 18,087
+Deferred income tax assets 1,325 1,319
+
+Property, plant and equipment, less accumulated depreciation of $10,081 and $9,570, respectively 10,784 10,303
+Trademarks with indefinite lives 13,615 13,301
+Goodwill 18,663 18,139
+Other noncurrent assets 13,958 13,403
+Total Assets $ 104,333 $ 100,549
+LIABILITIES AND EQUITY
+Current Liabilities
+Accounts payable and accrued expenses $ 17,030 $ 21,715
+Loans and notes payable 4,379 1,499
+Current maturities of long-term debt 91 648
+Accrued income taxes 444 1,387
+Total Current Liabilities 21,944 25,249
+Long-term debt 44,976 42,375
+Other noncurrent liabilities 4,856 4,084
+Deferred income tax liabilities 2,375 2,469
+The Coca-Cola Company Shareowners’ Equity
+
+Common stock, $0.25 par value; authorized — 11,200 shares; issued — 7,040 shares 1,760 1,760
+Capital surplus 19,970 19,801
+Reinvested earnings 78,803 76,054
+Accumulated other comprehensive income (loss) (15,758) (16,843)
+
+Treasury stock, at cost — 2,736 and 2,738 shares, respectively (56,190) (55,916)
+Equity Attributable to Shareowners of The Coca-Cola Company 28,585 24,856
+Equity attributable to noncontrolling interests 1,597 1,516
+Total Equity 30,182 26,372
+Total Liabilities and Equity $ 104,333 $ 100,549
+
+~~~~~ SECTION DELTA -- consolidated statement of cash flows ~~~~~
+THE COCA-COLA COMPANY AND SUBSIDIARIES
+
+CONSOLIDATED STATEMENTS OF CASH FLOWS
+
+(In millions)
+
+Six Months Ended
+
+June 27,2025 June 28,2024
+Operating Activities
+Consolidated net income $ 7,138 $ 5,586
+Adjustments to reconcile consolidated net income to net cash provided by operating activities:
+Depreciation and amortization 546 531
+Stock-based compensation expense 130 140
+Deferred income taxes 459 (202)
+Equity (income) loss — net of dividends (387) (274)
+Foreign currency adjustments 111 (87)
+Significant (gains) losses — net (433) (1,398)
+Other operating charges 38 2,867
+Other items 238 (66)
+Net change in operating assets and liabilities (9,231) (2,984)
+Net Cash Provided by (Used in) Operating Activities (1,391) 4,113
+Investing Activities
+Purchases of investments (2,865) (3,827)
+Proceeds from disposals of investments 2,201 2,662
+Acquisitions of businesses, equity method investments and nonmarketable securities (179) (25)
+Proceeds from disposals of businesses, equity method investments and nonmarketable securities 973 2,907
+Purchases of property, plant and equipment (751) (792)
+Proceeds from disposals of property, plant and equipment 13 21
+Collateral (paid) received associated with hedging activities — net 206 (76)
+Other investing activities 124 127
+Net Cash Provided by (Used in) Investing Activities (278) 997
+Financing Activities
+Issuances of loans, notes payable and long-term debt 5,320 6,832
+Payments of loans, notes payable and long-term debt (2,630) (4,734)
+Issuances of stock 223 437
+Purchases of stock for treasury (472) (874)
+Dividends (2,283) (2,184)
+Other financing activities (106) (9)
+Net Cash Provided by (Used in) Financing Activities 52 (532)
+
+Effect of Exchange Rate Changes on Cash, Cash Equivalents, Restricted Cash and Restricted Cash Equivalents 332 (357)
+Cash, Cash Equivalents, Restricted Cash and Restricted Cash Equivalents
+Net increase (decrease) in cash, cash equivalents, restricted cash and restricted cash equivalents during the period (1,285) 4,221
+Cash, cash equivalents, restricted cash and restricted cash equivalents at beginning of period 11,488 9,692
+Cash, Cash Equivalents, Restricted Cash and Restricted Cash Equivalents at End of Period 10,203 13,913
+Less: Restricted cash and restricted cash equivalents at end of period 613 205
+Cash and Cash Equivalents at End of Period $ 9,590 $ 13,708

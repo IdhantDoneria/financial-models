@@ -244,6 +244,31 @@ import re as _re
 
 _ANALYZER: dict[str, Any] = {"data": None, "report": None, "period": None}
 
+#: The selected market's cost-of-capital inputs, pushed by the terminal
+#: whenever the country or its live rate changes (see set_market). The
+#: assumption PREVIEW needs them for the same reason run_report does: a
+#: synthesised FCF path fades to terminal growth = min(rf, market cap), and
+#: previewing it with the US defaults showed an Indian filing a number the
+#: report would never use.
+_MARKET: dict[str, float] = {}
+
+
+def set_market(market_json: str) -> str:
+    """Record the selected market (``{"rf", "erp", "lt_growth"}``, any may be
+    null) and return the refreshed assumption preview when a filing is loaded."""
+    try:
+        m = json.loads(market_json or "{}")
+    except ValueError:
+        return json.dumps({"ok": False, "error": "bad market payload"})
+    _MARKET.clear()
+    for src, dst in (("rf", "risk_free_rate"), ("erp", "equity_risk_premium"),
+                     ("lt_growth", "terminal_growth_cap")):
+        if isinstance(m.get(src), (int, float)) and math.isfinite(m[src]):
+            _MARKET[dst] = float(m[src])
+    data = _ANALYZER["data"]
+    return json.dumps({"ok": True,
+                       "assumed": _assumed_preview(data) if data is not None else None})
+
 #: Fields the UI reports as FOUND/MISSING (order = display order).
 _KEY_FIELDS = (
     "company_name", "ticker", "fiscal_year", "revenue", "free_cash_flows",
@@ -392,7 +417,8 @@ def _assumed_preview(data: Any) -> dict:
     """
     from src.pipeline import AutoAssumer
 
-    auto = AutoAssumer()
+    auto = AutoAssumer(**_MARKET)
+    g_terminal = min(auto.rf, auto.terminal_growth_cap)
     sector_baseline = auto._sector_baseline(data)
     spot = data.current_price or 100.0
     preview: dict[str, Any] = {}
@@ -428,7 +454,8 @@ def _assumed_preview(data: Any) -> dict:
     if data.capital_expenditures is None:
         preview["capital_expenditures"] = 0.0        # HDEBT maintenance-capex proxy
     if not data.free_cash_flows:
-        preview["free_cash_flows"] = [round(f, 2) for f in auto._synth_fcfs(data, 0.09)]
+        preview["free_cash_flows"] = [
+            round(f, 2) for f in auto._synth_fcfs(data, 0.09, g_terminal)]
     return _clean(preview)
 
 
@@ -526,6 +553,8 @@ def load_fundamentals(fields_json: str) -> str:
         #  "scraped from PDF" — being able to say where each number came from
         #  is the whole point of this tool.
         kwargs.setdefault("backends_used", ["sec-edgar-xbrl"])
+        #: /api/fundamentals sorts its FCF series by period end, ascending.
+        kwargs.setdefault("fcf_history_order", "oldest_first")
         data = ExtractedFinancials(**kwargs)
     except Exception as exc:
         return json.dumps({"ok": False, "error": f"{type(exc).__name__}: {exc}"})
@@ -571,6 +600,8 @@ def run_report(params_json: str) -> str:
         auto_kwargs["risk_free_rate"] = float(p["live_rf"])
     if p.get("erp") is not None:
         auto_kwargs["equity_risk_premium"] = float(p["erp"])
+    if p.get("lt_growth") is not None:
+        auto_kwargs["terminal_growth_cap"] = float(p["lt_growth"])
     auto = AutoAssumer(**auto_kwargs)
 
     if p.get("mode") == "manual":
@@ -625,6 +656,12 @@ def restore_extraction(fields_json: str, period: str = "annual") -> str:
         kwargs = {k: v for k, v in fields.items() if k in allowed}
         if not kwargs.get("free_cash_flows"):
             kwargs["free_cash_flows"] = []
+        #: Analyses saved before fcf_history_order existed don't carry it.
+        #  Ticker loads were always ascending, so infer it from provenance
+        #  rather than defaulting a saved SEC series to the PDF order.
+        if "fcf_history_order" not in kwargs and any(
+                "sec-edgar" in str(b).lower() for b in kwargs.get("backends_used") or []):
+            kwargs["fcf_history_order"] = "oldest_first"
         data = ExtractedFinancials(**kwargs)
     except Exception as exc:
         return json.dumps({"ok": False, "error": f"{type(exc).__name__}: {exc}"})

@@ -19,7 +19,13 @@ const { _internals } = require("../api/fundamentals.js");
 const { resolveTicker, pickInstant, pickAnnualSeries, detectReportingCurrency,
         benchmarkFor, monthlyReturns, MIN_BETA_OBSERVATIONS,
         ADR_LOCAL_LISTINGS, ADR_RATIO_CANDIDATES, ADR_RATIO_TOLERANCE,
-        computeSplitAdjustment, SPLIT_ALLOTMENT_LAG_MS } = _internals;
+        computeSplitAdjustment, SPLIT_ALLOTMENT_LAG_MS,
+        annualizedVol, regressionStats,
+        pickLeaseLiability, debtTagIncludesLeases, NET_INTEREST_TAGS,
+        interestExpenseFromRow, seriesAlignedTo, ifrsInterestClassification,
+        dedupeMonthlyCloses, monthKey, monthKeyToLabel, currentMonthKey, monthlyReturnPairs,
+        inferIfrsLeaseInterestClassification, LEASE_INTEREST_FINANCING_RATIO,
+        LEASE_INTEREST_OPERATING_RATIO } = _internals;
 
 let passed = 0, failed = 0;
 function ok(cond, label, detail) {
@@ -485,6 +491,388 @@ console.log("\n· Beta is computed, benchmarked per market, and refuses thin sam
 {
   ok(MIN_BETA_OBSERVATIONS >= 24,
     "beta needs at least two years of monthly points before it means anything");
+}
+
+/* --------------------- realised volatility & correlation ------------------ *
+ * regressionStats() is the pure core of computeBeta(), split out precisely so
+ * it can be checked here against a fixture whose beta/vol/correlation were
+ * computed independently (a plain seeded synthetic series, verified with a
+ * standalone script, not by calling the function under test) rather than
+ * only asserting self-consistency.
+ *
+ * Downstream models (options pricing, Heston, VaR, MPT) fell back to fixed
+ * guesses (25% stock vol, 18% market vol, 0.6 correlation) because these
+ * numbers, despite being computed from the same regression as beta, were
+ * never returned. This is the regression test for that gap.                  */
+console.log("\n· Realised volatility & correlation: same regression inputs as beta, independently checked");
+{
+  // 30 months of a market series (xs) and a stock series (ys) generated from
+  // ys = 1.3*xs + idiosyncratic noise, so a real relationship exists between
+  // them. Expected beta/vol/correlation were computed with a standalone
+  // script using textbook sample-variance / population-covariance formulas,
+  // not by calling regressionStats() itself.
+  const xs = [0.011585, 0.038195, 0.025246, 0.006689, -0.031075, -0.012011, 0.021832, -0.006049,
+              -0.026634, 0.032986, 0.001097, 0.032326, 0.026288, 0.029401, -0.008038, -0.030521,
+              0.005397, -0.013289, -0.034779, 0.009412, 0.021161, 0.030023, 0.031875, 0.038424,
+              0.032717, -0.033592, -0.032946, 0.039967, -0.008962, 0.023651];
+  const ys = [0.017042, 0.069525, 0.051764, -0.026122, -0.067766, 0.034089, 0.04552, -0.032231,
+              0.005321, 0.076857, -0.020456, -0.003427, 0.080492, -0.000274, 0.004506, -0.062773,
+              0.033853, -0.015614, -0.037485, 0.027382, 0.062871, 0.012029, 0.034229, 0.013899,
+              0.021522, -0.044798, -0.077421, 0.026048, -0.000224, 0.039213];
+  const got = regressionStats(xs, ys);
+  ok(got !== null, "30 aligned observations clears the 24-month floor");
+  eq(got.observations, 30, "observation count matches the input length");
+  ok(Math.abs(got.beta - 1.2486033641448067) < 1e-9, "beta matches the independently-computed value", String(got.beta));
+  ok(Math.abs(got.stockVol - 0.14592011294086862) < 1e-9,
+    "stock (ys) annualised vol matches the independently-computed value", String(got.stockVol));
+  ok(Math.abs(got.marketVol - 0.08759191030541419) < 1e-9,
+    "market (xs) annualised vol matches the independently-computed value", String(got.marketVol));
+  ok(Math.abs(got.correlation - 0.7495029415412352) < 1e-9,
+    "correlation matches the independently-computed value", String(got.correlation));
+}
+{
+  // TSLA-shape sanity check per the task brief: vol 58.1%, corr 0.46 against
+  // a 15.4%-vol S&P 500 — high idiosyncratic noise relative to the market
+  // factor should still clear the (0, 3] / [-1, 1] guards and come back
+  // non-null, not be rejected as "too extreme".
+  const n = 30;
+  const xs = [], ys = [];
+  let seed = 7;
+  const rnd = () => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648; };
+  for (let i = 0; i < n; i++) {
+    const zm = (rnd() - 0.5) * 2;
+    const rm = 0.15 / 12 + (0.154 / Math.sqrt(12)) * zm;
+    const zi = (rnd() - 0.5) * 2;
+    const rs = 0.9 * rm + 0.16 * zi;         // large idiosyncratic term -> low corr, high vol
+    xs.push(rm); ys.push(rs);
+  }
+  const got = regressionStats(xs, ys);
+  ok(got !== null, "a high-idiosyncratic-vol series still produces a result");
+  ok(got.stockVol === null || (got.stockVol > 0 && got.stockVol <= 3),
+    "stock vol, if returned, is within the (0, 3] guard");
+}
+
+console.log("\n· Realised volatility & correlation: null/guard cases");
+{
+  const short = Array.from({ length: MIN_BETA_OBSERVATIONS - 1 }, (_, i) => 0.01 * (i % 3 - 1));
+  ok(regressionStats(short, short) === null,
+    "fewer than MIN_BETA_OBSERVATIONS pairs returns null, not a thin-sample estimate");
+}
+{
+  ok(regressionStats([0.01, 0.02], [0.01, 0.02, 0.03]) === null,
+    "mismatched-length arrays return null rather than silently misaligning");
+}
+{
+  // A perfectly flat market (zero variance) has no beta and therefore no
+  // vol/correlation either — the same "flat market has no beta" guard.
+  const flat = new Array(MIN_BETA_OBSERVATIONS).fill(0);
+  const stock = Array.from({ length: MIN_BETA_OBSERVATIONS }, (_, i) => 0.01 * (i % 2));
+  ok(regressionStats(flat, stock) === null, "a flat (zero-variance) market series returns null");
+}
+{
+  // A beta outside [-3, 5] is rejected as a data artifact — vol/correlation
+  // must come back null too, not be split off and reported anyway.
+  const xs = Array.from({ length: MIN_BETA_OBSERVATIONS }, (_, i) => (i % 2 === 0 ? 0.001 : -0.001));
+  const ys = xs.map((v) => v * 10);   // beta = 10, well outside the guard
+  ok(regressionStats(xs, ys) === null,
+    "an implausible beta (10) rejects the whole result, including vol/correlation");
+}
+{
+  ok(annualizedVol([0.01]) === null, "a single observation cannot yield a standard deviation");
+  ok(annualizedVol([]) === null, "an empty series returns null, not NaN");
+  const v = annualizedVol([0.02, -0.01, 0.03, 0.00]);
+  ok(Number.isFinite(v) && v > 0, "a normal short series yields a finite positive vol");
+}
+
+/* --------------------------- lease liabilities ---------------------------- */
+console.log("\n· Lease liabilities: total-tag preference, current+noncurrent sum, double-count guard");
+{
+  // A filer that tags a total AND the split must use the total, not sum on
+  // top of it (which would double the figure).
+  const facts = {
+    OperatingLeaseLiability: { units: { USD: [
+      { end: "2025-09-27", val: 9_150_000_000, form: "10-K", filed: "2025-11-01" },
+    ] } },
+    OperatingLeaseLiabilityCurrent: { units: { USD: [
+      { end: "2025-09-27", val: 1_500_000_000, form: "10-K", filed: "2025-11-01" },
+    ] } },
+    OperatingLeaseLiabilityNoncurrent: { units: { USD: [
+      { end: "2025-09-27", val: 7_650_000_000, form: "10-K", filed: "2025-11-01" },
+    ] } },
+  };
+  const got = pickLeaseLiability(facts, ["OperatingLeaseLiability"],
+    ["OperatingLeaseLiabilityCurrent"], ["OperatingLeaseLiabilityNoncurrent"]);
+  eq(got.value, 9_150_000_000, "the total tag wins over summing current+noncurrent");
+  eq(got.source, "total", "source is reported as 'total'");
+}
+{
+  // SBUX-shape: no total tag, only current + noncurrent — must sum, not
+  // report only one half.
+  const facts = {
+    OperatingLeaseLiabilityCurrent: { units: { USD: [
+      { end: "2025-09-27", val: 1_100_000_000, form: "10-K", filed: "2025-11-01" },
+    ] } },
+    OperatingLeaseLiabilityNoncurrent: { units: { USD: [
+      { end: "2025-09-27", val: 8_050_000_000, form: "10-K", filed: "2025-11-01" },
+    ] } },
+  };
+  const got = pickLeaseLiability(facts, ["OperatingLeaseLiability"],
+    ["OperatingLeaseLiabilityCurrent"], ["OperatingLeaseLiabilityNoncurrent"]);
+  eq(got.value, 9_150_000_000, "current+noncurrent sums to the real total when no total tag exists");
+  eq(got.source, "sum", "source is reported as 'sum'");
+}
+{
+  // AAPL-shape: only a noncurrent tag (no current lease-liability tag at
+  // all) — accepted, not refused, but must say so via its `source`.
+  const facts = {
+    OperatingLeaseLiabilityNoncurrent: { units: { USD: [
+      { end: "2025-09-27", val: 10_912_000_000, form: "10-K", filed: "2025-10-30" },
+    ] } },
+  };
+  const got = pickLeaseLiability(facts, ["OperatingLeaseLiability"],
+    ["OperatingLeaseLiabilityCurrent"], ["OperatingLeaseLiabilityNoncurrent"]);
+  eq(got.value, 10_912_000_000, "noncurrent-only is accepted as a caveated figure");
+  eq(got.source, "noncurrent-only", "source flags that only the noncurrent portion was found");
+}
+{
+  ok(pickLeaseLiability({}, ["OperatingLeaseLiability"], ["OperatingLeaseLiabilityCurrent"],
+    ["OperatingLeaseLiabilityNoncurrent"]) === null,
+    "no lease tags at all yields null, never 0");
+}
+{
+  // Double-count guard: a debt tag whose name already says "Lease" already
+  // folds finance leases into total_debt.
+  ok(debtTagIncludesLeases("LongTermDebtAndCapitalLeaseObligations"),
+    "a debt tag naming leases is detected");
+  ok(debtTagIncludesLeases("FinanceLeaseLiabilityNoncurrent"),
+    "a lease-liability tag used as a 'debt' tag is also detected");
+  ok(!debtTagIncludesLeases("LongTermDebtNoncurrent"),
+    "an ordinary debt tag is not flagged");
+  ok(!debtTagIncludesLeases(null) && !debtTagIncludesLeases(undefined),
+    "a missing debt tag (no debt data at all) is not flagged");
+}
+
+/* ------------------------------ series alignment --------------------------- */
+console.log("\n· Series alignment: element i always refers to the same period as free_cash_flows[i]");
+{
+  const ends = ["2023-12-31", "2024-12-31", "2025-12-31"];
+  // interest_expense has no row for 2024 — must come back null there, not
+  // shifted so 2025's value lands in the 2024 slot.
+  const interestSeries = {
+    tag: "InterestExpense",
+    series: [
+      { end: "2023-12-31", val: 100 },
+      { end: "2025-12-31", val: 300 },
+    ],
+  };
+  const got = seriesAlignedTo(interestSeries, ends);
+  eq(got.length, 3, "output length matches the reference ends, not the source series");
+  eq(got[0], 100, "2023 aligns correctly");
+  eq(got[1], null, "the missing 2024 year is null, not shifted from 2025");
+  eq(got[2], 300, "2025 still lands in its own slot, not shifted");
+}
+{
+  ok(seriesAlignedTo(null, ["2024-12-31", "2025-12-31"]).every((v) => v === null),
+    "a missing flow (no tag matched at all) yields an all-null series of the right length");
+}
+{
+  // transform is applied per row (e.g. Math.abs for SBC).
+  const sbcSeries = { tag: "ShareBasedCompensation", series: [
+    { end: "2024-12-31", val: -50 }, { end: "2025-12-31", val: 60 },
+  ] };
+  const got = seriesAlignedTo(sbcSeries, ["2024-12-31", "2025-12-31"], (v) => Math.abs(v));
+  eq(got[0], 50, "transform is applied to each aligned value");
+  eq(got[1], 60, "transform is applied to each aligned value (already positive)");
+}
+
+/* ------------------------- interest net-tag sign rule ---------------------- */
+console.log("\n· Interest expense: a positive net-tag value is net INCOME, not expense");
+{
+  // Badger Meter FY2025 (CIK 9092): +$5.124M net, no InterestExpense tag —
+  // the unguarded Math.abs() reported that income as a $5.124M expense.
+  eq(interestExpenseFromRow(5_124_000, "InterestIncomeExpenseNet"), null,
+    "a positive InterestIncomeExpenseNet is missing, not flipped into an expense");
+  eq(interestExpenseFromRow(-5_124_000, "InterestIncomeExpenseNet"), 5_124_000,
+    "a negative InterestIncomeExpenseNet (real net expense) becomes its absolute value");
+  eq(interestExpenseFromRow(-5_124_000, "InterestExpense"), 5_124_000,
+    "a direct InterestExpense tag is taken as-is (abs), no sign-rule applied");
+  eq(interestExpenseFromRow(5_124_000, "InterestExpense"), 5_124_000,
+    "a positive InterestExpense tag is a real expense, unaffected by the net-tag rule");
+  eq(interestExpenseFromRow(null, "InterestIncomeExpenseNet"), null,
+    "a missing value stays null");
+  ok(NET_INTEREST_TAGS.includes("InterestIncomeExpenseNet"),
+    "InterestIncomeExpenseNet is the tag the sign rule guards");
+}
+
+/* --------------------------- IFRS interest classification ------------------ */
+console.log("\n· IFRS interest-paid classification: operating vs financing vs undisclosed");
+{
+  const facts = { InterestPaidClassifiedAsOperatingActivities: { units: { pure: [{ end: "2025-03-31", val: 1 }] } } };
+  eq(ifrsInterestClassification(facts), "operating",
+    "an operating-classification disclosure reports 'operating' (e.g. Infosys)");
+}
+{
+  const facts = { InterestPaidClassifiedAsFinancingActivities: { units: { pure: [{ end: "2025-03-31", val: 1 }] } } };
+  eq(ifrsInterestClassification(facts), "financing",
+    "a financing-classification disclosure reports 'financing'");
+}
+{
+  eq(ifrsInterestClassification({}), null,
+    "no classification tag at all (e.g. HDB/WIT often omit it) reports null, not a guess");
+}
+{
+  // Operating takes precedence when (implausibly) both are present, since
+  // it's the ASC-230-equivalent default and the more common IFRS choice.
+  const facts = {
+    InterestPaidClassifiedAsOperatingActivities: { units: { pure: [{ end: "2025-03-31", val: 1 }] } },
+    InterestPaidClassifiedAsFinancingActivities: { units: { pure: [{ end: "2025-03-31", val: 1 }] } },
+  };
+  eq(ifrsInterestClassification(facts), "operating",
+    "operating is checked before financing");
+}
+
+/* --------------- IFRS interest classification: lease-evidence fallback ---- */
+console.log("\n· IFRS interest-paid classification: inferred from lease cash-flow evidence when undisclosed");
+{
+  // INFY FY2025-03-31 shape: CashOutflowForLeases and the financing-lease
+  // payments tag both report 278,000,000 for the same period — payments
+  // cover the whole total, so lease interest must be inside financing too.
+  const facts = {
+    CashOutflowForLeases: { units: { INR: [
+      { start: "2024-04-01", end: "2025-03-31", val: 278_000_000, filed: "2025-05-15" },
+    ] } },
+    PaymentsOfLeaseLiabilitiesClassifiedAsFinancingActivities: { units: { INR: [
+      { start: "2024-04-01", end: "2025-03-31", val: 278_000_000, filed: "2025-05-15" },
+    ] } },
+  };
+  eq(inferIfrsLeaseInterestClassification(facts), "financing",
+    "payments covering ~100% of the total infers 'financing' (verified live: INFY FY2025)");
+}
+{
+  // Financing payments materially below the total means the missing piece
+  // (interest) is booked in operating activities instead.
+  const facts = {
+    CashOutflowForLeases: { units: { INR: [
+      { start: "2024-04-01", end: "2025-03-31", val: 100_000_000, filed: "2025-05-15" },
+    ] } },
+    PaymentsOfLeaseLiabilitiesClassifiedAsFinancingActivities: { units: { INR: [
+      { start: "2024-04-01", end: "2025-03-31", val: 70_000_000, filed: "2025-05-15" },
+    ] } },
+  };
+  eq(inferIfrsLeaseInterestClassification(facts), "operating",
+    "financing payments well below the total infers 'operating'");
+}
+{
+  // A ratio between the two thresholds is ambiguous from this evidence alone.
+  const facts = {
+    CashOutflowForLeases: { units: { INR: [
+      { start: "2024-04-01", end: "2025-03-31", val: 100_000_000, filed: "2025-05-15" },
+    ] } },
+    PaymentsOfLeaseLiabilitiesClassifiedAsFinancingActivities: { units: { INR: [
+      { start: "2024-04-01", end: "2025-03-31", val: 95_000_000, filed: "2025-05-15" },
+    ] } },
+  };
+  eq(inferIfrsLeaseInterestClassification(facts), null,
+    "a ratio between the operating and financing thresholds stays null rather than guessing");
+  ok(LEASE_INTEREST_OPERATING_RATIO < 0.95 && 0.95 < LEASE_INTEREST_FINANCING_RATIO,
+    "0.95 is genuinely inside the ambiguous band this fixture exercises");
+}
+{
+  ok(inferIfrsLeaseInterestClassification({}) === null,
+    "neither lease tag disclosed at all yields null, not a guess");
+  const onlyTotal = { CashOutflowForLeases: { units: { INR: [
+    { start: "2024-04-01", end: "2025-03-31", val: 100, filed: "2025-05-15" },
+  ] } } };
+  ok(inferIfrsLeaseInterestClassification(onlyTotal) === null,
+    "only one of the two lease tags disclosed yields null (nothing to compare)");
+}
+{
+  // Different periods for the two tags aren't a reliable comparison.
+  const facts = {
+    CashOutflowForLeases: { units: { INR: [
+      { start: "2023-04-01", end: "2024-03-31", val: 100_000_000, filed: "2024-05-15" },
+    ] } },
+    PaymentsOfLeaseLiabilitiesClassifiedAsFinancingActivities: { units: { INR: [
+      { start: "2024-04-01", end: "2025-03-31", val: 100_000_000, filed: "2025-05-15" },
+    ] } },
+  };
+  ok(inferIfrsLeaseInterestClassification(facts) === null,
+    "mismatched latest period ends yield null rather than comparing unrelated years");
+}
+
+/* ------------------------------ monthly returns ---------------------------- */
+console.log("\n· monthlyReturns: Yahoo's extra live current-month point is deduped and dropped");
+{
+  // Mirrors the real chart shape: one bar per calendar month, stamped at the
+  // month start, PLUS one extra live point inside the still-open current
+  // month (e.g. a Sep-01 bar followed by a live Sep-23 quote) — the exact
+  // pattern that used to overwrite a real monthly return with a near-zero
+  // month-to-date figure.
+  const monthStart = (monthsAgoFromNow) => {
+    const d = new Date();
+    d.setUTCDate(1);
+    d.setUTCHours(4, 0, 0, 0);
+    d.setUTCMonth(d.getUTCMonth() - monthsAgoFromNow);
+    return Math.floor(d.getTime() / 1000);
+  };
+  const DAY = 86_400;
+  // 6 monthly bars: 5 completed months plus the current (still-open) one.
+  const closes = [100, 110, 121, 133.1, 146.41, 161.051];  // +10% each month
+  const series = closes.map((c, i) => ({ t: monthStart(5 - i), c }));
+  // The extra live point: same calendar month as the last bar (the current
+  // one), stamped later, with a materially different close — this is the
+  // duplicate that corrupted a completed month's return before the fix.
+  series.push({ t: series[series.length - 1].t + 20 * DAY, c: 140 });
+
+  const deduped = dedupeMonthlyCloses(series);
+  eq(deduped.length, 6, "one close survives per calendar month, not one per raw point");
+  eq(deduped[5].t, series[6].t,
+    "the LAST observation in the current month wins the dedupe (the live point)");
+
+  const r = monthlyReturns(series);
+  eq(r.size, 4, "n bars (5 completed + 1 open) yield n-2 completed-month returns: the open month is dropped");
+  ok(!r.has(currentMonthKey()),
+    "the still-open current month never appears in the returned Map");
+  const vals = [...r.values()];
+  ok(vals.every((v) => Math.abs(v - 0.10) < 1e-9),
+    "every completed month's return is the real +10%, undisturbed by the current month's live point");
+}
+
+/* -------------------------------- month labelling --------------------------- */
+console.log("\n· Month labelling: a return is labelled by the month its LATER close falls in");
+{
+  // Two bars one month apart — 2020-06-01 (June) and 2020-07-01 (July),
+  // safely in the past so neither is ever the still-open current month —
+  // with monthKey computed straight from each bar's own timestamp, exactly
+  // as Yahoo stamps them (month start, but the close is that month's
+  // month-end close).
+  const june = Date.UTC(2020, 5, 1, 4, 0, 0) / 1000;
+  const july = Date.UTC(2020, 6, 1, 4, 0, 0) / 1000;
+  eq(monthKeyToLabel(monthKey(july)), 202007,
+    "a bar dated 2020-07-01 labels as July 2020 (202007), not June");
+  eq(monthKeyToLabel(monthKey(june)), 202006,
+    "a bar dated 2020-06-01 labels as June 2020 (202006)");
+  // The return spanning June's close to July's close is labelled by July —
+  // the LATER of the pair — matching the "return from the July bar to the
+  // August bar is August's return" convention confirmed against KO's own
+  // fetched closes above.
+  const r = monthlyReturns([{ t: june, c: 100 }, { t: july, c: 110 }]);
+  const [[label, ret]] = [...r.entries()].map(([k, v]) => [monthKeyToLabel(k), v]);
+  eq(label, 202007, "the return is keyed to the later bar's month");
+  ok(Math.abs(ret - 0.10) < 1e-9, "and its value is the simple return between the two closes");
+}
+
+/* --------------------------- [YYYYMM, r] pair shape ------------------------- */
+console.log("\n· monthlyReturnPairs: the exact [YYYYMM, r] shape exposed as `monthly_returns`");
+{
+  const r = new Map([[2026 * 12 + 6, 0.0123456789], [2026 * 12 + 5, -0.02]]); // Jul then Jun, out of order
+  const pairs = monthlyReturnPairs(r);
+  eq(pairs.length, 2, "one pair per Map entry");
+  ok(Array.isArray(pairs[0]) && pairs[0].length === 2, "each entry is a 2-element [YYYYMM, r] pair");
+  eq(pairs[0][0], 202606, "pairs are sorted ascending by month, oldest first");
+  eq(pairs[1][0], 202607, "...newest last");
+  eq(pairs[1][1], 0.012346, "r is rounded to 6 decimal places");
+  eq(pairs[0][1], -0.02, "a negative return round-trips correctly");
 }
 
 console.log(`\n${passed} passed · ${failed} failed`);

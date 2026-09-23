@@ -235,6 +235,7 @@ node scripts/test_metal_unit_conventions.js  # per-market gold/silver units
 node scripts/test_billing_api.js             # full purchase lifecycle
 node scripts/test_admin_founders.js          # admin desk + grants
 node scripts/test_boot_runtime.js            # Pyodide boot retry / mirror fallback / error text
+node scripts/test_rates.js                   # US 10Y par-yield parsing for the risk-free rate
 ```
 
 ## 🔎 Landing pages & SEO

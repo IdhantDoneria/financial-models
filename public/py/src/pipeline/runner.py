@@ -180,7 +180,29 @@ class AnalysisRunner:
         return report
 
     def _build_ff_kwargs(self) -> dict[str, Any]:
-        """Prepare Fama-French inputs from live factor data + synthetic asset."""
+        """Prepare Fama-French inputs: the company's REAL monthly returns on
+        the matching factor months when the listing qualifies (see
+        :func:`src.pipeline.assumptions.ff_real_returns`), else the
+        disclosed synthetic illustration.
+
+        A qualifying listing never silently falls back to the synthetic
+        series: too few overlapping months raises instead, so the report
+        shows the model as failed rather than an illustration presented
+        under a "real regression" rationale.
+        """
+        from .assumptions import FF_MIN_MONTHS, ff_real_returns
+
+        real = ff_real_returns(self.data)
+        if real is not None:
+            factors = FamaFrenchModel.load_factors()
+            months = sorted(set(real) & {int(m) for m in factors.index})[-60:]
+            if len(months) < FF_MIN_MONTHS:
+                raise ValueError(
+                    f"only {len(months)} months overlap between this company's "
+                    f"returns and the bundled factor data (need {FF_MIN_MONTHS})")
+            window = factors.loc[months]
+            return {"asset_returns": np.array([real[m] for m in months]), "factors": window}
+
         factors = FamaFrenchModel.load_factors().tail(120)   # last 10 years
         rng = np.random.default_rng(0)
         beta_hint = self.data.beta or 1.0

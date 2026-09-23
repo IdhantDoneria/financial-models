@@ -1,0 +1,205 @@
+PROVENANCE: Apple Inc. (AAPL) -- Form 10-Q for the fiscal quarter ended
+June 27, 2026 (fiscal Q3 2026). SEC accession number 0000320193-26-000020,
+filed 2026-07-31. Primary document:
+https://www.sec.gov/Archives/edgar/data/320193/000032019326000020/aapl-20260627.htm
+Excerpts below are copied VERBATIM from the filed document (HTML tables
+flattened row-by-row into plain-text lines -- the shape a PDF text layer
+yields -- with the hidden inline-XBRL <ix:header> metadata block stripped,
+since that block is never visible text and no PDF text layer would contain
+it). Four sections: cover page, condensed consolidated statement of
+operations, condensed consolidated balance sheet, condensed consolidated
+statement of cash flows. Column order in every statement table is Three
+Months Ended (current, prior-year), then Nine Months Ended (current,
+prior-year) -- the layout this fixture exists to exercise.
+
+~~~~~ SECTION ALPHA -- cover page ~~~~~
+UNITED STATES
+
+SECURITIES AND EXCHANGE COMMISSION
+
+Washington, D.C. 20549
+
+FORM 10-Q
+
+(Mark One)
+
+☒ QUARTERLY REPORT PURSUANT TO SECTION 13 OR 15(d) OF THE SECURITIES EXCHANGE ACT OF 1934
+
+For the quarterly period ended June 27, 2026
+
+or
+
+☐ TRANSITION REPORT PURSUANT TO SECTION 13 OR 15(d) OF THE SECURITIES EXCHANGE ACT OF 1934
+
+For the transition period from              to             .
+
+Commission File Number: 001-36743
+
+Apple Inc.
+
+(Exact name of Registrant as specified in its charter)
+
+California 94-2404110
+
+(State or other jurisdictionof incorporation or organization) (I.R.S. Employer Identification No.)
+One Apple Park Way
+
+Cupertino, California 95014
+(Address of principal executive offices) (Zip Code)
+
+(408) 996-1010
+
+(Registrant’s telephone number, including area code)
+
+Securities registered pursuant to Section 12(b) of the Act:
+
+Title of each class Trading symbol(s) Name of each exchange on which registered
+
+Common Stock, $0.00001 par value per share AAPL The Nasdaq Stock Market LLC
+1.625% Notes due 2026 — The Nasdaq Stock Market LLC
+2.000% Notes due 2027 — The Nasdaq Stock Market LLC
+1.375% Notes due 2029 — The Nasdaq Stock Market LLC
+3.050% Notes due 2029 — The Nasdaq Stock Market LLC
+0.500% Notes due 2031 — The Nasdaq Stock Market LLC
+3.600% Notes due 2042 — The Nasdaq Stock Market LLC
+
+Indicate by check mark whether the Registrant (1) has filed all reports required to be filed by Section 13 or 15(d) of the Securities Exchange Act of 1934 during the preceding 12 months (or for such shorter period that the Registrant was required to file such reports), and (2) has been subject to such filing requirements for the past 90 days.
+
+Yes  ☒     No  ☐
+
+Indicate by check mark whether the Registrant has submitted electronically every Interactive Data File required to be submitted pursuant to Rule 405 of Regulation S-T (§232.405 of this chapter) during the preceding 12 months (or for such shorter period that the Registrant was required to submit such files).
+
+~~~~~ SECTION BRAVO -- condensed consolidated statement of operations ~~~~~
+PART I — FINANCIAL INFORMATION
+
+Item 1.    Financial Statements
+
+Apple Inc.
+
+CONDENSED CONSOLIDATED STATEMENTS OF OPERATIONS (Unaudited)
+
+(In millions, except number of shares, which are reflected in thousands, and per-share amounts)
+
+Three Months Ended Nine Months Ended
+
+June 27,2026 June 28,2025 June 27,2026 June 28,2025
+Net sales:
+Products $ 78,678 $ 66,613 $ 272,629 $ 233,287
+Services 30,739 27,423 91,728 80,408
+Total net sales 109,417 94,036 364,357 313,695
+Cost of sales:
+Products 47,153 43,620 163,810 147,097
+Services 7,494 6,698 21,765 19,738
+Total cost of sales 54,647 50,318 185,575 166,835
+Gross margin 54,770 43,718 178,782 146,860
+Operating expenses:
+Research and development 11,729 8,866 34,035 25,684
+Selling, general and administrative 7,346 6,650 22,315 20,553
+Total operating expenses 19,075 15,516 56,350 46,237
+Operating income 35,695 28,202 122,432 100,623
+Other income/(expense), net 572 (171) 670 (698)
+Income before provision for income taxes 36,267 28,031 123,102 99,925
+Provision for income taxes 6,478 4,597 21,638 15,381
+Net income $ 29,789 $ 23,434 $ 101,464 $ 84,544
+Earnings per share:
+Basic $ 2.03 $ 1.57 $ 6.91 $ 5.64
+Diluted $ 2.02 $ 1.57 $ 6.88 $ 5.62
+Shares used in computing earnings per share:
+Basic 14,656,110 14,902,886 14,692,515 14,992,898
+Diluted 14,714,676 14,948,179 14,750,302 15,051,726
+
+~~~~~ SECTION CHARLIE -- condensed consolidated balance sheet ~~~~~
+Apple Inc.
+
+CONDENSED CONSOLIDATED BALANCE SHEETS (Unaudited)
+
+(In millions, except number of shares, which are reflected in thousands, and par value)
+
+June 27,2026 September 27,2025
+ASSETS:
+Current assets:
+Cash and cash equivalents $ 39,544 $ 35,934
+Marketable securities 22,855 18,763
+Accounts receivable, net 31,398 39,777
+Vendor non-trade receivables 27,509 33,180
+Inventories 11,092 5,718
+Other current assets 17,420 14,585
+Total current assets 149,818 147,957
+Non-current assets:
+Marketable securities 84,118 77,723
+Property, plant and equipment, net 51,431 49,834
+Intangible assets, net 20,342 11,093
+Other non-current assets 77,557 72,634
+Total non-current assets 233,448 211,284
+Total assets $ 383,266 $ 359,241
+LIABILITIES AND SHAREHOLDERS’ EQUITY:
+Current liabilities:
+Accounts payable $ 64,525 $ 69,860
+Other current liabilities 62,259 66,387
+Deferred revenue 9,538 9,055
+Commercial paper 1,997 7,979
+Term debt 11,007 12,350
+Total current liabilities 149,326 165,631
+Non-current liabilities:
+Term debt 71,340 78,328
+Other non-current liabilities 55,080 41,549
+Total non-current liabilities 126,420 119,877
+Total liabilities 275,746 285,508
+Commitments and contingencies
+Shareholders’ equity:
+
+Common stock and additional paid-in capital, $0.00001 par value: 50,400,000 shares authorized; 14,608,963 and 14,773,260 shares issued and outstanding, respectively 100,702 93,568
+Retained earnings/(Accumulated deficit) 11,326 (14,264)
+Accumulated other comprehensive loss (4,508) (5,571)
+Total shareholders’ equity 107,520 73,733
+Total liabilities and shareholders’ equity $ 383,266 $ 359,241
+
+~~~~~ SECTION DELTA -- condensed consolidated statement of cash flows ~~~~~
+Apple Inc. | Q3 2026 Form 10-Q | 4
+
+Apple Inc.
+
+CONDENSED CONSOLIDATED STATEMENTS OF CASH FLOWS (Unaudited)
+
+(In millions)
+
+Nine Months Ended
+
+June 27,2026 June 28,2025
+
+Cash, cash equivalents, and restricted cash and cash equivalents, beginning balances $ 35,934 $ 29,943
+Operating activities:
+Net income 101,464 84,544
+Adjustments to reconcile net income to cash generated by operating activities:
+Depreciation and amortization 9,973 8,571
+Share-based compensation expense 10,523 9,680
+Other (2,037) (1,748)
+Changes in operating assets and liabilities:
+Accounts receivable, net 8,316 5,685
+Vendor non-trade receivables 5,671 13,555
+Inventories (5,461) 1,223
+Other current and non-current assets (16,266) (6,116)
+Accounts payable (5,203) (18,479)
+Other current and non-current liabilities 10,016 (15,161)
+Cash generated by operating activities 116,996 81,754
+Investing activities:
+Purchases of marketable securities (48,752) (17,591)
+Proceeds from maturities of marketable securities 26,504 35,036
+Proceeds from sales of marketable securities 12,016 10,785
+Payments for acquisition of property, plant and equipment (6,799) (9,473)
+Other (1,780) (975)
+Cash generated by/(used in) investing activities (18,811) 17,782
+Financing activities:
+Payments for taxes related to net share settlement of equity awards (6,462) (5,719)
+Payments for dividends and dividend equivalents (11,778) (11,559)
+Repurchases of common stock (62,094) (70,579)
+Proceeds from issuance of term debt, net — 4,481
+Repayments of term debt (8,146) (9,682)
+Repayments of commercial paper, net (5,911) (65)
+Other (184) (87)
+Cash used in financing activities (94,575) (93,210)
+Increase in cash, cash equivalents, and restricted cash and cash equivalents 3,610 6,326
+
+Cash, cash equivalents, and restricted cash and cash equivalents, ending balances $ 39,544 $ 36,269
+Supplemental cash flow disclosure:
+Cash paid for income taxes, net $ 26,555 $ 37,332

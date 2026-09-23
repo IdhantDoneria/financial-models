@@ -39,16 +39,66 @@ const MARKETS = {
 
 const T = (ms) => AbortSignal.timeout(ms);
 
-//: US 10Y proxy — average marketable interest rate on Treasury Notes.
+//: Parses one year's daily-treasury-rates CSV and returns the most recent
+//  finite "10 Yr" reading, or null if the file has no usable row (e.g. an
+//  empty first-week-of-January file before Treasury has published anything).
+//  Exported for testing against an inline fixture rather than a live fetch.
+function parseTenYearParYield(csvText) {
+  const lines = csvText.split(/\r?\n/).filter((l) => l.trim().length);
+  if (lines.length < 2) return null;
+  //: Header cells are quoted ("10 Yr"); locate the column BY NAME, not by a
+  //  fixed index — Treasury has reordered/added maturity columns before (the
+  //  "1.5 Month" column is a recent addition), so a hardcoded index silently
+  //  reads the wrong maturity the next time the layout shifts.
+  const header = lines[0].split(",").map((h) => h.trim().replace(/^"|"$/g, ""));
+  const col = header.indexOf("10 Yr");
+  if (col < 0) return null;
+  // Rows are newest-first; the first row with a finite value in that column
+  // is the most recent published reading.
+  for (let i = 1; i < lines.length; i++) {
+    const cells = lines[i].split(",").map((c) => c.trim().replace(/^"|"$/g, ""));
+    const dateCell = cells[0];
+    const raw = cells[col];
+    if (!dateCell || raw === undefined || raw === "") continue;  // blank cell — market holiday etc.
+    const pct = parseFloat(raw);
+    if (!Number.isFinite(pct)) continue;
+    //: Sanity-bound the parsed value — reject anything outside a plausible
+    //  10Y yield range (0-20%) so a parsing/column mistake throws instead of
+    //  silently returning a nonsense rf that every model would then use.
+    if (pct < 0 || pct > 20) throw new Error(`10Y par yield out of range: ${pct}`);
+    // dateCell is MM/DD/YYYY; reformat to ISO for rfSource.
+    const [mm, dd, yyyy] = dateCell.split("/");
+    if (!mm || !dd || !yyyy) continue;
+    return { pct, iso: `${yyyy}-${mm}-${dd}` };
+  }
+  return null;
+}
+
+//: US 10Y — Treasury's own daily par yield curve, "10 Yr" column. Keyless CSV,
+//  no API key needed. This replaced avg_interest_rates ("Treasury Notes"),
+//  which is the weighted-average COUPON across all outstanding notes (a
+//  backward-looking blend of issuance history), not the market yield a DCF's
+//  risk-free rate is supposed to be — it read 3.345% against a real 10Y par
+//  yield of 4.96% on the same day, a >150bp understatement baked into every
+//  discount rate the product computed.
 async function usTreasury() {
-  const url = "https://api.fiscaldata.treasury.gov/services/api/fiscal_service/" +
-    "v2/accounting/od/avg_interest_rates?filter=security_desc:eq:Treasury%20Notes" +
-    "&sort=-record_date&page%5Bsize%5D=1";
-  const r = await fetch(url, { signal: T(8000) });
-  if (!r.ok) throw new Error(`fiscaldata ${r.status}`);
-  const row = (await r.json()).data[0];
-  return { rf: parseFloat(row.avg_interest_rate_amt) / 100,
-           rfSource: `US TREASURY FISCALDATA · NOTES AVG ${row.record_date}` };
+  const now = new Date();
+  const year = now.getUTCFullYear();
+  const fetchYear = async (y) => {
+    const url = "https://home.treasury.gov/resource-center/data-chart-center/interest-rates/"
+      + `daily-treasury-rates.csv/${y}/all?type=daily_treasury_yield_curve&field_tdr_date_value=${y}`;
+    const r = await fetch(url, { signal: T(8000) });
+    if (!r.ok) throw new Error(`treasury csv ${y} ${r.status}`);
+    return parseTenYearParYield(await r.text());
+  };
+  //: Early January: the current year's file can be empty or only a couple of
+  //  rows deep (Treasury hasn't published this year's data yet), so fall back
+  //  to the previous year's file rather than returning nothing for weeks.
+  let hit = await fetchYear(year);
+  if (!hit) hit = await fetchYear(year - 1);
+  if (!hit) throw new Error("treasury par yield curve: no usable 10Yr row found");
+  return { rf: hit.pct / 100,
+           rfSource: `US TREASURY PAR YIELD CURVE · 10Y · ${hit.iso}` };
 }
 
 //: OECD long-term (10Y) government bond yield via FRED. % p.a. monthly.
@@ -113,3 +163,7 @@ module.exports = async (req, res) => {
     fredConfigured: !!process.env.FRED_API_KEY,
   });
 };
+
+//: Pure helper exported for scripts/test_*.js — tested against an inline CSV
+//  fixture rather than a live fetch.
+module.exports._internals = { parseTenYearParYield };
