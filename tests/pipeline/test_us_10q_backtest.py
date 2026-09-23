@@ -275,3 +275,18 @@ def test_ko_full_pipeline_produces_a_finite_same_order_ev(ko_text):
     # Real Coca-Cola market cap is on the order of hundreds of billions of
     # dollars.
     assert 1e10 < ev < 1e13
+
+
+@pytest.mark.parametrize("fixture,expected", [
+    ("apple_10q_fy2026q3_raw_text_excerpts.txt", "AAPL"),
+    ("coca_cola_10q_fy2025q2_raw_text_excerpts.txt", "KO"),
+    ("tesla_10k_fy2025_raw_text_excerpts.txt", "TSLA"),
+])
+def test_ticker_read_from_the_sec_cover_page_trading_symbol_table(fixture, expected):
+    """The cover page states the symbol in a 'Trading Symbol(s)' table, not
+    as 'NYSE: X'. The common-stock row supplies it; KO's notes rows
+    ('KO26', 'KO26C') must not."""
+    from src.pipeline import PDFExtractor
+    from pathlib import Path
+    text = (Path(__file__).resolve().parents[1] / "fixtures" / fixture).read_text()
+    assert PDFExtractor().scrape_figures(text).ticker == expected

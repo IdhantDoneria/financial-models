@@ -73,7 +73,9 @@ class AnalysisReport:
         for name, res in self.results.items():
             is_partial = name in self.assumptions.partial
             headline = self._headline(name, res, currency_symbol, partial=is_partial)
-            status = "UNASSESSED" if is_partial else "OK"
+            status = ("OK" if not is_partial
+                      else "PARTIAL" if name in self.assumptions.partly_assessed
+                      else "UNASSESSED")
             rows.append({"Model": name, "Headline result": headline,
                          "Status": status})
         for name, err in self.errors.items():

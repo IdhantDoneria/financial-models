@@ -1969,6 +1969,17 @@ const IB_NO_OVERRIDE = new Set([
   "company_name", "ticker", "fiscal_year", "net_debt", "free_cash_flows",
 ]);
 
+//: Where a found figure actually came from. Every value used to say "PDF",
+//  including a ticker load's live share price and SEC XBRL figures — a
+//  wrong provenance label on exactly the rows a reader checks.
+const IB_MARKET_FIELDS = new Set(["current_price", "beta", "realized_volatility"]);
+function sourceBadge(out, key) {
+  const backends = (out.fields.backends_used || out.backends || []).join(" ").toLowerCase();
+  const tickerLoad = backends.includes("sec-edgar") || backends.includes("market-data");
+  if (!tickerLoad) return "PDF";
+  return IB_MARKET_FIELDS.has(key) ? "MARKET" : "SEC";
+}
+
 function renderIBExtracted() {
   const grid = $("#ogrid");
   grid.innerHTML = "";
@@ -2000,7 +2011,7 @@ function renderIBExtracted() {
       shown = userSet.has(key)
         ? `${fmtValue(key, value)} <span class="badge user clickable" data-key="${key}"
              title="manually set — click to edit or revert to auto">USER</span>`
-        : `${fmtValue(key, value)} <span class="badge found">PDF</span>`;
+        : `${fmtValue(key, value)} <span class="badge found">${sourceBadge(out, key)}</span>`;
       //: A live price without its timestamp can't be judged for staleness.
       if (key === "current_price" && out.fields.price_as_of) {
         const t = new Date(out.fields.price_as_of);
@@ -2246,7 +2257,9 @@ function renderIBReport() {
     // (e.g. HDEBT with no lease/contingent-liability figures to find) is
     // neither a confirmed-clean OK nor a failure — showing it as green
     // "OK $0.00" would look identical to a real zero-adjustment finding.
-    const isUnassessed = status === "UNASSESSED";
+    // PARTIAL: the core input was assessed but part of the picture still
+    // needs manual input — same amber treatment as UNASSESSED.
+    const isUnassessed = status === "UNASSESSED" || status === "PARTIAL";
     const isError = !isOk && !isUnassessed;
     const statClass = isUnassessed ? "stat-warn" : isError ? "stat-err" : "stat-ok";
     // Same visual language as the EXTRACTED DATA panel's FOUND/MISSING/

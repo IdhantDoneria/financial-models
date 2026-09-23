@@ -1551,6 +1551,18 @@ class PDFExtractor:
             or re.search(r"\bNSE\s+Symbol\s*:\s*([A-Z]{1,10})\b", text, re.IGNORECASE)
             or re.search(r"\bNSE\s*:\s*([A-Z]{2,15})\b", text)
             or re.search(r"\bScrip\s+Code\s*:\s*([A-Z]{2,15})\b", text)
+            # SEC cover page (10-K / 10-Q): a "Trading Symbol(s)" table whose
+            # common-stock row reads "Common Stock, $0.25 Par Value KO New
+            # York Stock Exchange". Anchored on the common-stock row and the
+            # exchange name, so a notes row ("1.875% Notes Due 2026 KO26")
+            # never supplies the symbol. Letter case is matched literally
+            # for the symbol itself; only the surrounding words ignore case.
+            or re.search(
+                r"(?i:trading\s+symbol\(?s?\)?)[\s\S]{0,300}?"
+                r"(?i:common\s+(?:stock|shares))[^\n]{0,80}?\s"
+                r"([A-Z]{1,5}(?:[.-][A-Z])?)\s+"
+                r"(?i:(?:the\s+)?nasdaq|new\s+york\s+stock\s+exchange|nyse)",
+                text)
         )
         fy_match = re.search(r"(?:fiscal|for the year ended)[^\n]{0,40}(20\d{2})",
                              text, re.IGNORECASE)
