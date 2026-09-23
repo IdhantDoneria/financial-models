@@ -52,6 +52,25 @@ const secFetch = (url) =>
   fetch(url, { headers: { "User-Agent": SEC_UA, "Accept-Encoding": "gzip, deflate" },
                signal: AbortSignal.timeout(12_000) });
 
+//: A failure worth retrying — the upstream was slow or briefly unhealthy —
+//  as opposed to a permanent "there is nothing here" (a 404, a filer with no
+//  XBRL). Only the second kind may be cached as the answer.
+function isTransient(err) {
+  const msg = String(err && err.message || "");
+  return err?.name === "TimeoutError" || err?.name === "AbortError"
+    || err instanceof TypeError                 // fetch's network-failure shape
+    || /\b(429|5\d\d)\b/.test(msg);
+}
+
+//: Cache policy for a response whose market data came back incomplete. The
+//  default s-maxage=3600 turned ONE transient upstream failure into an hour
+//  of degraded answers for every visitor (observed: a single SEC timeout on
+//  KO served "market data only" — no cash flows — as a CDN HIT afterwards).
+//  A response missing its price or beta is re-fetched after two minutes;
+//  one degraded by an upstream error is never cached at all.
+const CACHE_SHORT = "public, max-age=0, s-maxage=120";
+const CACHE_NONE = "no-store";
+
 async function loadTickerMap() {
   if (tickerMap && Date.now() - tickerMapAt < TICKER_TTL) return tickerMap;
   const r = await secFetch(TICKERS_URL);
@@ -1066,7 +1085,12 @@ module.exports = async (req, res) => {
     //  already handles these markets properly — the extractor understands
     //  lakh/crore scaling and Ind AS filings — so that is where this points.
     const market = await marketOnly(ticker);
-    if (market) return res.status(200).json(market);
+    if (market) {
+      if (market.fields.current_price == null || market.fields.beta == null) {
+        res.setHeader("Cache-Control", CACHE_SHORT);
+      }
+      return res.status(200).json(market);
+    }
     return res.status(404).json({
       ok: false, notFound: true,
       error: `"${ticker}" was not found as an SEC registrant or as a listed security. `
@@ -1076,7 +1100,19 @@ module.exports = async (req, res) => {
 
   let facts, entityName, taxonomy = "us-gaap";
   try {
-    const r = await secFetch(FACTS_URL(entry.cik));
+    const t0 = Date.now();
+    let r = await secFetch(FACTS_URL(entry.cik)).catch((e) => e);
+    //: One retry, but only for a FAST failure (a 429/5xx or a dropped
+    //  connection): a timed-out attempt has already spent most of the
+    //  function's time budget, and the no-store below makes the visitor's
+    //  own next request the retry instead.
+    const failedFast = (r instanceof Error || !r.ok) && Date.now() - t0 < 4000
+      && (r instanceof Error ? isTransient(r) : r.status === 429 || r.status >= 500);
+    if (failedFast) {
+      await new Promise((ok) => setTimeout(ok, 300));
+      r = await secFetch(FACTS_URL(entry.cik)).catch((e) => e);
+    }
+    if (r instanceof Error) throw r;
     if (!r.ok) throw new Error(`companyfacts ${r.status}`);
     const j = await r.json();
     entityName = j.entityName || entry.title;
@@ -1090,10 +1126,19 @@ module.exports = async (req, res) => {
     //: Registered with SEC but no usable XBRL (a 404 on companyfacts, or a
     //  taxonomy we don't read). Market data is still real and still useful,
     //  so degrade to it rather than dead-ending the user.
+    const transient = isTransient(err);
+    if (transient) res.setHeader("Cache-Control", CACHE_NONE);
     const market = await marketOnly(ticker);
     if (market) {
-      market.notes.unshift(`No machine-readable XBRL filing data for ${ticker} `
-        + `(${String(err.message).slice(0, 60)}), so only market data is shown.`);
+      market.notes.unshift(transient
+        ? `SEC filing data for ${ticker} didn't load this time `
+          + `(${String(err.message).slice(0, 60)}), so only market data is shown. `
+          + `This is usually temporary — load the ticker again.`
+        : `No machine-readable XBRL filing data for ${ticker} `
+          + `(${String(err.message).slice(0, 60)}), so only market data is shown.`);
+      if (!transient && (market.fields.current_price == null || market.fields.beta == null)) {
+        res.setHeader("Cache-Control", CACHE_SHORT);
+      }
       return res.status(200).json(market);
     }
     return res.status(502).json({
@@ -1526,6 +1571,9 @@ module.exports = async (req, res) => {
     .filter(([k, v]) => v === null || (Array.isArray(v) && v.length === 0))
     .map(([k]) => k);
 
+  if (fields.current_price == null || fields.beta == null) {
+    res.setHeader("Cache-Control", CACHE_SHORT);
+  }
   return res.status(200).json({
     ok: true,
     ticker: entry.symbol,
@@ -1557,7 +1605,7 @@ module.exports = async (req, res) => {
 //  parts that are easy to get subtly wrong (share-class spelling, restatement
 //  dedup, period alignment) and impossible to check by eyeballing a live
 //  response, so they are tested directly rather than only through the handler.
-module.exports._internals = { resolveTicker, detectReportingCurrency, deriveAdrRatio,
+module.exports._internals = { isTransient, resolveTicker, detectReportingCurrency, deriveAdrRatio,
                               ADR_LOCAL_LISTINGS, ADR_RATIO_CANDIDATES, ADR_RATIO_TOLERANCE, pickInstant, pickAnnualSeries, FLOW_TAGS, STOCK_TAGS,
                               IFRS_FLOW_TAGS, IFRS_STOCK_TAGS, LEASE_TAGS,
                               benchmarkFor, monthlyReturns, monthKey, BENCHMARKS, MIN_BETA_OBSERVATIONS,

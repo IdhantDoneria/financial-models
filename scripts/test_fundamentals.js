@@ -875,5 +875,78 @@ console.log("\n· monthlyReturnPairs: the exact [YYYYMM, r] shape exposed as `mo
   eq(pairs[0][1], -0.02, "a negative return round-trips correctly");
 }
 
-console.log(`\n${passed} passed · ${failed} failed`);
-process.exit(failed ? 1 : 0);
+/* ------------------- transient upstream failures & caching ------------------ */
+console.log("\n· A transient SEC failure must never be CDN-cached as the answer");
+{
+  const t = new Error("x"); t.name = "TimeoutError";
+  ok(_internals.isTransient(t), "a timeout is transient");
+  ok(_internals.isTransient(new Error("companyfacts 503")), "a 5xx is transient");
+  ok(_internals.isTransient(new Error("companyfacts 429")), "a 429 is transient");
+  ok(_internals.isTransient(new TypeError("fetch failed")), "a dropped connection is transient");
+  ok(!_internals.isTransient(new Error("companyfacts 404")), "a 404 is permanent");
+  ok(!_internals.isTransient(new Error("no us-gaap or ifrs-full facts")), "no XBRL is permanent");
+}
+
+(async () => {
+  //: Real regression: one SEC timeout on KO was served to every visitor for
+  //  an hour as a CDN HIT ("market data only", no cash flows). Simulate it.
+  const handler = require("../api/fundamentals.js");
+  const realFetch = global.fetch;
+  const months = 30, now = Math.floor(Date.now() / 1000);
+  const chart = {
+    chart: { result: [{
+      meta: { regularMarketPrice: 88, regularMarketTime: now, currency: "USD" },
+      timestamp: Array.from({ length: months }, (_, i) => now - (months - i) * 30 * 86400),
+      indicators: { quote: [{ close: Array.from({ length: months }, (_, i) => 80 + (i % 5)) }],
+                    adjclose: [{ adjclose: Array.from({ length: months }, (_, i) => 80 + (i % 5)) }] },
+      events: {},
+    }] },
+  };
+  const json = (body) => ({ ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) });
+  const run = async (factsBehaviour) => {
+    let factsCalls = 0;
+    global.fetch = async (url) => {
+      url = String(url);
+      if (url.includes("company_tickers")) return json({ 0: { cik_str: 21344, ticker: "KO", title: "COCA COLA CO" } });
+      if (url.includes("companyfacts")) { factsCalls++; return factsBehaviour(); }
+      if (url.includes("finance.yahoo.com")) return json(chart);
+      return { ok: false, status: 404, json: async () => ({}), text: async () => "" };
+    };
+    const headers = {}; let status = 0, body = null;
+    const res = {
+      setHeader: (k, v) => { headers[k.toLowerCase()] = v; },
+      status(c) { status = c; return this; },
+      json(o) { body = o; return this; },
+      end() { return this; },
+    };
+    await handler({ method: "GET", url: "/api/fundamentals?ticker=KO", query: { ticker: "KO" },
+                    headers: { "x-forwarded-for": "203.0.113.9" } }, res);
+    return { headers, status, body, factsCalls };
+  };
+  try {
+    //: A real timeout only fires after secFetch's 12s budget; advance the
+    //  clock by that much so the handler sees what production would.
+    const realNow = Date.now; let skew = 0;
+    Date.now = () => realNow() + skew;
+    const timeout = () => { skew += 12_000; const e = new Error("The operation was aborted due to timeout"); e.name = "TimeoutError"; throw e; };
+    const a = await run(timeout);
+    Date.now = realNow;
+    eq(a.headers["cache-control"], "no-store", "timed-out SEC fetch: degraded response is not cacheable");
+    ok(a.body && /didn't load this time/.test((a.body.notes || []).join(" ")), "and tells the user it's temporary");
+    eq(a.factsCalls, 1, "a timeout is not retried inside the same request (budget already spent)");
+
+    const flaky = (() => { let n = 0; return () => (n++ === 0 ? { ok: false, status: 503, json: async () => ({}) } : json({ entityName: "COCA COLA CO", facts: {} })); })();
+    const b = await run(flaky);
+    eq(b.factsCalls, 2, "a fast 503 is retried once");
+
+    const gone = () => ({ ok: false, status: 404, json: async () => ({}) });
+    const c = await run(gone);
+    ok(c.headers["cache-control"] !== "no-store", "a permanent 404 stays cacheable");
+  } catch (e) {
+    ok(false, "transient-failure simulation ran", e && e.stack);
+  } finally {
+    global.fetch = realFetch;
+  }
+  console.log(`\n${passed} passed · ${failed} failed`);
+  process.exit(failed ? 1 : 0);
+})();
