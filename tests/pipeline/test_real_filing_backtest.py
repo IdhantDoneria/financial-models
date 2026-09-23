@@ -1015,3 +1015,24 @@ def test_web_bridge_assumed_preview_matches_what_autoassumer_actually_uses():
     # — the actual bug: these silently used to disagree.
     implied_margin = preview["free_cash_flows"][0] / (1 + preview["revenue_growth"]) / data.revenue
     assert implied_margin == pytest.approx(preview["operating_margin"])
+
+
+def test_assumed_preview_follows_the_selected_market():
+    """The preview used AutoAssumer() defaults (US rf, 2.5% cap) whatever
+    market was selected, so an Indian filing's previewed FCF path faded to a
+    terminal growth the report would never use. set_market() now carries the
+    selection, and the preview must equal what AutoAssumer.build projects."""
+    wb = _web_bridge()
+    data = PDFExtractor().scrape_figures(
+        (FIXTURES / "tesla_10k_fy2025_raw_text_excerpts.txt").read_text())
+    assert not data.free_cash_flows          # the preview synthesises the path
+    us = wb._assumed_preview(data)["free_cash_flows"]
+    wb.set_market('{"rf": 0.069, "erp": 0.078, "lt_growth": 0.05}')
+    india = wb._assumed_preview(data)["free_cash_flows"]
+    built = AutoAssumer(risk_free_rate=0.069, equity_risk_premium=0.078,
+                        terminal_growth_cap=0.05).build(data)
+    assert india == pytest.approx(built.kwargs_by_model["Discounted Cash Flow"]["free_cash_flows"],
+                                  rel=1e-4)
+    assert india[-1] / india[-2] - 1 == pytest.approx(0.05, abs=1e-3)   # fades to India's cap
+    assert us[-1] / us[-2] - 1 == pytest.approx(0.025, abs=1e-3)
+    wb.set_market("{}")

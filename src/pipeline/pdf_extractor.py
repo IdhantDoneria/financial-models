@@ -132,6 +132,18 @@ class ExtractedFinancials:
     interest_paid_classification: str | None = None
     #: When the market price was struck (ISO 8601 UTC), when known.
     price_as_of: str | None = None
+    #: The stock's monthly TOTAL returns (dividend-adjusted closes) for
+    #: completed calendar months, ascending, as ``[YYYYMM, return]`` pairs —
+    #: the same series beta is regressed on, exposed so Fama-French can run
+    #: on the company's real returns. Ticker path only.
+    monthly_returns: list[list[float]] = field(default_factory=list)
+    #: Symbol of the index those returns were measured against (``^GSPC``
+    #: for US listings). Fama-French's factors are US-market factors, so
+    #: this decides whether a real regression is meaningful at all.
+    return_benchmark: str | None = None
+    #: ``"us-gaap"`` or ``"ifrs-full"`` — the XBRL taxonomy the filing
+    #: reports in (ticker path). ``None`` for a PDF.
+    accounting_standard: str | None = None
     #: ISO 4217 code the filing's own figures are denominated in (detected
     #: from currency symbols/codes in the document text — see
     #: :meth:`PDFExtractor._detect_currency`). Every monetary field above is
@@ -219,6 +231,9 @@ class ExtractedFinancials:
             "fcf_period_ends": self.fcf_period_ends,
             "interest_paid_classification": self.interest_paid_classification,
             "price_as_of": self.price_as_of,
+            "monthly_returns": self.monthly_returns,
+            "return_benchmark": self.return_benchmark,
+            "accounting_standard": self.accounting_standard,
             "currency": self.currency,
             "dividend_is_annual": self.dividend_is_annual,
             "statement_basis": self.statement_basis,
@@ -1556,6 +1571,19 @@ class PDFExtractor:
             statement_basis=basis,
             revenue=self._first_after(
                 figures_text, [r"total\s+revenue", r"net\s+revenue",
+                       # US GAAP manufacturers/retailers (Apple, Nike, most
+                       # consumer/hardware filers) routinely never use the
+                       # word "revenue" anywhere in their own income
+                       # statement, labelling the consolidated top line
+                       # "Total net sales" instead. Without this, a real
+                       # Apple 10-Q fell all the way through to the bare
+                       # "revenues?" catch-all below, which matched
+                       # "Deferred revenue" on the BALANCE SHEET — a current
+                       # liability, not revenue at all, off by >10x. Tried
+                       # before the Ind AS patterns below since it's the
+                       # same tier of thing: a specific, unambiguous label
+                       # for the actual consolidated total.
+                       r"total\s+net\s+sales",
                        # Ind AS / BSE-NSE quarterly-results wording: many
                        # Indian filings never use the word "revenue" for the
                        # consolidated top line at all, labelling it "Income
@@ -1576,7 +1604,22 @@ class PDFExtractor:
                 apply_scale=True, disqualify=self._FOOTNOTE_SCOPE_DISQUALIFIERS),
             free_cash_flows=self._scrape_fcf_series(figures_text),
             net_income=self._first_after(
-                figures_text, [r"net\s+income", r"net\s+earnings",
+                figures_text,
+                [# US GAAP filings with a noncontrolling interest (Coca-Cola
+                 # and any other company with partly-owned subsidiaries)
+                 # report a "Consolidated Net Income" subtotal BEFORE
+                 # deducting NCI, then the true bottom line as "Net Income
+                 # Attributable to Shareowners/Shareholders" a line or two
+                 # below it. Both contain the literal substring "net
+                 # income", so the bare pattern below used to stop at the
+                 # pre-NCI subtotal — the wrong figure, if a smaller one on
+                 # a real KO filing (₹3,803 vs the real ₹3,810 attributable
+                 # to shareowners). Tried first so the specific, correct
+                 # label wins over the generic one whenever both are present.
+                 r"net\s+income\s+attributable\s+to\s+(?:shareowners|"
+                 r"shareholders|the\s+company|common\s+(?:share|stock)"
+                 r"holders)",
+                 r"net\s+income", r"net\s+earnings",
                        r"profit\s+for\s+the\s+(?:period|quarter|year)",
                        # Tolerant of the "period"/"year" itself being OCR-
                        # corrupted (a real scan turned it into "neriod/vear")

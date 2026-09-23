@@ -87,6 +87,7 @@ class ReverseDCFModel(BaseFinancialModel):
         years: int = 5,
         discount_rate: float,
         terminal_growth: float,
+        growth_profile: str = "constant",
         logger: Any = None,
     ) -> None:
         """Initialise and validate every input to the reverse solve.
@@ -116,6 +117,15 @@ class ReverseDCFModel(BaseFinancialModel):
             discount_rate: WACC ``r > 0``.
             terminal_growth: Perpetual terminal growth rate ``g``; must
                 satisfy ``discount_rate > terminal_growth``.
+            growth_profile: ``"constant"`` (default) solves for one FCF
+                growth rate held for every explicit year. ``"fade"`` solves
+                for the year-1 rate of a path that declines linearly to
+                ``terminal_growth`` by the final year — the same shape the
+                IB desk's forward DCF projects with, so the two answer the
+                same question. A constant-growth solve against a fading
+                forward DCF overstated the "required" growth: five years at
+                one rate, then an overnight drop to terminal growth, forces
+                the rate itself to carry all of the value.
             logger: Optional logger forwarded to the base class.
 
         Raises:
@@ -136,6 +146,11 @@ class ReverseDCFModel(BaseFinancialModel):
         self.years = int(self._require_positive(years, "years"))
         self.discount_rate = self._require_positive(discount_rate, "discount_rate")
         self.terminal_growth = self._as_finite_float(terminal_growth, "terminal_growth")
+        if growth_profile not in ("constant", "fade"):
+            raise ValidationError(
+                f"'growth_profile' must be 'constant' or 'fade', got {growth_profile!r}.")
+        # A one-year horizon has no path to fade along.
+        self.growth_profile = growth_profile if self.years > 1 else "constant"
 
         # Same convergence requirement as the forward DCF — checked here too
         # so the reverse solve fails fast with a clear message instead of
@@ -155,6 +170,22 @@ class ReverseDCFModel(BaseFinancialModel):
         """Enterprise value implied by the market price: ``P*shares + net_debt``."""
         return self.current_price * self.shares_outstanding + self.net_debt
 
+    def _growth_path(self, g: float) -> list[float]:
+        """Per-year growth rates for a solve variable ``g``: ``g`` every year
+        (constant), or ``g`` in year 1 falling linearly to terminal growth in
+        year N (fade)."""
+        n = self.years
+        if self.growth_profile == "constant":
+            return [g] * n
+        return [g + (self.terminal_growth - g) * t / (n - 1) for t in range(n)]
+
+    def _fcf_path(self, g: float) -> list[float]:
+        path, value = [], self.base_fcf
+        for rate in self._growth_path(g):
+            value *= 1.0 + rate
+            path.append(value)
+        return path
+
     def _ev_at_growth(self, cagr: float) -> float:
         """Enterprise value the forward DCF produces at a given constant FCF CAGR.
 
@@ -162,7 +193,7 @@ class ReverseDCFModel(BaseFinancialModel):
         terminal-value formula — this is the one place the two models share
         code, by composition rather than duplicating the identity.
         """
-        fcfs = [self.base_fcf * (1.0 + cagr) ** t for t in range(1, self.years + 1)]
+        fcfs = self._fcf_path(cagr)
         forward = DiscountedCashFlowModel(
             free_cash_flows=fcfs, discount_rate=self.discount_rate,
             terminal_growth=self.terminal_growth, net_debt=0.0,
@@ -215,6 +246,13 @@ class ReverseDCFModel(BaseFinancialModel):
 
         implied_revenue_year_n = None
         implied_tam_capture = None
+        implied_initial_growth = None
+        if cagr is not None and self.growth_profile == "fade":
+            # The solve variable is the year-1 rate; the headline is the
+            # equivalent average annual growth over the whole horizon, so a
+            # fade and a constant solve report the same kind of number.
+            implied_initial_growth = cagr
+            cagr = (self._fcf_path(cagr)[-1] / self.base_fcf) ** (1.0 / self.years) - 1.0
         if cagr is not None:
             # Simplifying assumption, stated plainly in explain(): revenue
             # grows at the same CAGR the solver found for FCF (a constant
@@ -226,6 +264,8 @@ class ReverseDCFModel(BaseFinancialModel):
         result: dict[str, Any] = {
             "implied_ev": implied_ev,
             "implied_fcf_cagr": cagr,
+            "implied_initial_growth": implied_initial_growth,
+            "growth_profile": self.growth_profile,
             "solver_note": note,
             "implied_revenue_year_n": implied_revenue_year_n,
             "implied_tam_capture": implied_tam_capture,
@@ -242,6 +282,12 @@ class ReverseDCFModel(BaseFinancialModel):
     def explain(self) -> str:
         """Return a Markdown derivation plus a plain-language read of the implied growth."""
         res = self.calculate()
+        fade_line = (
+            f"Growth path: fades linearly from **{res['implied_initial_growth']:.2%} in year 1** "
+            f"to the {self.terminal_growth:.2%} terminal rate in year {self.years} "
+            "(the same shape the forward DCF projects with); the CAGR below is its "
+            "equivalent average.\n\n"
+            if res.get("implied_initial_growth") is not None else "")
         if res["implied_fcf_cagr"] is None:
             solved = f"**Not solvable within [{_CAGR_LO:.0%}, {_CAGR_HI:.0%}]/yr** — {res['solver_note']}"
         elif res["implied_tam_capture"] is None:
@@ -271,6 +317,7 @@ class ReverseDCFModel(BaseFinancialModel):
             f"- Price {self.current_price:g} × {self.shares_outstanding:g} shares + "
             f"net debt {self.net_debt:g} = implied EV **{res['implied_ev']:.4f}**\n"
             f"- {solved}\n\n"
+            f"{fade_line}"
             "**Why this differs from a forward DCF:** a forward DCF is only as good "
             "as the growth assumption fed into it; this flips the question to "
             "*what does the current price assume*, so you can judge that assumption "
@@ -298,7 +345,8 @@ class ReverseDCFModel(BaseFinancialModel):
                 marker=dict(color="black", size=11, symbol="x"), name="Solved g"))
         fig.update_layout(
             title="Enterprise Value vs. FCF Growth — Where the Market Price Sits",
-            xaxis_title="Constant FCF CAGR (g)", yaxis_title="Enterprise value",
+            xaxis_title=("Year-1 FCF growth (fading to terminal)"
+                         if self.growth_profile == "fade" else "Constant FCF CAGR (g)"), yaxis_title="Enterprise value",
             xaxis_tickformat=".0%", template="plotly_white",
         )
         return fig
@@ -330,7 +378,27 @@ class ReverseDCFModel(BaseFinancialModel):
         expected_capture = (base_revenue * (1.0 + known_cagr) ** years) / tam
         computed_capture = solver_case.calculate()["implied_tam_capture"]
 
+        # (c) Fade round-trip: price a DCF on a known 10-year fading path and
+        #     confirm the fade solve recovers the known year-1 growth.
+        known_g0, n10 = 0.20, 10
+        fade_fcfs, v = [], base_fcf
+        for t in range(n10):
+            v *= 1.0 + known_g0 + (g - known_g0) * t / (n10 - 1)
+            fade_fcfs.append(v)
+        fade_ev = DiscountedCashFlowModel(
+            free_cash_flows=fade_fcfs, discount_rate=r, terminal_growth=g, net_debt=0.0
+        ).calculate()["enterprise_value"]
+        fade_case = cls(
+            current_price=(fade_ev - net_debt) / shares, shares_outstanding=shares,
+            net_debt=net_debt, base_fcf=base_fcf, base_revenue=1000.0, years=n10,
+            discount_rate=r, terminal_growth=g, growth_profile="fade",
+        )
+        recovered_g0 = fade_case.calculate()["implied_initial_growth"]
+
         return [
+            Benchmark("Fade round-trip recovers known year-1 growth", recovered_g0, known_g0,
+                      rel_tol=1e-9, source="Internal consistency: price a DCF on a known "
+                      "10-year linear fade, reverse-solve it, recover the year-1 rate."),
             Benchmark("Round-trip solver recovers known CAGR", recovered_cagr, known_cagr,
                       rel_tol=1e-9, source="Internal consistency: price a DCF at a known "
                       "growth rate, solve the reverse DCF on that price, recover the rate."),

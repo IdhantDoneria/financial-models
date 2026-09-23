@@ -215,6 +215,26 @@ _BLUME_WEIGHT = 0.67
 #: Gordon model will run. As r approaches g the value 1/(r-g) explodes; the
 #: old max(wacc, g+0.5%) floor silently valued a stock at ~200x its dividend.
 _GORDON_MIN_SPREAD = 0.01
+
+#: Fewest overlapping months a real Fama-French regression is run on: four
+#: parameters need a real sample, and 24 is the same floor the ticker path's
+#: beta regression uses (MIN_BETA_OBSERVATIONS in api/fundamentals.js).
+FF_MIN_MONTHS = 24
+
+#: Ken French's factors are built from US stocks, so only a US-benchmarked
+#: listing's returns can be meaningfully regressed on them.
+_FF_US_BENCHMARKS = {"^GSPC"}
+
+
+def ff_real_returns(data: ExtractedFinancials) -> dict[int, float] | None:
+    """The company's real monthly total returns keyed ``YYYYMM``, when a
+    Fama-French regression on them is meaningful (a US listing with at least
+    :data:`FF_MIN_MONTHS` months); otherwise ``None``. Single source of the
+    eligibility rule for both the assumer's disclosure and the runner."""
+    if data.return_benchmark not in _FF_US_BENCHMARKS:
+        return None
+    months = {int(m): float(r) for m, r in (data.monthly_returns or [])}
+    return months if len(months) >= FF_MIN_MONTHS else None
 SECTOR_BASELINES: dict[str, dict[str, float]] = {
     "Drugs (Pharmaceutical)":            {"beta": 0.98, "operating_margin": 0.3124, "revenue_growth": 0.1845},
     "Healthcare Products":               {"beta": 0.91, "operating_margin": 0.1740, "revenue_growth": 0.1841},
@@ -699,7 +719,12 @@ class AutoAssumer:
                 # fail-loud backstop if a future caller ever runs this
                 # model's kwargs without checking `unavailable` first.
                 "total_addressable_market": o.total_addressable_market,
-                "years": 5,
+                # The forward DCF's own horizon and growth shape: the
+                # reverse solve then answers "what year-1 growth, fading
+                # like the DCF's, does today's price require?" — the same
+                # question the forward DCF answers in reverse.
+                "years": _FORECAST_YEARS,
+                "growth_profile": "fade",
                 "discount_rate": wacc,
                 "terminal_growth": g_terminal,
             },
@@ -723,11 +748,17 @@ class AutoAssumer:
         )
         if lease_debt:
             rationale[("DCF", "net_debt")] = (
-                f"Reported net debt plus {lease_debt:,.0f} of lease liabilities "
-                f"(finance {data.finance_lease_liabilities or 0:,.0f}, operating "
-                f"{data.operating_lease_liabilities or 0:,.0f}) — lease payments are "
-                f"owed like debt; the interest inside operating-lease payments is "
-                f"added back to FCF so it isn't counted twice."
+                (f"Reported net debt plus {lease_debt:,.0f} of IFRS 16 lease "
+                 f"liabilities. IFRS 16 puts every lease on the balance sheet and "
+                 f"reports the principal repayments under FINANCING cash flows, so "
+                 f"FCF (operating cash flow − capex) never deducted them — counting "
+                 f"the liability as debt is the matching treatment, not a double count."
+                 if data.accounting_standard == "ifrs-full" else
+                 f"Reported net debt plus {lease_debt:,.0f} of lease liabilities "
+                 f"(finance {data.finance_lease_liabilities or 0:,.0f}, operating "
+                 f"{data.operating_lease_liabilities or 0:,.0f}) — lease payments are "
+                 f"owed like debt; the interest inside operating-lease payments is "
+                 f"added back to FCF so it isn't counted twice.")
             )
         capped_note = (" (capped — see SECTOR_BASELINES)"
                        if sector_baseline and sector_baseline["revenue_growth"] > _MAX_SECTOR_GROWTH
@@ -825,6 +856,12 @@ class AutoAssumer:
             else "Partially or fully defaulted to $0 where the filing's D&A, R&D "
                  "expense or capex line wasn't confidently found."
         )
+        rationale[("RDCF", "implied growth")] = (
+            f"Solves for the year-1 FCF growth that, fading linearly to the "
+            f"{g_terminal:.2%} terminal rate over {_FORECAST_YEARS} years like the "
+            f"forward DCF, justifies today's price; the headline is that path's "
+            f"average annual growth. Base FCF is the DCF's own normalised base."
+        )
         rationale[("RDCF", "total_addressable_market")] = (
             "No filing states its own TAM in a form a regex can trust (when "
             "disclosed at all, it's prose in the MD&A, not a labelled "
@@ -897,15 +934,31 @@ class AutoAssumer:
         # fit but is mechanically guaranteed by construction. No fix exists
         # short of a real historical-returns feed this app doesn't have;
         # flagging it is the honest option available now.
-        partial["Fama-French 3-Factor"] = (
-            "This model's 'asset' return series is synthesised from the "
-            "same beta assumption it's then regressed against — the market-"
-            "factor loading and R² will always look strong regardless of "
-            "the real company's actual factor exposure, since there's no "
-            "real historical price series for this company to regress "
-            "against instead. Treat this as an illustration of the "
-            "methodology, not an empirical fit to this company."
-        )
+        ff_months = ff_real_returns(data)
+        if ff_months is not None:
+            rationale[("FF3", "asset returns")] = (
+                f"Real regression: the company's own monthly total returns "
+                f"({len(ff_months)} completed months, dividend-adjusted) against "
+                f"Ken French's US Mkt-RF, SMB and HML factors, over the months "
+                f"both series cover."
+            )
+        else:
+            why = ("its returns are measured against a non-US index and Ken "
+                   "French's factors are US-market factors, so regressing on "
+                   "them wouldn't describe this company"
+                   if data.return_benchmark else
+                   "there's no historical return series for this company (a "
+                   "PDF upload, or a ticker whose price history couldn't be "
+                   "fetched)")
+            partial["Fama-French 3-Factor"] = (
+                "This model's 'asset' return series is synthesised from the "
+                "same beta assumption it's then regressed against — the market-"
+                "factor loading and R² will always look strong regardless of "
+                f"the real company's actual factor exposure, because {why}. "
+                "Treat this as an illustration of the methodology, not an "
+                "empirical fit to this company. A US ticker load runs it on "
+                "the company's real returns."
+            )
 
         unavailable: dict[str, str] = {}
         # Reverse DCF's entire premise is inverting *today's real market
@@ -1079,6 +1132,12 @@ class AutoAssumer:
         cls = data.interest_paid_classification
         if cls is not None:
             return cls == "operating"
+        # An IFRS filer that states nothing either way (explicitly or through
+        # its lease cash-flow tags — see api/fundamentals.js) could be using
+        # either presentation. Not adding back is the error that can't
+        # double-count; it understates FCF by at most interest × (1 − t).
+        if data.accounting_standard == "ifrs-full":
+            return False
         return data.currency == "USD"
 
     def _normalised_base(
@@ -1139,7 +1198,14 @@ class AutoAssumer:
         parts = [f"average of the latest {len(adjusted)} reported year"
                  f"{'s' if len(adjusted) > 1 else ''}"]
         parts.append(f"+ after-tax interest ({n_int} of {len(adjusted)} years)" if n_int
-                     else ("interest not added back (filing classifies interest paid as financing)"
+                     else ("interest not added back (interest paid is classified as financing, "
+                           "so operating cash flow never deducted it)"
+                           if not add_interest and data.interest_paid_classification == "financing"
+                           else "interest not added back (IFRS filer that doesn't say where interest "
+                           "paid sits — adding it back could count it twice)"
+                           if not add_interest and data.accounting_standard == "ifrs-full"
+                           else "interest not added back (non-US filing; interest paid is usually "
+                           "presented under financing)"
                            if not add_interest else "no interest figure to add back"))
         parts.append(f"− stock-based compensation ({n_sbc} of {len(adjusted)} years)" if n_sbc
                      else "no stock-based compensation figure to deduct")

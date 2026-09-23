@@ -159,7 +159,7 @@ def test_interest_classified_as_financing_is_not_added_back():
                interest_paid_classification="financing", currency="INR")
     a = AutoAssumer().build(data)
     assert a.kwargs_by_model[RDCF]["base_fcf"] == pytest.approx((120 + 90 + 150) / 3)
-    assert "classifies interest paid as financing" in a.rationale[("DCF", "free_cash_flows")]
+    assert "classified as financing" in a.rationale[("DCF", "free_cash_flows")]
 
 
 def test_operating_leases_are_debt_with_their_interest_added_back():
@@ -214,3 +214,74 @@ def test_gordon_refuses_when_cost_of_equity_hugs_dividend_growth():
     data = _us(dividend_per_share=2.0, beta=0.1, backends_used=[])
     a = AutoAssumer(risk_free_rate=0.03, equity_risk_premium=0.05).build(data)
     assert "Gordon Growth Model" in a.unavailable
+
+
+def test_reverse_dcf_uses_the_forward_dcfs_horizon_and_fade():
+    """The reverse solve must invert the SAME model the forward DCF runs:
+    feed it the forward DCF's own value per share and it has to recover the
+    forward DCF's year-1 growth exactly."""
+    from src import DiscountedCashFlowModel
+    data = _us(current_price=1.0, shares_outstanding=100.0, total_debt=0.0,
+               cash_and_equivalents=0.0)
+    a = AutoAssumer().build(data)
+    fwd = DiscountedCashFlowModel(**a.kwargs_by_model[DCF]).calculate()
+    kw = dict(a.kwargs_by_model[RDCF], current_price=fwd["price_per_share"])
+    assert kw["years"] == 10 and kw["growth_profile"] == "fade"
+    res = ReverseDCFModel(**kw).calculate()
+    assert res["implied_initial_growth"] == pytest.approx(0.10, rel=1e-8)
+    # headline = the path's equivalent average annual growth
+    path = a.kwargs_by_model[DCF]["free_cash_flows"]
+    assert res["implied_fcf_cagr"] == pytest.approx(
+        (path[-1] / kw["base_fcf"]) ** (1 / 10) - 1, rel=1e-8)
+
+
+def test_ifrs_filer_with_unknown_interest_classification_gets_no_add_back():
+    data = _us(interest_expense_series=[None, 10.0, 20.0, 30.0], currency="USD",
+               accounting_standard="ifrs-full", interest_paid_classification=None)
+    a = AutoAssumer().build(data)
+    assert a.kwargs_by_model[RDCF]["base_fcf"] == pytest.approx((120 + 90 + 150) / 3)
+    assert "IFRS filer" in a.rationale[("DCF", "free_cash_flows")]
+    # ...but explicit (or lease-evidence-inferred) "operating" still adds back
+    data.interest_paid_classification = "operating"
+    assert AutoAssumer().build(data).kwargs_by_model[RDCF]["base_fcf"] > (120 + 90 + 150) / 3
+
+
+# --------------------------------------------------------------------------- #
+# Fama-French on the company's real returns
+# --------------------------------------------------------------------------- #
+FF = "Fama-French 3-Factor"
+
+
+def _returns_from_factors(b_mkt, s_smb, h_hml, alpha=0.001, months=60):
+    """Monthly returns built from the bundled REAL factor rows with known
+    loadings — a regression on the right months must recover them exactly."""
+    from src import FamaFrenchModel
+    f = FamaFrenchModel.load_factors().tail(months)
+    r = f["RF"] + alpha + b_mkt * f["Mkt-RF"] + s_smb * f["SMB"] + h_hml * f["HML"]
+    return [[int(m), float(v)] for m, v in r.items()]
+
+
+def test_us_listing_regresses_its_real_returns():
+    from src.pipeline import AnalysisRunner
+    data = _us(monthly_returns=_returns_from_factors(0.7, -0.3, 0.4),
+               return_benchmark="^GSPC")
+    a = AutoAssumer().build(data)
+    assert FF not in a.partial
+    assert "Real regression" in a.rationale[("FF3", "asset returns")]
+    res = AnalysisRunner(data).run(a, [FF]).results[FF]
+    assert res["beta_mkt"] == pytest.approx(0.7, abs=1e-8)
+    assert res["beta_smb"] == pytest.approx(-0.3, abs=1e-8)
+    assert res["beta_hml"] == pytest.approx(0.4, abs=1e-8)
+
+
+def test_non_us_listing_keeps_the_disclosed_illustration():
+    data = _us(monthly_returns=_returns_from_factors(1.0, 0, 0), return_benchmark="^NSEI")
+    assert "non-US index" in AutoAssumer().build(data).partial[FF]
+
+
+def test_too_little_overlap_fails_loudly_instead_of_faking_it():
+    from src.pipeline import AnalysisRunner
+    data = _us(monthly_returns=[[209901 + i, 0.01] for i in range(30)],   # future months
+               return_benchmark="^GSPC")
+    report = AnalysisRunner(data).run(AutoAssumer().build(data), [FF])
+    assert FF in report.errors and "overlap" in report.errors[FF]

@@ -22,7 +22,10 @@ const { resolveTicker, pickInstant, pickAnnualSeries, detectReportingCurrency,
         computeSplitAdjustment, SPLIT_ALLOTMENT_LAG_MS,
         annualizedVol, regressionStats,
         pickLeaseLiability, debtTagIncludesLeases, NET_INTEREST_TAGS,
-        interestExpenseFromRow, seriesAlignedTo, ifrsInterestClassification } = _internals;
+        interestExpenseFromRow, seriesAlignedTo, ifrsInterestClassification,
+        dedupeMonthlyCloses, monthKey, monthKeyToLabel, currentMonthKey, monthlyReturnPairs,
+        inferIfrsLeaseInterestClassification, LEASE_INTEREST_FINANCING_RATIO,
+        LEASE_INTEREST_OPERATING_RATIO } = _internals;
 
 let passed = 0, failed = 0;
 function ok(cond, label, detail) {
@@ -726,6 +729,150 @@ console.log("\n· IFRS interest-paid classification: operating vs financing vs u
   };
   eq(ifrsInterestClassification(facts), "operating",
     "operating is checked before financing");
+}
+
+/* --------------- IFRS interest classification: lease-evidence fallback ---- */
+console.log("\n· IFRS interest-paid classification: inferred from lease cash-flow evidence when undisclosed");
+{
+  // INFY FY2025-03-31 shape: CashOutflowForLeases and the financing-lease
+  // payments tag both report 278,000,000 for the same period — payments
+  // cover the whole total, so lease interest must be inside financing too.
+  const facts = {
+    CashOutflowForLeases: { units: { INR: [
+      { start: "2024-04-01", end: "2025-03-31", val: 278_000_000, filed: "2025-05-15" },
+    ] } },
+    PaymentsOfLeaseLiabilitiesClassifiedAsFinancingActivities: { units: { INR: [
+      { start: "2024-04-01", end: "2025-03-31", val: 278_000_000, filed: "2025-05-15" },
+    ] } },
+  };
+  eq(inferIfrsLeaseInterestClassification(facts), "financing",
+    "payments covering ~100% of the total infers 'financing' (verified live: INFY FY2025)");
+}
+{
+  // Financing payments materially below the total means the missing piece
+  // (interest) is booked in operating activities instead.
+  const facts = {
+    CashOutflowForLeases: { units: { INR: [
+      { start: "2024-04-01", end: "2025-03-31", val: 100_000_000, filed: "2025-05-15" },
+    ] } },
+    PaymentsOfLeaseLiabilitiesClassifiedAsFinancingActivities: { units: { INR: [
+      { start: "2024-04-01", end: "2025-03-31", val: 70_000_000, filed: "2025-05-15" },
+    ] } },
+  };
+  eq(inferIfrsLeaseInterestClassification(facts), "operating",
+    "financing payments well below the total infers 'operating'");
+}
+{
+  // A ratio between the two thresholds is ambiguous from this evidence alone.
+  const facts = {
+    CashOutflowForLeases: { units: { INR: [
+      { start: "2024-04-01", end: "2025-03-31", val: 100_000_000, filed: "2025-05-15" },
+    ] } },
+    PaymentsOfLeaseLiabilitiesClassifiedAsFinancingActivities: { units: { INR: [
+      { start: "2024-04-01", end: "2025-03-31", val: 95_000_000, filed: "2025-05-15" },
+    ] } },
+  };
+  eq(inferIfrsLeaseInterestClassification(facts), null,
+    "a ratio between the operating and financing thresholds stays null rather than guessing");
+  ok(LEASE_INTEREST_OPERATING_RATIO < 0.95 && 0.95 < LEASE_INTEREST_FINANCING_RATIO,
+    "0.95 is genuinely inside the ambiguous band this fixture exercises");
+}
+{
+  ok(inferIfrsLeaseInterestClassification({}) === null,
+    "neither lease tag disclosed at all yields null, not a guess");
+  const onlyTotal = { CashOutflowForLeases: { units: { INR: [
+    { start: "2024-04-01", end: "2025-03-31", val: 100, filed: "2025-05-15" },
+  ] } } };
+  ok(inferIfrsLeaseInterestClassification(onlyTotal) === null,
+    "only one of the two lease tags disclosed yields null (nothing to compare)");
+}
+{
+  // Different periods for the two tags aren't a reliable comparison.
+  const facts = {
+    CashOutflowForLeases: { units: { INR: [
+      { start: "2023-04-01", end: "2024-03-31", val: 100_000_000, filed: "2024-05-15" },
+    ] } },
+    PaymentsOfLeaseLiabilitiesClassifiedAsFinancingActivities: { units: { INR: [
+      { start: "2024-04-01", end: "2025-03-31", val: 100_000_000, filed: "2025-05-15" },
+    ] } },
+  };
+  ok(inferIfrsLeaseInterestClassification(facts) === null,
+    "mismatched latest period ends yield null rather than comparing unrelated years");
+}
+
+/* ------------------------------ monthly returns ---------------------------- */
+console.log("\n· monthlyReturns: Yahoo's extra live current-month point is deduped and dropped");
+{
+  // Mirrors the real chart shape: one bar per calendar month, stamped at the
+  // month start, PLUS one extra live point inside the still-open current
+  // month (e.g. a Sep-01 bar followed by a live Sep-23 quote) — the exact
+  // pattern that used to overwrite a real monthly return with a near-zero
+  // month-to-date figure.
+  const monthStart = (monthsAgoFromNow) => {
+    const d = new Date();
+    d.setUTCDate(1);
+    d.setUTCHours(4, 0, 0, 0);
+    d.setUTCMonth(d.getUTCMonth() - monthsAgoFromNow);
+    return Math.floor(d.getTime() / 1000);
+  };
+  const DAY = 86_400;
+  // 6 monthly bars: 5 completed months plus the current (still-open) one.
+  const closes = [100, 110, 121, 133.1, 146.41, 161.051];  // +10% each month
+  const series = closes.map((c, i) => ({ t: monthStart(5 - i), c }));
+  // The extra live point: same calendar month as the last bar (the current
+  // one), stamped later, with a materially different close — this is the
+  // duplicate that corrupted a completed month's return before the fix.
+  series.push({ t: series[series.length - 1].t + 20 * DAY, c: 140 });
+
+  const deduped = dedupeMonthlyCloses(series);
+  eq(deduped.length, 6, "one close survives per calendar month, not one per raw point");
+  eq(deduped[5].t, series[6].t,
+    "the LAST observation in the current month wins the dedupe (the live point)");
+
+  const r = monthlyReturns(series);
+  eq(r.size, 4, "n bars (5 completed + 1 open) yield n-2 completed-month returns: the open month is dropped");
+  ok(!r.has(currentMonthKey()),
+    "the still-open current month never appears in the returned Map");
+  const vals = [...r.values()];
+  ok(vals.every((v) => Math.abs(v - 0.10) < 1e-9),
+    "every completed month's return is the real +10%, undisturbed by the current month's live point");
+}
+
+/* -------------------------------- month labelling --------------------------- */
+console.log("\n· Month labelling: a return is labelled by the month its LATER close falls in");
+{
+  // Two bars one month apart — 2020-06-01 (June) and 2020-07-01 (July),
+  // safely in the past so neither is ever the still-open current month —
+  // with monthKey computed straight from each bar's own timestamp, exactly
+  // as Yahoo stamps them (month start, but the close is that month's
+  // month-end close).
+  const june = Date.UTC(2020, 5, 1, 4, 0, 0) / 1000;
+  const july = Date.UTC(2020, 6, 1, 4, 0, 0) / 1000;
+  eq(monthKeyToLabel(monthKey(july)), 202007,
+    "a bar dated 2020-07-01 labels as July 2020 (202007), not June");
+  eq(monthKeyToLabel(monthKey(june)), 202006,
+    "a bar dated 2020-06-01 labels as June 2020 (202006)");
+  // The return spanning June's close to July's close is labelled by July —
+  // the LATER of the pair — matching the "return from the July bar to the
+  // August bar is August's return" convention confirmed against KO's own
+  // fetched closes above.
+  const r = monthlyReturns([{ t: june, c: 100 }, { t: july, c: 110 }]);
+  const [[label, ret]] = [...r.entries()].map(([k, v]) => [monthKeyToLabel(k), v]);
+  eq(label, 202007, "the return is keyed to the later bar's month");
+  ok(Math.abs(ret - 0.10) < 1e-9, "and its value is the simple return between the two closes");
+}
+
+/* --------------------------- [YYYYMM, r] pair shape ------------------------- */
+console.log("\n· monthlyReturnPairs: the exact [YYYYMM, r] shape exposed as `monthly_returns`");
+{
+  const r = new Map([[2026 * 12 + 6, 0.0123456789], [2026 * 12 + 5, -0.02]]); // Jul then Jun, out of order
+  const pairs = monthlyReturnPairs(r);
+  eq(pairs.length, 2, "one pair per Map entry");
+  ok(Array.isArray(pairs[0]) && pairs[0].length === 2, "each entry is a 2-element [YYYYMM, r] pair");
+  eq(pairs[0][0], 202606, "pairs are sorted ascending by month, oldest first");
+  eq(pairs[1][0], 202607, "...newest last");
+  eq(pairs[1][1], 0.012346, "r is rounded to 6 decimal places");
+  eq(pairs[0][1], -0.02, "a negative return round-trips correctly");
 }
 
 console.log(`\n${passed} passed · ${failed} failed`);

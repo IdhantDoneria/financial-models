@@ -1458,11 +1458,28 @@ const IB_INFO_FIELDS = new Set([
 //  yield for the US, FRED/OECD 10Y govt yields elsewhere (free FRED_API_KEY), plus the
 //  keyless er-api USD fix for FX context. Any fetch failure keeps the
 //  curated Damodaran baseline, clearly labelled as such.
+//: Push the selected market into the Python bridge so the AUTO-ASSUMED
+//  preview uses the same rf / ERP / terminal-growth cap the report will, and
+//  re-render it if a filing is on screen. Best-effort: a failure here only
+//  leaves the preview on its previous market, never blocks the rate update.
+function syncIBMarket(c) {
+  try {
+    if (!state.pyodide) return;
+    const out = JSON.parse(state.pyodide.runPython("web_bridge.set_market")(
+      JSON.stringify({ rf: state.ib.liveRf, erp: c.erp, lt_growth: c.ltg })));
+    if (out.ok && out.assumed && state.ib.extracted) {
+      state.ib.extracted.assumed = out.assumed;
+      if (state.view === "ib") renderIBExtracted();
+    }
+  } catch (e) { console.warn("market sync failed:", e); }
+}
+
 async function applyCountryToIB(c) {
   const seq = (state.ib.rateSeq = (state.ib.rateSeq || 0) + 1);
   state.ib.liveRf = c.rf;
   state.ib.rfSource = `${c.name.toUpperCase()} 10Y SOVEREIGN BASELINE (DAMODARAN)`;
   state.ib.fx = null; state.ib.fxDate = null;
+  syncIBMarket(c);
   renderIBContext();
   try {
     const r = await fetch(`api/rates?cc=${c.code}`, { signal: AbortSignal.timeout(9000) });
@@ -1474,6 +1491,7 @@ async function applyCountryToIB(c) {
       state.ib.rfSource = j.rfSource || state.ib.rfSource;
       //: live yield also re-anchors the manual sliders' defaults
       applyCountryDefaults({ ...c, rf: j.rf });
+      syncIBMarket(c);
     }
     if (typeof j.fx === "number") { state.ib.fx = j.fx; state.ib.fxDate = j.fxDate; }
     renderIBContext();
@@ -2002,7 +2020,11 @@ function renderIBExtracted() {
                           : key === "free_cash_flows" ? "synthesised from revenue × margin × growth"
                           : "not used by the models"}">AUTO-ASSUMED</span>`;
     }
-    tr.innerHTML = `<td class="k">${label}${ccyTag}</td><td class="v">${shown}</td>`;
+    //: IFRS 16 has no finance/operating split — its single lease liability
+    //  lands in the finance field, and is labelled for what it is.
+    const shownLabel = key === "finance_lease_liabilities" && out.fields.accounting_standard === "ifrs-full"
+      ? "LEASE LIABILITIES (IFRS 16)" : label;
+    tr.innerHTML = `<td class="k">${shownLabel}${ccyTag}</td><td class="v">${shown}</td>`;
     grid.appendChild(tr);
   });
   grid.querySelectorAll(".badge.clickable").forEach((b) => {
