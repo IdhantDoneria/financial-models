@@ -234,6 +234,7 @@ node scripts/test_xss_escaping.js            # escaping of every HTML sink
 node scripts/test_metal_unit_conventions.js  # per-market gold/silver units
 node scripts/test_billing_api.js             # full purchase lifecycle
 node scripts/test_admin_founders.js          # admin desk + grants
+node scripts/test_boot_runtime.js            # Pyodide boot retry / mirror fallback / error text
 ```
 
 ## 🔎 Landing pages & SEO

@@ -437,12 +437,20 @@ async function boot() {
   try {
     bootLog("FINMODELS TERMINAL v2 — session start");
     bootLog("loading CPython 3.13 runtime (WebAssembly)…"); bootPct(8);
-    state.pyodide = await loadPyodide({ indexURL: "https://cdn.jsdelivr.net/pyodide/v0.28.2/full/" });
-    bootLog("pyodide runtime online", "ok"); bootPct(30);
-
-    bootLog("loading numpy · scipy…");
-    await state.pyodide.loadPackage(window.FINMODELS_CORE_PACKAGES);
-    bootLog("scientific stack loaded", "ok"); bootPct(50);
+    // Retries (cache-bypassed, then jsDelivr mirrors) and fails loudly instead
+    // of hanging or printing "[object Object]" — see assets/boot-runtime.js.
+    await FinmodelsBoot.ensurePyodideScript();
+    state.pyodide = await FinmodelsBoot.bringUpRuntime({
+      log: (m) => bootLog(m),
+      load: async (indexURL) => {
+        const py = await loadPyodide({ indexURL });
+        bootLog("pyodide runtime online", "ok"); bootPct(30);
+        bootLog("loading numpy · scipy…");
+        await py.loadPackage(window.FINMODELS_CORE_PACKAGES);
+        bootLog("scientific stack loaded", "ok"); bootPct(50);
+        return py;
+      },
+    });
 
     const micropip = state.pyodide.pyimport("micropip");
     state.micropip = micropip;
@@ -491,9 +499,30 @@ async function boot() {
       if (window.FinmodelsWalkthrough) window.FinmodelsWalkthrough.maybeAutoStart(state.user);
     } catch (wtErr) { console.error("Walkthrough failed to start:", wtErr); }
   } catch (err) {
-    bootLog("BOOT FAILURE: " + err, "err");
+    bootLog("BOOT FAILURE: " + FinmodelsBoot.describeError(err), "err");
+    bootFailureHelp(err);
     console.error(err);
   }
+}
+
+// Boot failed for good: say what the visitor can actually do, and give them a
+// button, rather than leaving a dead progress bar.
+function bootFailureHelp(err) {
+  const help = document.createElement("div");
+  help.className = "boot-help";
+  const msg = document.createElement("p");
+  msg.textContent = err instanceof FinmodelsBoot.WasmBlockedError
+    ? "Your browser is not allowing WebAssembly, which the terminal needs. A browser security mode " +
+      "(for example Edge's Enhanced security) can cause this. Allow this site, then retry."
+    : "The Python runtime could not be downloaded. This is usually an unstable connection or a school " +
+      "or work network that blocks cdn.jsdelivr.net. Retry, or try another network.";
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "boot-retry";
+  btn.textContent = "RETRY";
+  btn.addEventListener("click", () => location.reload());
+  help.append(msg, btn);
+  $("#boot").insertBefore(help, $("#bootbar").nextSibling);
 }
 
 /* ------------------------------ UI build ------------------------------- */
