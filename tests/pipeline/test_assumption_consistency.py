@@ -285,3 +285,22 @@ def test_too_little_overlap_fails_loudly_instead_of_faking_it():
                return_benchmark="^GSPC")
     report = AnalysisRunner(data).run(AutoAssumer().build(data), [FF])
     assert FF in report.errors and "overlap" in report.errors[FF]
+
+
+def test_hidden_debt_on_a_ticker_load_counts_leases_and_reports_partial():
+    """Leases on the balance sheet are known (and already debt), so hidden
+    debt is PARTIAL — contingencies still need MANUAL input — not UNASSESSED;
+    and its reported net debt matches the DCF's."""
+    from src.pipeline import AnalysisRunner
+    hd = "Ind AS 116 Hidden-Debt Normalizer"
+    data = _us(total_debt=100.0, cash_and_equivalents=0.0, operating_lease_liabilities=40.0,
+               net_income=50.0, current_price=10.0, shares_outstanding=100.0)
+    a = AutoAssumer().build(data)
+    assert a.kwargs_by_model[hd]["reported_net_debt"] == pytest.approx(140.0)
+    assert "Leases are covered" in a.partial[hd]
+    df = AnalysisRunner(data).run(a, [hd]).summary_frame()
+    assert df.loc[df["Model"] == hd, "Status"].iloc[0] == "PARTIAL"
+    # no lease data at all -> still honestly UNASSESSED
+    b = AutoAssumer().build(_us(net_income=50.0))
+    df2 = AnalysisRunner(_us(net_income=50.0)).run(b, [hd]).summary_frame()
+    assert df2.loc[df2["Model"] == hd, "Status"].iloc[0] == "UNASSESSED"

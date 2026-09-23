@@ -65,6 +65,11 @@ class AssumptionSet:
     rationale: dict[tuple[str, str], str] = field(default_factory=dict)
     unavailable: dict[str, str] = field(default_factory=dict)
     partial: dict[str, str] = field(default_factory=dict)
+    #: Models in ``partial`` whose core input IS assessed and only part of
+    #: the picture needs manual input (e.g. hidden debt on a ticker load:
+    #: leases known and on the balance sheet, contingencies not). Reported
+    #: as PARTIAL rather than UNASSESSED.
+    partly_assessed: set[str] = field(default_factory=set)
 
 
 @dataclass
@@ -676,7 +681,10 @@ class AutoAssumer:
             },
             "Ind AS 116 Hidden-Debt Normalizer": {
                 "net_income": data.net_income or 0.0,
-                "reported_net_debt": net_debt,
+                # Same debt the DCF uses: on-balance-sheet lease liabilities
+                # (ASC 842 / IFRS 16 / Ind AS 116) included, so this model's
+                # own lease term is left for leases NOT already recognised.
+                "reported_net_debt": net_debt + lease_debt,
                 "reported_equity_value": reported_equity_value,
                 "shares_outstanding": shares,
                 # Lease payment, reverse-factoring exposure and contingent
@@ -876,6 +884,7 @@ class AutoAssumer:
         )
 
         partial: dict[str, str] = {}
+        partly_assessed: set[str] = set()
         # A $0 hidden-debt adjustment reads identically whether the model
         # found genuinely nothing to adjust, or was simply never given any
         # lease/reverse-factoring/contingent-liability figures to look at —
@@ -885,7 +894,16 @@ class AutoAssumer:
         # of just showing "$0.00" either way.
         if (o.annual_lease_payment is None and o.reverse_factoring_exposure is None
                 and o.cl1_amount is None and o.cl2_amount is None):
+            if lease_debt:
+                partly_assessed.add("Ind AS 116 Hidden-Debt Normalizer")
             partial["Ind AS 116 Hidden-Debt Normalizer"] = (
+                f"Leases are covered: {lease_debt:,.0f} of lease liabilities are "
+                "on the balance sheet and already included in reported net "
+                "debt, so there is no hidden lease debt to add. Reverse "
+                "factoring and contingent liabilities are not in structured "
+                "filing data; enter them from the filing's footnotes in "
+                "MANUAL mode for a complete hidden-debt read."
+                if lease_debt else
                 "No lease, reverse-factoring or contingent-liability figures "
                 "were found or manually supplied — this is not a confirmed "
                 "zero-adjustment finding, it's an unassessed one. Set the "
@@ -1065,6 +1083,7 @@ class AutoAssumer:
             rationale=rationale,
             unavailable=unavailable,
             partial=partial,
+            partly_assessed=partly_assessed,
         )
 
     def _project_fcfs(self, base: float, data: ExtractedFinancials,
