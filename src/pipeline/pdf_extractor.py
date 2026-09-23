@@ -57,7 +57,17 @@ class ExtractedFinancials:
     ticker: str | None = None
     fiscal_year: int | None = None
     revenue: float | None = None
+    #: REPORTED free cash flow history, not a forecast. The DCF projects
+    #: forward from the most recent entry (AutoAssumer.build); feeding this
+    #: list to it directly as FCF_1..FCF_N discounted past years as if they
+    #: were future ones and valued the terminal on a stale year.
     free_cash_flows: list[float] = field(default_factory=list)
+    #: Which end of ``free_cash_flows`` is the most recent year.
+    #: ``"newest_first"`` is how filings lay out their columns (a 10-K's
+    #: "2025 2024 2023", a SEBI results table's current period first), so it
+    #: is the default for PDF extraction; the SEC ticker path returns years in
+    #: ascending order and marks itself ``"oldest_first"``.
+    fcf_history_order: str = "newest_first"
     net_income: float | None = None
     total_debt: float | None = None
     cash_and_equivalents: float | None = None
@@ -90,6 +100,15 @@ class ExtractedFinancials:
     #: `current_price` pattern above explicitly excludes this exact phrase
     #: to avoid a false price match; this field is what actually captures it.
     disclosed_volatility: float | None = None
+    #: Market statistics computed from five years of monthly returns on the
+    #: ticker path (api/fundamentals.js, the same regression that yields
+    #: beta): the stock's realised annualised volatility, its benchmark
+    #: index's, and their correlation. Measured, not disclosed — ``None``
+    #: on the PDF path, and whenever too few returns were available.
+    realized_volatility: float | None = None
+    market_volatility: float | None = None
+    market_correlation: float | None = None
+    return_observations: int | None = None
     #: ISO 4217 code the filing's own figures are denominated in (detected
     #: from currency symbols/codes in the document text — see
     #: :meth:`PDFExtractor._detect_currency`). Every monetary field above is
@@ -151,6 +170,7 @@ class ExtractedFinancials:
             "company_name": self.company_name, "ticker": self.ticker,
             "fiscal_year": self.fiscal_year, "revenue": self.revenue,
             "free_cash_flows": self.free_cash_flows,
+            "fcf_history_order": self.fcf_history_order,
             "net_income": self.net_income, "total_debt": self.total_debt,
             "cash_and_equivalents": self.cash_and_equivalents,
             "net_debt": self.net_debt,
@@ -164,6 +184,10 @@ class ExtractedFinancials:
             "capital_expenditures": self.capital_expenditures,
             "interest_expense": self.interest_expense,
             "disclosed_volatility": self.disclosed_volatility,
+            "realized_volatility": self.realized_volatility,
+            "market_volatility": self.market_volatility,
+            "market_correlation": self.market_correlation,
+            "return_observations": self.return_observations,
             "currency": self.currency,
             "dividend_is_annual": self.dividend_is_annual,
             "statement_basis": self.statement_basis,

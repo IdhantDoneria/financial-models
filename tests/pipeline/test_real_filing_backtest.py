@@ -37,6 +37,7 @@ from pathlib import Path
 import pytest
 
 from src.pipeline import AnalysisRunner, AutoAssumer, PDFExtractor
+from src.pipeline.pdf_extractor import ExtractedFinancials
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 
@@ -469,16 +470,45 @@ def test_gated_dcf_reports_the_explanation_not_a_raw_exception():
     assert "Traceback" not in status and "ValidationError" not in status
 
 
-def test_a_turnaround_series_ending_positive_is_not_gated():
+def test_a_turnaround_history_ending_positive_is_not_gated():
     """Burning early and turning cash-positive is an ordinary, valuable
-    company — only the FINAL year drives the terminal perpetuity, so a
-    [-10, -5, 3, 8] path must still produce a real valuation."""
+    company. The series is REPORTED history, so only the most recent year
+    seeds the projection: a history whose latest year is positive must
+    still produce a real valuation."""
     data = PDFExtractor().scrape_figures(_BURN_FILING)
     data.free_cash_flows = [-10 * CR, -5 * CR, 3 * CR, 8 * CR]
+    data.fcf_history_order = "oldest_first"
     assumptions = AutoAssumer().build(data)
     assert DCF_MODEL not in assumptions.unavailable
     report = AnalysisRunner(data).run(assumptions, [DCF_MODEL], mode="auto")
     assert report.results[DCF_MODEL]["enterprise_value"] > 0
+
+
+def test_a_history_whose_latest_year_burns_cash_is_gated():
+    """The mirror case: the same four years in the filing's usual
+    newest-first column order make -10 the latest year, and a perpetuity on
+    a cash burn is arithmetic, not a valuation."""
+    data = PDFExtractor().scrape_figures(_BURN_FILING)
+    data.free_cash_flows = [-10 * CR, -5 * CR, 3 * CR, 8 * CR]
+    data.fcf_history_order = "newest_first"
+    assert DCF_MODEL in AutoAssumer().build(data).unavailable
+
+
+@pytest.mark.parametrize("order,history", [
+    ("oldest_first", [70.0, 90.0, 110.0, 100.0]),
+    ("newest_first", [100.0, 110.0, 90.0, 70.0]),
+])
+def test_reported_history_is_a_base_never_the_forecast(order, history):
+    """Regression for the ticker-load DCF: six years of reported FCF were
+    discounted as FCF_1..FCF_6, valuing AAPL at $84 against a $337 price.
+    Whichever order the history arrives in, the forecast must be the latest
+    year grown forward — and must not contain the history itself."""
+    data = ExtractedFinancials(free_cash_flows=history, fcf_history_order=order,
+                               revenue_growth=0.10)
+    a = AutoAssumer().build(data)
+    fcfs = a.kwargs_by_model[DCF_MODEL]["free_cash_flows"]
+    assert fcfs == pytest.approx([100.0 * 1.10 ** t for t in range(1, 6)])
+    assert a.kwargs_by_model["Reverse DCF / Market-Implied Expectations"]["base_fcf"] == 100.0
 
 
 def test_negative_fcf_never_derives_a_negative_revenue():

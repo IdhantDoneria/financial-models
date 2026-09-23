@@ -526,6 +526,8 @@ def load_fundamentals(fields_json: str) -> str:
         #  "scraped from PDF" — being able to say where each number came from
         #  is the whole point of this tool.
         kwargs.setdefault("backends_used", ["sec-edgar-xbrl"])
+        #: /api/fundamentals sorts its FCF series by period end, ascending.
+        kwargs.setdefault("fcf_history_order", "oldest_first")
         data = ExtractedFinancials(**kwargs)
     except Exception as exc:
         return json.dumps({"ok": False, "error": f"{type(exc).__name__}: {exc}"})
@@ -625,6 +627,12 @@ def restore_extraction(fields_json: str, period: str = "annual") -> str:
         kwargs = {k: v for k, v in fields.items() if k in allowed}
         if not kwargs.get("free_cash_flows"):
             kwargs["free_cash_flows"] = []
+        #: Analyses saved before fcf_history_order existed don't carry it.
+        #  Ticker loads were always ascending, so infer it from provenance
+        #  rather than defaulting a saved SEC series to the PDF order.
+        if "fcf_history_order" not in kwargs and any(
+                "sec-edgar" in str(b).lower() for b in kwargs.get("backends_used") or []):
+            kwargs["fcf_history_order"] = "oldest_first"
         data = ExtractedFinancials(**kwargs)
     except Exception as exc:
         return json.dumps({"ok": False, "error": f"{type(exc).__name__}: {exc}"})

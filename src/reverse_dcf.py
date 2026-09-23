@@ -83,7 +83,7 @@ class ReverseDCFModel(BaseFinancialModel):
         net_debt: float,
         base_fcf: float,
         base_revenue: float,
-        total_addressable_market: float,
+        total_addressable_market: float | None = None,
         years: int = 5,
         discount_rate: float,
         terminal_growth: float,
@@ -105,6 +105,12 @@ class ReverseDCFModel(BaseFinancialModel):
                 implied FCF growth into an implied revenue path.
             total_addressable_market: Disclosed/assumed TAM in revenue
                 terms, ``> 0``, the denominator of the implied capture rate.
+                Optional: it feeds only that one secondary output. The
+                implied growth rate — the model's actual answer — needs just
+                the price, share count, net debt and base FCF, so leaving TAM
+                out yields ``implied_tam_capture = None`` rather than blocking
+                the whole solve (almost no filing states a TAM, which used to
+                mean this model never ran on an automatic analysis).
             years: Forecast horizon in whole years, ``>= 1``. Defaults to
                 ``5`` (the brief's "5-year" horizon).
             discount_rate: WACC ``r > 0``.
@@ -124,8 +130,9 @@ class ReverseDCFModel(BaseFinancialModel):
         self.net_debt = self._as_finite_float(net_debt, "net_debt")
         self.base_fcf = self._require_positive(base_fcf, "base_fcf")
         self.base_revenue = self._require_positive(base_revenue, "base_revenue")
-        self.total_addressable_market = self._require_positive(
-            total_addressable_market, "total_addressable_market")
+        self.total_addressable_market = (
+            None if total_addressable_market is None
+            else self._require_positive(total_addressable_market, "total_addressable_market"))
         self.years = int(self._require_positive(years, "years"))
         self.discount_rate = self._require_positive(discount_rate, "discount_rate")
         self.terminal_growth = self._as_finite_float(terminal_growth, "terminal_growth")
@@ -200,7 +207,8 @@ class ReverseDCFModel(BaseFinancialModel):
             (``None`` if unsolvable — see :meth:`solve_implied_cagr`),
             ``solver_note``, ``implied_revenue_year_n`` and
             ``implied_tam_capture`` (both ``None`` when the CAGR could not
-            be solved).
+            be solved; ``implied_tam_capture`` is also ``None`` when no TAM
+            was supplied).
         """
         implied_ev = self._implied_ev()
         cagr, note = self.solve_implied_cagr()
@@ -212,7 +220,8 @@ class ReverseDCFModel(BaseFinancialModel):
             # grows at the same CAGR the solver found for FCF (a constant
             # FCF-margin assumption) so the two lenses share one growth path.
             implied_revenue_year_n = self.base_revenue * (1.0 + cagr) ** self.years
-            implied_tam_capture = implied_revenue_year_n / self.total_addressable_market
+            if self.total_addressable_market is not None:
+                implied_tam_capture = implied_revenue_year_n / self.total_addressable_market
 
         result: dict[str, Any] = {
             "implied_ev": implied_ev,
@@ -235,6 +244,12 @@ class ReverseDCFModel(BaseFinancialModel):
         res = self.calculate()
         if res["implied_fcf_cagr"] is None:
             solved = f"**Not solvable within [{_CAGR_LO:.0%}, {_CAGR_HI:.0%}]/yr** — {res['solver_note']}"
+        elif res["implied_tam_capture"] is None:
+            solved = (
+                f"**Implied {self.years}-year FCF CAGR = {res['implied_fcf_cagr']:.2%}/yr**, "
+                f"implying year-{self.years} revenue of {res['implied_revenue_year_n']:.4f} "
+                "(no addressable market supplied, so no market-share read)."
+            )
         else:
             solved = (
                 f"**Implied {self.years}-year FCF CAGR = {res['implied_fcf_cagr']:.2%}/yr**, "

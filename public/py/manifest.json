@@ -1,5 +1,5 @@
 {
-  "synced_at_utc": "2026-09-15T07:23:04+00:00",
+  "synced_at_utc": "2026-09-23T15:48:06+00:00",
   "files": [
     {
       "path": "src/__init__.py",
@@ -51,7 +51,7 @@
     },
     {
       "path": "src/pipeline/assumptions.py",
-      "sha256": "1a86b85f97808247968ec0ed212cf7cce703e30c81be3312bc1f0d21bfc14bbc"
+      "sha256": "ae1cb0bd79e26a20d02f5b2aff8caafe862372f2989fc5691e5030466be3a48a"
     },
     {
       "path": "src/pipeline/exporters.py",
@@ -59,7 +59,7 @@
     },
     {
       "path": "src/pipeline/pdf_extractor.py",
-      "sha256": "474c333696be5d12495b76819b1e9d818c6be034e8d01cb9912c9a568d5ace00"
+      "sha256": "a47b842f97b340cfe52e24c88ffb10b1d1efd795830f9d16a6119fda50faa604"
     },
     {
       "path": "src/pipeline/runner.py",
@@ -67,7 +67,7 @@
     },
     {
       "path": "src/reverse_dcf.py",
-      "sha256": "acecb09e61ff4be6c79ae3642dd530ac6733b0fd7ca19bf37d90b077dbb94ae3"
+      "sha256": "abd404002eaad72bb3b6148775a279463c1b7e559b2075ee26df9d70d09b8add"
     },
     {
       "path": "src/scorer.py",
@@ -79,7 +79,7 @@
     },
     {
       "path": "src/var_cvar.py",
-      "sha256": "fceeffef7c12f6f3353399f2dd2e7adcaa15c452ba893f25e5017558e9336aef"
+      "sha256": "f95e8980244777e03602d691225f811c8f20e58a3c955f6a55e0417c50bb751f"
     }
   ]
 }

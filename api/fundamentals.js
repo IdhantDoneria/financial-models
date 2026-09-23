@@ -390,6 +390,73 @@ function monthlyReturns(series) {
 //  letting the documented sector median apply.
 const MIN_BETA_OBSERVATIONS = 24;
 
+//: Sample standard deviation (n-1 denominator) of a list of monthly simple
+//  returns, annualised by the usual sqrt(12) scaling of i.i.d. monthly vol.
+//  Exported standalone so it can be checked against a hand-computed series.
+function annualizedVol(xs) {
+  const n = xs.length;
+  if (n < 2) return null;
+  const mean = xs.reduce((a, b) => a + b, 0) / n;
+  const variance = xs.reduce((a, b) => a + (b - mean) ** 2, 0) / (n - 1);
+  return Math.sqrt(variance) * Math.sqrt(12);
+}
+
+/**
+ * Pure regression core: beta, realised vol (stock and market) and their
+ * correlation from aligned (xs = market, ys = stock) monthly-return pairs.
+ * Split out from computeBeta() so it can be exercised directly against a
+ * hand-computed fixture, with no network call involved.
+ *
+ * Downstream models (options, Heston, VaR, MPT) were running on fixed
+ * guesses (25% stock vol, 18% market vol, 0.6 correlation) even though this
+ * same regression already had the real, symbol-specific numbers sitting
+ * right there — they were just never returned alongside beta.
+ *
+ * Sanity guards mirror the beta guard: a vol or correlation outside a
+ * plausible range is far more likely a data artifact than a real risk
+ * profile, so it comes back null rather than as a number a model would take
+ * at face value.
+ */
+function regressionStats(xs, ys) {
+  if (xs.length < MIN_BETA_OBSERVATIONS || xs.length !== ys.length) return null;
+
+  const n = xs.length;
+  const mx = xs.reduce((a, b) => a + b, 0) / n;
+  const my = ys.reduce((a, b) => a + b, 0) / n;
+  let cov = 0, varm = 0, vars = 0;
+  for (let i = 0; i < n; i++) {
+    cov += (xs[i] - mx) * (ys[i] - my);
+    varm += (xs[i] - mx) ** 2;
+    vars += (ys[i] - my) ** 2;
+  }
+  if (varm <= 0) return null;                 // a flat market has no beta
+  const beta = cov / varm;
+  //: A beta outside this range is almost always a data artifact (a bad
+  //  split adjustment, a near-dead ticker), not a real risk profile. Reject
+  //  rather than pass a number the DCF would take at face value.
+  if (!Number.isFinite(beta) || beta < -3 || beta > 5) return null;
+
+  const stockVol = annualizedVol(ys);
+  const marketVol = annualizedVol(xs);
+  //: Pearson correlation from the same sums the regression already computed
+  //  — cov/(sd_x * sd_y), using population sd (consistent with cov/varm above)
+  //  rather than the sample sd used for the reported vols.
+  const sdxPop = Math.sqrt(varm / n), sdyPop = Math.sqrt(vars / n);
+  const correlation = sdxPop > 0 && sdyPop > 0 ? cov / n / (sdxPop * sdyPop) : null;
+
+  //: (0, 3] admits even a near-meme-stock vol (300%/yr) while rejecting a
+  //  zero or non-finite result as a data artifact, not a real profile.
+  const volOk = (v) => Number.isFinite(v) && v > 0 && v <= 3;
+  const corrOk = Number.isFinite(correlation) && correlation >= -1 && correlation <= 1;
+
+  return {
+    beta, observations: n,
+    stockVol: volOk(stockVol) ? stockVol : null,
+    marketVol: volOk(marketVol) ? marketVol : null,
+    correlation: corrOk ? correlation : null,
+  };
+}
+
 async function computeBeta(symbol) {
   const bench = benchmarkFor(symbol);
   const [stock, market] = await Promise.all([
@@ -404,23 +471,10 @@ async function computeBeta(symbol) {
     const mr = rm.get(m);
     if (typeof mr === "number") { ys.push(sr); xs.push(mr); }
   }
-  if (xs.length < MIN_BETA_OBSERVATIONS) return null;
+  const stats = regressionStats(xs, ys);
+  if (!stats) return null;
 
-  const n = xs.length;
-  const mx = xs.reduce((a, b) => a + b, 0) / n;
-  const my = ys.reduce((a, b) => a + b, 0) / n;
-  let cov = 0, varm = 0;
-  for (let i = 0; i < n; i++) {
-    cov += (xs[i] - mx) * (ys[i] - my);
-    varm += (xs[i] - mx) ** 2;
-  }
-  if (varm <= 0) return null;                 // a flat market has no beta
-  const beta = cov / varm;
-  //: A beta outside this range is almost always a data artifact (a bad
-  //  split adjustment, a near-dead ticker), not a real risk profile. Reject
-  //  rather than pass a number the DCF would take at face value.
-  if (!Number.isFinite(beta) || beta < -3 || beta > 5) return null;
-  return { beta, observations: n, benchmark: bench.name, benchmarkSymbol: bench.symbol };
+  return { ...stats, benchmark: bench.name, benchmarkSymbol: bench.symbol };
 }
 
 /* ------------------------------- ADR ratios ------------------------------- *
@@ -640,6 +694,12 @@ async function marketOnly(ticker) {
       notes.push(`Beta ${betaInfo.beta.toFixed(2)} is computed by regressing `
         + `${betaInfo.observations} monthly returns against the ${betaInfo.benchmark}.`);
     }
+    if (betaInfo && (betaInfo.stockVol !== null || betaInfo.correlation !== null)) {
+      notes.push(`Realised volatility, benchmark volatility and their correlation are computed `
+        + `from the same ${betaInfo.observations} monthly returns used for beta above, rather than `
+        + `the pipeline's fixed 25%/18%/0.6 guesses that the options, Heston, VaR and MPT models `
+        + `would otherwise fall back to.`);
+    }
     return {
       ok: true,
       partial: true,                 // the UI must not present this as a full extraction
@@ -652,6 +712,10 @@ async function marketOnly(ticker) {
         ticker: symbol,
         current_price: price.price,
         beta: betaInfo ? Number(betaInfo.beta.toFixed(3)) : null,
+        realized_volatility: betaInfo && betaInfo.stockVol !== null ? Number(betaInfo.stockVol.toFixed(4)) : null,
+        market_volatility: betaInfo && betaInfo.marketVol !== null ? Number(betaInfo.marketVol.toFixed(4)) : null,
+        market_correlation: betaInfo && betaInfo.correlation !== null ? Number(betaInfo.correlation.toFixed(4)) : null,
+        return_observations: betaInfo ? betaInfo.observations : null,
         currency: price.currency,
         free_cash_flows: [],
         backends_used: ["market-data"],
@@ -668,6 +732,9 @@ async function marketOnly(ticker) {
         { name: "Share price", url: "Yahoo Finance chart API" },
         ...(betaInfo ? [{ name: `Beta vs ${betaInfo.benchmark} (${betaInfo.observations} monthly returns)`,
                           url: "Computed by OLS from price history" }] : []),
+        ...(betaInfo && (betaInfo.stockVol !== null || betaInfo.correlation !== null)
+          ? [{ name: "Realised volatility & correlation (same monthly return series as beta)",
+               url: "Computed from price history" }] : []),
       ],
     };
   }
@@ -910,6 +977,12 @@ module.exports = async (req, res) => {
     notes.push(`Beta ${betaInfo.beta.toFixed(2)} is computed here by regressing `
       + `${betaInfo.observations} monthly returns against the ${betaInfo.benchmark}, `
       + `not taken from a filing — beta is a market statistic and is not disclosed in XBRL.`);
+    if (betaInfo.stockVol !== null || betaInfo.correlation !== null) {
+      notes.push(`Realised volatility, benchmark volatility and their correlation are computed `
+        + `from the same ${betaInfo.observations} monthly returns used for beta above, rather than `
+        + `the pipeline's fixed 25%/18%/0.6 guesses that the options, Heston, VaR and MPT models `
+        + `would otherwise fall back to.`);
+    }
   } else {
     notes.push("Beta could not be computed from price history (too few observations or no price series); the sector-median fallback will apply instead.");
   }
@@ -1069,6 +1142,13 @@ module.exports = async (req, res) => {
     //  and be re-annualised a second time downstream.
     dividend_is_annual: true,
     beta: betaInfo ? Number(betaInfo.beta.toFixed(3)) : null,
+    //: Same aligned monthly-return pairs and 24-observation floor as beta
+    //  above — see computeBeta(). These replace the fixed 25%/18%/0.6 guesses
+    //  the options, Heston, VaR and MPT models otherwise fall back to.
+    realized_volatility: betaInfo && betaInfo.stockVol !== null ? Number(betaInfo.stockVol.toFixed(4)) : null,
+    market_volatility: betaInfo && betaInfo.marketVol !== null ? Number(betaInfo.marketVol.toFixed(4)) : null,
+    market_correlation: betaInfo && betaInfo.correlation !== null ? Number(betaInfo.correlation.toFixed(4)) : null,
+    return_observations: betaInfo ? betaInfo.observations : null,
     currency: reportingCurrency || (priceInfo ? priceInfo.currency : "USD"),
     statement_basis: "annual",
     //: Provenance. assumptions.py reads this to decide whether a figure may be
@@ -1105,6 +1185,9 @@ module.exports = async (req, res) => {
       ...(priceInfo ? [{ name: "Share price", url: "Yahoo Finance chart API" }] : []),
       ...(betaInfo ? [{ name: `Beta vs ${betaInfo.benchmark} (${betaInfo.observations} monthly returns)`,
                        url: "Computed by OLS from price history" }] : []),
+      ...(betaInfo && (betaInfo.stockVol !== null || betaInfo.correlation !== null)
+        ? [{ name: "Realised volatility & correlation (same monthly return series as beta)",
+             url: "Computed from price history" }] : []),
     ],
   });
 };
@@ -1117,4 +1200,4 @@ module.exports._internals = { resolveTicker, detectReportingCurrency, deriveAdrR
                               ADR_LOCAL_LISTINGS, ADR_RATIO_CANDIDATES, ADR_RATIO_TOLERANCE, pickInstant, pickAnnualSeries, FLOW_TAGS, STOCK_TAGS,
                               IFRS_FLOW_TAGS, IFRS_STOCK_TAGS,
                               benchmarkFor, monthlyReturns, monthKey, BENCHMARKS, MIN_BETA_OBSERVATIONS,
-                              computeSplitAdjustment, SPLIT_ALLOTMENT_LAG_MS };
+                              computeSplitAdjustment, SPLIT_ALLOTMENT_LAG_MS, annualizedVol, regressionStats };

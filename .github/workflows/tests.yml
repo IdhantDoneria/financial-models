@@ -41,3 +41,5 @@ jobs:
         run: node scripts/test_fundamentals.js
       - name: Runtime boot recovery (retry, mirrors, readable errors)
         run: node scripts/test_boot_runtime.js
+      - name: US 10Y risk-free parsing (Treasury par yield curve)
+        run: node scripts/test_rates.js

@@ -331,10 +331,17 @@ class AutoAssumer:
     def _wacc(
         self, beta: float, tax: float | None = None,
         we: float | None = None, cost_of_debt: float | None = None,
+        rf: float | None = None, erp: float | None = None,
     ) -> float:
         """Weighted average cost of capital: E/V * ke + D/V * kd * (1-t).
 
         Args:
+            rf, erp: The risk-free rate and equity risk premium actually in
+                force for this build — a MANUAL override of either must reach
+                the discount rate. Reading ``self.rf``/``self.erp`` here
+                instead meant an overridden 7% risk-free rate left WACC
+                unchanged while the rationale printed "rf 7.00%" beside it.
+                Default to the constructor's values for direct callers.
             we: Real equity weight (market cap / (market cap + total debt)),
                 when derivable from the filing — see :meth:`build`. Falls
                 back to the constructor's fixed ``target_equity_weight``
@@ -343,8 +350,10 @@ class AutoAssumer:
                 when derivable AND plausible — see :meth:`build`. Falls back
                 to the flat rf+150bp credit-spread assumption otherwise.
         """
-        cost_of_equity = self.rf + beta * self.erp
-        kd = cost_of_debt if cost_of_debt is not None else self.rf + 0.015
+        rf = self.rf if rf is None else rf
+        erp = self.erp if erp is None else erp
+        cost_of_equity = rf + beta * erp
+        kd = cost_of_debt if cost_of_debt is not None else rf + 0.015
         equity_weight = we if we is not None else self.we
         debt_weight = 1 - equity_weight
         t = tax if tax is not None else self.tax
@@ -376,6 +385,11 @@ class AutoAssumer:
                 sector_baseline["beta"] if sector_baseline else self.default_beta))
         erm = o.expected_market_return if o.expected_market_return is not None \
             else rf + self.erp
+        # The premium every cost-of-equity figure below uses. An expected-
+        # market-return override implies its own premium (erm - rf); CAPM
+        # already priced off erm while WACC kept self.erp, so the same build
+        # quoted two different costs of equity for one company.
+        erp = erm - rf
         # The filing's own effective tax rate (when confidently scraped) is a
         # real, company-specific number sitting right there in the extracted
         # data — previously scraped and then silently discarded in favour of
@@ -420,7 +434,7 @@ class AutoAssumer:
             if (rf - 0.02) <= candidate <= (rf + 0.15):
                 cost_of_debt_real = candidate
         wacc = o.discount_rate if o.discount_rate is not None else self._wacc(
-            beta, tax, we=we_real, cost_of_debt=cost_of_debt_real)
+            beta, tax, we=we_real, cost_of_debt=cost_of_debt_real, rf=rf, erp=erp)
         # Terminal growth cannot exceed the risk-free rate (Gordon constraint).
         g_terminal = o.terminal_growth if o.terminal_growth is not None else min(rf, 0.025)
         # A real, filing-disclosed volatility (the "expected [share price]
@@ -432,9 +446,20 @@ class AutoAssumer:
         # identical to a market-implied volatility for an arbitrary traded
         # option (it's management's own accounting estimate), which is
         # worth a rationale caveat, but it's real data, not a guess.
+        # After a disclosed figure comes the stock's realised volatility,
+        # measured on the ticker path from the same five years of monthly
+        # returns beta is regressed on. The flat 25% it replaces was off by
+        # 2x in both directions on real names (TSLA 58%, KO 16%).
         vol = (o.volatility if o.volatility is not None
                else data.disclosed_volatility if data.disclosed_volatility is not None
+               else data.realized_volatility if data.realized_volatility is not None
                else self.default_vol)
+        # MPT's market leg: measured against the same benchmark when the
+        # ticker path supplied it, the fixed constants otherwise.
+        mkt_vol = (data.market_volatility if data.market_volatility is not None
+                   else _MPT_MARKET_VOL)
+        corr = (data.market_correlation if data.market_correlation is not None
+                else _MPT_CORRELATION)
         # Fabricated FCF trajectory: revenue × margin × (1+g)^t when actual FCFs missing.
         # A filing that discloses ONE free-cash-flow figure (a quarterly
         # results announcement states the period's FCF in prose, not a
@@ -443,9 +468,16 @@ class AutoAssumer:
         # instead would silently reduce it to a single explicit year plus
         # terminal value, which is a different and much cruder model than the
         # five-year path every other input here assumes.
-        fcfs = data.free_cash_flows or self._synth_fcfs(data, wacc)
-        if len(fcfs) == 1:
-            fcfs = self._project_fcfs(fcfs[0], data)
+        #
+        # A multi-year series is REPORTED history, and history is not a
+        # forecast. It used to be handed to the DCF as FCF_1..FCF_N, so a
+        # ticker load discounted FY2020-FY2025 as if they were the next six
+        # years and closed the perpetuity on a past year: AAPL came out at
+        # $84 against a $337 price, MSFT $121 against $497. The most recent
+        # year is the base every projection grows from, exactly as a
+        # single-figure filing already was.
+        base_fcf = self._trailing_fcf(data)
+        fcfs = self._project_fcfs(base_fcf, data)
         spot = data.current_price or 100.0  # normalised units when unknown
         strike = o.strike_ratio * spot if o.strike_ratio else spot
         # Gordon Growth requires dividend > 0 — unlike DCF (which happily
@@ -481,7 +513,7 @@ class AutoAssumer:
         # gated off for that case below; this only keeps the value sane for
         # the ones that still run.
         base_revenue = (data.revenue if data.revenue is not None
-                        else abs(fcfs[0]) / margin)
+                        else abs(base_fcf) / margin)
         reported_equity_value = spot * shares
         lease_discount_rate = rf + 0.015   # same cost-of-debt spread as _wacc
 
@@ -505,13 +537,13 @@ class AutoAssumer:
                 # see the volatility rationale above) drives the first
                 # diagonal entry; MKT_VOL and CORRELATION below are NOT
                 # derived from anything — see the MPT rationale entry.
-                "expected_returns": [rf + beta * self.erp, rf + self.erp],
-                "covariance": [[vol**2, _MPT_CORRELATION * vol * _MPT_MARKET_VOL],
-                               [_MPT_CORRELATION * vol * _MPT_MARKET_VOL, _MPT_MARKET_VOL**2]],
+                "expected_returns": [rf + beta * erp, rf + erp],
+                "covariance": [[vol**2, corr * vol * mkt_vol],
+                               [corr * vol * mkt_vol, mkt_vol**2]],
                 "risk_free_rate": rf,
             },
             "Value at Risk / CVaR": {
-                "mean": (rf + beta * self.erp) / 252,
+                "mean": (rf + beta * erp) / 252,
                 "std": vol / (252**0.5),
                 "confidence_level": o.var_confidence if o.var_confidence is not None else 0.95,
                 "horizon_days": o.var_horizon_days if o.var_horizon_days is not None else 10,
@@ -602,7 +634,10 @@ class AutoAssumer:
                 "current_price": spot,
                 "shares_outstanding": shares,
                 "net_debt": net_debt,
-                "base_fcf": fcfs[0],
+                # The TRAILING figure the model grows at its solved rate —
+                # not fcfs[0], which is already one year of assumed growth
+                # (and, before the history fix above, was the OLDEST year).
+                "base_fcf": base_fcf,
                 "base_revenue": base_revenue,
                 # No formula-based proxy for TAM is defensible (see the
                 # rationale below) — left None rather than a fabricated
@@ -621,10 +656,10 @@ class AutoAssumer:
 
         rationale: dict[tuple[str, str], str] = {}
         we_shown = we_real if we_real is not None else self.we
-        kd_shown = cost_of_debt_real if cost_of_debt_real is not None else self.rf + 0.015
+        kd_shown = cost_of_debt_real if cost_of_debt_real is not None else rf + 0.015
         rationale[("DCF", "discount_rate")] = (
             f"WACC via CAPM: {we_shown:.0%} equity @ (rf {rf:.2%} + β {beta:.2f}·ERP "
-            f"{self.erp:.2%}) + {1 - we_shown:.0%} debt @ {kd_shown:.2%}"
+            f"{erp:.2%}) + {1 - we_shown:.0%} debt @ {kd_shown:.2%}"
             f"{' (interest expense/total debt)' if cost_of_debt_real is not None else ' (rf+150bp default)'}"
             f"·(1-{tax:.0%} tax{' · scraped from filing' if data.tax_rate is not None else ' · default'})."
             f" Equity weight {'= market cap/(market cap+debt), scraped' if we_real is not None else '= 80/20 default'}."
@@ -632,24 +667,34 @@ class AutoAssumer:
         rationale[("DCF", "terminal_growth")] = (
             f"Capped at min(rf={rf:.2%}, 2.5%) — Gordon constraint g < r."
         )
-        if not data.free_cash_flows:
-            capped_note = (" (capped — see SECTOR_BASELINES)"
-                           if sector_baseline and sector_baseline["revenue_growth"] > _MAX_SECTOR_GROWTH
-                           else "")
-            growth_src = ("filing" if data.revenue_growth else
-                          f"{data.sector} sector{capped_note}" if sector_baseline else "generic 5%")
-            if data.revenue is None:
-                rationale[("DCF", "free_cash_flows")] = (
-                    "No FCF or revenue disclosed — synthesised from a placeholder "
-                    f"base, grown at {growth_src} default."
-                )
-            else:
-                margin_src = ("filing" if data.operating_margin else
-                              f"{data.sector} sector" if sector_baseline else "generic 15%")
-                rationale[("DCF", "free_cash_flows")] = (
-                    f"No FCF disclosed — synthesised as revenue × operating margin "
-                    f"({margin_src} default), grown at {growth_src} default."
-                )
+        capped_note = (" (capped — see SECTOR_BASELINES)"
+                       if sector_baseline and sector_baseline["revenue_growth"] > _MAX_SECTOR_GROWTH
+                       else "")
+        growth_src = ("filing" if data.revenue_growth else
+                      f"{data.sector} sector{capped_note}" if sector_baseline else "generic 5%")
+        g_used = data.revenue_growth or self._sector_growth(sector_baseline) or 0.05
+        if data.free_cash_flows:
+            n_hist = len(data.free_cash_flows)
+            src = self._disclosed_source(data)
+            rationale[("DCF", "free_cash_flows")] = (
+                f"Base = most recent reported free cash flow ({base_fcf:,.0f}; "
+                f"{src[:1].lower()}{src[1:].rstrip('.')}"
+                + (f", latest of {n_hist} reported years — history is the base, "
+                   "never used as the forecast itself" if n_hist > 1 else "")
+                + f"), projected 5 years at {g_used:.2%} ({growth_src} growth)."
+            )
+        elif data.revenue is None:
+            rationale[("DCF", "free_cash_flows")] = (
+                "No FCF or revenue disclosed — synthesised from a placeholder "
+                f"base, grown at {growth_src} default."
+            )
+        else:
+            margin_src = ("filing" if data.operating_margin else
+                          f"{data.sector} sector" if sector_baseline else "generic 15%")
+            rationale[("DCF", "free_cash_flows")] = (
+                f"No FCF disclosed — synthesised as revenue × operating margin "
+                f"({margin_src} default), grown at {growth_src} default."
+            )
         # Checks the TRUE source beta was actually resolved from, in the same
         # priority order build() itself used (o.beta > data.beta >
         # sector_baseline > default) — not just data.beta and sector_baseline,
@@ -675,18 +720,29 @@ class AutoAssumer:
             f"and period-specific but not necessarily identical to a "
             f"market-implied volatility for an arbitrary traded option."
             if data.disclosed_volatility is not None and o.volatility is None
-            else f"Default = {vol:.0%} (no disclosed volatility found)."
+            else f"Manually overridden = {vol:.0%}." if o.volatility is not None
+            else f"Realised volatility {vol:.0%}: annualised standard deviation of "
+                 f"{data.return_observations or 'the'} monthly returns (the same "
+                 f"series beta is regressed on) — measured, not disclosed."
+            if data.realized_volatility is not None
+            else f"Default = {vol:.0%} (no disclosed or measured volatility available)."
         )
-        rationale[("MPT", "market volatility / correlation")] = (
-            f"Market volatility ({_MPT_MARKET_VOL:.0%}) and company-market "
-            f"correlation ({_MPT_CORRELATION:.2f}) are fixed assumptions, "
-            f"not derived from live or filing data — this app only fetches "
-            f"a single current-day quote (api/quotes.js), never a "
-            f"historical price series for either the market index or the "
-            f"company, so no real realized volatility or correlation is "
-            f"actually computable today. The company's OWN volatility "
-            f"above ({vol:.0%}) IS real when the filing discloses one."
-        )
+        if data.market_volatility is not None and data.market_correlation is not None:
+            rationale[("MPT", "market volatility / correlation")] = (
+                f"Measured from {data.return_observations or 'the'} monthly returns: "
+                f"benchmark volatility {mkt_vol:.0%}, company-benchmark "
+                f"correlation {corr:.2f} — the same aligned series beta is "
+                f"regressed on."
+            )
+        else:
+            rationale[("MPT", "market volatility / correlation")] = (
+                f"Market volatility ({mkt_vol:.0%}) and company-market "
+                f"correlation ({corr:.2f}) are fixed assumptions, not derived "
+                f"from this company's data: no return "
+                f"history was available for this company (a PDF upload, or a "
+                f"ticker whose price history couldn't be fetched). A ticker "
+                f"load measures both from five years of monthly returns."
+            )
         rationale[("HDEBT", "annual_lease_payment / reverse_factoring / contingent liabilities")] = (
             "No filing reliably states these as one clean, tabulated figure a "
             "regex can trust — defaulted to $0 / 0% (an unadjusted company "
@@ -708,9 +764,10 @@ class AutoAssumer:
             "formula-based proxy that's meaningfully better than a guess — "
             "real TAM estimates vary 5-50x by segment definition and aren't "
             "derivable from a filing's own numbers. Rather than compute a "
-            "10x-revenue placeholder that looks precise but isn't, Reverse "
-            "DCF's implied-market-share output requires the company's real "
-            "addressable market as a MANUAL input."
+            "10x-revenue placeholder that looks precise but isn't, the "
+            "implied-market-share read is left blank until the company's real "
+            "addressable market is entered in MANUAL mode. The implied growth "
+            "rate — the model's actual answer — does not need it."
         )
 
         partial: dict[str, str] = {}
@@ -784,35 +841,32 @@ class AutoAssumer:
 
         unavailable: dict[str, str] = {}
         # Reverse DCF's entire premise is inverting *today's real market
-        # price* into an implied growth rate (needs a genuine share price +
-        # share count — unlike DCF, which happily reports enterprise/equity
-        # value with price_per_share left as None when no share count is
-        # known, there's no partial, honest result here if either half of
-        # "market cap" is fabricated) and then expressing that implied
-        # growth as a share of a real addressable market (needs a genuine
-        # TAM — see the rationale above for why no formula-based proxy is
-        # defensible here). Any of the three missing is enough to block it:
-        # a filing that never states a share price/count, or simply has no
-        # trustworthy TAM at all (the common case — virtually none do),
-        # isn't a gap the auto-assumer should paper over with fabricated
-        # placeholders that produce a confident-looking number describing
-        # nothing real. Correct the missing field(s) via MANUAL mode (or the
-        # IB desk's per-field override) to run this model.
+        # price* into an implied growth rate, so it needs a genuine share
+        # price + share count — unlike DCF, which happily reports enterprise/
+        # equity value with price_per_share left as None when no share count
+        # is known, there's no partial, honest result here if either half of
+        # "market cap" is fabricated. Either missing blocks it; correct them
+        # via MANUAL mode (or the IB desk's per-field override).
+        #
+        # TAM is deliberately NOT in this list. It feeds one secondary output
+        # (implied share of the market), which the model leaves None without
+        # it. Requiring it here blocked the implied growth rate too, and
+        # since virtually no filing states a TAM, the model never ran on an
+        # automatic analysis at all.
         rdcf_missing = [n for n, v in (
             ("share price", data.current_price),
             ("share count", data.shares_outstanding),
-            ("addressable market (TAM)", o.total_addressable_market),
         ) if v is None]
         if rdcf_missing:
             missing = " or ".join(rdcf_missing)
             unavailable["Reverse DCF / Market-Implied Expectations"] = (
                 f"This filing doesn't state a real {missing} — Reverse DCF requires "
-                "these as real, market-sourced inputs (that's what it inverts "
-                "and expresses a capture of), so it can't produce a "
+                "these as real, market-sourced inputs (the market "
+                "capitalisation is what it inverts), so it can't produce a "
                 "trustworthy result from a fabricated placeholder. Enter the "
                 "real figure(s) manually to run this model."
             )
-            rationale[("RDCF", "current_price / shares_outstanding / total_addressable_market")] = \
+            rationale[("RDCF", "current_price / shares_outstanding")] = \
                 unavailable["Reverse DCF / Market-Implied Expectations"]
 
         if data.dividend_per_share is None:
@@ -854,7 +908,7 @@ class AutoAssumer:
                 "by entering the projected free cash flows manually."
             )
             rationale[("DCF", "free_cash_flows")] = unavailable["Discounted Cash Flow"]
-        if fcfs and fcfs[0] <= 0:
+        if base_fcf <= 0:
             reason = (
                 "Reverse DCF solves for the growth rate that justifies the "
                 "market price by projecting a trailing free cash flow forward "
@@ -893,18 +947,38 @@ class AutoAssumer:
         g = data.revenue_growth or self._sector_growth(sector_baseline) or 0.05
         return [base * (1 + g) ** t for t in range(1, 6)]
 
+    def _synth_base(self, data: ExtractedFinancials) -> float:
+        """Revenue × margin stand-in for a trailing FCF the filing lacks."""
+        if data.revenue is None:
+            return 100.0                                     # placeholder units
+        sector_baseline = self._sector_baseline(data)
+        # Same margin fallback build() uses for base_revenue's own
+        # abs(base_fcf)/margin path — see SECTOR_BASELINES.
+        margin = data.operating_margin or (
+            sector_baseline["operating_margin"] if sector_baseline else None) or 0.15
+        return data.revenue * margin
+
+    @staticmethod
+    def _latest_reported_fcf(data: ExtractedFinancials) -> float | None:
+        """The most recent year of reported FCF history, or ``None``.
+
+        Which end is "most recent" comes from ``fcf_history_order`` — see
+        :attr:`ExtractedFinancials.fcf_history_order`.
+        """
+        history = data.free_cash_flows or []
+        if not history:
+            return None
+        return history[-1] if data.fcf_history_order == "oldest_first" else history[0]
+
+    def _trailing_fcf(self, data: ExtractedFinancials) -> float:
+        """The trailing FCF every projection starts from: the latest reported
+        year when the filing has one, else the revenue × margin stand-in."""
+        latest = self._latest_reported_fcf(data)
+        return latest if latest is not None else self._synth_base(data)
+
     def _synth_fcfs(self, data: ExtractedFinancials, wacc: float) -> list[float]:
         """Fabricate a 5-year FCF projection when the PDF has none."""
-        if data.revenue is None:
-            base = 100.0                                     # placeholder units
-        else:
-            sector_baseline = self._sector_baseline(data)
-            # Same margin fallback build() uses for base_revenue's own
-            # abs(fcfs[0])/margin path — see SECTOR_BASELINES.
-            margin = data.operating_margin or (
-                sector_baseline["operating_margin"] if sector_baseline else None) or 0.15
-            base = data.revenue * margin
-        return self._project_fcfs(base, data)
+        return self._project_fcfs(self._synth_base(data), data)
 
 
 # --------------------------------------------------------------------------- #

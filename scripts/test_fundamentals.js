@@ -19,7 +19,8 @@ const { _internals } = require("../api/fundamentals.js");
 const { resolveTicker, pickInstant, pickAnnualSeries, detectReportingCurrency,
         benchmarkFor, monthlyReturns, MIN_BETA_OBSERVATIONS,
         ADR_LOCAL_LISTINGS, ADR_RATIO_CANDIDATES, ADR_RATIO_TOLERANCE,
-        computeSplitAdjustment, SPLIT_ALLOTMENT_LAG_MS } = _internals;
+        computeSplitAdjustment, SPLIT_ALLOTMENT_LAG_MS,
+        annualizedVol, regressionStats } = _internals;
 
 let passed = 0, failed = 0;
 function ok(cond, label, detail) {
@@ -485,6 +486,97 @@ console.log("\n· Beta is computed, benchmarked per market, and refuses thin sam
 {
   ok(MIN_BETA_OBSERVATIONS >= 24,
     "beta needs at least two years of monthly points before it means anything");
+}
+
+/* --------------------- realised volatility & correlation ------------------ *
+ * regressionStats() is the pure core of computeBeta(), split out precisely so
+ * it can be checked here against a fixture whose beta/vol/correlation were
+ * computed independently (a plain seeded synthetic series, verified with a
+ * standalone script, not by calling the function under test) rather than
+ * only asserting self-consistency.
+ *
+ * Downstream models (options pricing, Heston, VaR, MPT) fell back to fixed
+ * guesses (25% stock vol, 18% market vol, 0.6 correlation) because these
+ * numbers, despite being computed from the same regression as beta, were
+ * never returned. This is the regression test for that gap.                  */
+console.log("\n· Realised volatility & correlation: same regression inputs as beta, independently checked");
+{
+  // 30 months of a market series (xs) and a stock series (ys) generated from
+  // ys = 1.3*xs + idiosyncratic noise, so a real relationship exists between
+  // them. Expected beta/vol/correlation were computed with a standalone
+  // script using textbook sample-variance / population-covariance formulas,
+  // not by calling regressionStats() itself.
+  const xs = [0.011585, 0.038195, 0.025246, 0.006689, -0.031075, -0.012011, 0.021832, -0.006049,
+              -0.026634, 0.032986, 0.001097, 0.032326, 0.026288, 0.029401, -0.008038, -0.030521,
+              0.005397, -0.013289, -0.034779, 0.009412, 0.021161, 0.030023, 0.031875, 0.038424,
+              0.032717, -0.033592, -0.032946, 0.039967, -0.008962, 0.023651];
+  const ys = [0.017042, 0.069525, 0.051764, -0.026122, -0.067766, 0.034089, 0.04552, -0.032231,
+              0.005321, 0.076857, -0.020456, -0.003427, 0.080492, -0.000274, 0.004506, -0.062773,
+              0.033853, -0.015614, -0.037485, 0.027382, 0.062871, 0.012029, 0.034229, 0.013899,
+              0.021522, -0.044798, -0.077421, 0.026048, -0.000224, 0.039213];
+  const got = regressionStats(xs, ys);
+  ok(got !== null, "30 aligned observations clears the 24-month floor");
+  eq(got.observations, 30, "observation count matches the input length");
+  ok(Math.abs(got.beta - 1.2486033641448067) < 1e-9, "beta matches the independently-computed value", String(got.beta));
+  ok(Math.abs(got.stockVol - 0.14592011294086862) < 1e-9,
+    "stock (ys) annualised vol matches the independently-computed value", String(got.stockVol));
+  ok(Math.abs(got.marketVol - 0.08759191030541419) < 1e-9,
+    "market (xs) annualised vol matches the independently-computed value", String(got.marketVol));
+  ok(Math.abs(got.correlation - 0.7495029415412352) < 1e-9,
+    "correlation matches the independently-computed value", String(got.correlation));
+}
+{
+  // TSLA-shape sanity check per the task brief: vol 58.1%, corr 0.46 against
+  // a 15.4%-vol S&P 500 — high idiosyncratic noise relative to the market
+  // factor should still clear the (0, 3] / [-1, 1] guards and come back
+  // non-null, not be rejected as "too extreme".
+  const n = 30;
+  const xs = [], ys = [];
+  let seed = 7;
+  const rnd = () => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648; };
+  for (let i = 0; i < n; i++) {
+    const zm = (rnd() - 0.5) * 2;
+    const rm = 0.15 / 12 + (0.154 / Math.sqrt(12)) * zm;
+    const zi = (rnd() - 0.5) * 2;
+    const rs = 0.9 * rm + 0.16 * zi;         // large idiosyncratic term -> low corr, high vol
+    xs.push(rm); ys.push(rs);
+  }
+  const got = regressionStats(xs, ys);
+  ok(got !== null, "a high-idiosyncratic-vol series still produces a result");
+  ok(got.stockVol === null || (got.stockVol > 0 && got.stockVol <= 3),
+    "stock vol, if returned, is within the (0, 3] guard");
+}
+
+console.log("\n· Realised volatility & correlation: null/guard cases");
+{
+  const short = Array.from({ length: MIN_BETA_OBSERVATIONS - 1 }, (_, i) => 0.01 * (i % 3 - 1));
+  ok(regressionStats(short, short) === null,
+    "fewer than MIN_BETA_OBSERVATIONS pairs returns null, not a thin-sample estimate");
+}
+{
+  ok(regressionStats([0.01, 0.02], [0.01, 0.02, 0.03]) === null,
+    "mismatched-length arrays return null rather than silently misaligning");
+}
+{
+  // A perfectly flat market (zero variance) has no beta and therefore no
+  // vol/correlation either — the same "flat market has no beta" guard.
+  const flat = new Array(MIN_BETA_OBSERVATIONS).fill(0);
+  const stock = Array.from({ length: MIN_BETA_OBSERVATIONS }, (_, i) => 0.01 * (i % 2));
+  ok(regressionStats(flat, stock) === null, "a flat (zero-variance) market series returns null");
+}
+{
+  // A beta outside [-3, 5] is rejected as a data artifact — vol/correlation
+  // must come back null too, not be split off and reported anyway.
+  const xs = Array.from({ length: MIN_BETA_OBSERVATIONS }, (_, i) => (i % 2 === 0 ? 0.001 : -0.001));
+  const ys = xs.map((v) => v * 10);   // beta = 10, well outside the guard
+  ok(regressionStats(xs, ys) === null,
+    "an implausible beta (10) rejects the whole result, including vol/correlation");
+}
+{
+  ok(annualizedVol([0.01]) === null, "a single observation cannot yield a standard deviation");
+  ok(annualizedVol([]) === null, "an empty series returns null, not NaN");
+  const v = annualizedVol([0.02, -0.01, 0.03, 0.00]);
+  ok(Number.isFinite(v) && v > 0, "a normal short series yields a finite positive vol");
 }
 
 console.log(`\n${passed} passed · ${failed} failed`);

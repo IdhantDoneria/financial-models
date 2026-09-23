@@ -12,14 +12,16 @@ Formulae (losses are reported as positive numbers):
       VaR  = -(mu + z * sigma) * sqrt(h) * V
       CVaR = -(mu - sigma * phi(z) / alpha) * sqrt(h) * V
 
-* **Historical** on an empirical return sample ``r``::
+* **Historical** on an empirical return sample ``r``, scaled by the same
+  square-root-of-time rule as the parametric method::
 
       q    = quantile(r, alpha)
-      VaR  = -q * V
-      CVaR = -mean(r[r <= q]) * V
+      VaR  = -q * sqrt(h) * V
+      CVaR = -mean(r[r <= q]) * sqrt(h) * V
 
 * **Monte Carlo**: draw ``n_sims`` i.i.d. samples from ``Normal(mu, sigma)``
-  with a seeded generator, then apply the historical formulae to the draws.
+  with a seeded generator, then apply the historical formulae (including the
+  ``sqrt(h)`` scaling) to the draws.
 """
 
 from __future__ import annotations
@@ -47,8 +49,9 @@ class ValueAtRiskModel(BaseFinancialModel):
 
     Assumptions:
         * Returns are stationary over the estimation window.
-        * The parametric estimator additionally assumes normally-distributed
-          returns; multi-day horizons scale by the square-root-of-time rule.
+        * All three methods scale multi-day horizons by the
+          square-root-of-time rule; the parametric estimator additionally
+          assumes normally-distributed returns.
 
     Example:
         >>> m = ValueAtRiskModel(mean=0.0, std=1.0, confidence_level=0.99,
@@ -87,7 +90,8 @@ class ValueAtRiskModel(BaseFinancialModel):
             mean: Distribution mean ``mu`` (required when ``returns`` is omitted).
             std: Distribution std ``sigma`` > 0 (required when ``returns`` omitted).
             confidence_level: Confidence ``c`` strictly in ``(0, 1)``.
-            horizon_days: Positive integer holding period ``h`` (parametric scaling).
+            horizon_days: Positive integer holding period ``h``; all three
+                methods apply the sqrt(h) scaling.
             portfolio_value: Positive portfolio value ``V`` scaling the loss.
             method: One of ``"historical"``, ``"parametric"`` or ``"monte_carlo"``.
             seed: Seed for the Monte-Carlo random generator.
@@ -193,9 +197,11 @@ class ValueAtRiskModel(BaseFinancialModel):
         """
         alpha = 1.0 - self.confidence_level          # lower-tail probability
         q = float(np.quantile(sample, alpha))        # alpha-quantile of returns
-        var = -q * self.portfolio_value
         tail = sample[sample <= q]                   # losses at or beyond the quantile
-        cvar = -float(np.mean(tail)) * self.portfolio_value
+        sqrt_h = np.sqrt(self.horizon_days)          # sqrt(h) time-scaling, same
+                                                       # convention as _parametric
+        var = -q * sqrt_h * self.portfolio_value
+        cvar = -float(np.mean(tail)) * sqrt_h * self.portfolio_value
         return float(var), cvar
 
     def _simulate(self, seed: int, n_sims: int) -> np.ndarray:
