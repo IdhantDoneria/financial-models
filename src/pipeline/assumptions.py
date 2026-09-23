@@ -192,6 +192,29 @@ _MPT_CORRELATION = 0.6
 #: table; a future addition landing above it deserves the same scrutiny
 #: Air Transport got, not a silent pass-through.
 _MAX_SECTOR_GROWTH = 0.30
+
+#: Explicit forecast horizon. Growth fades in a straight line from the
+#: company's current rate (year 1) to terminal growth (year N), instead of
+#: holding a one-year growth rate flat for five years and then dropping it
+#: to terminal growth overnight — the cliff that made a company growing 15%
+#: look like it would slow to 2.5% in a single year.
+_FORECAST_YEARS = 10
+
+#: Trailing years averaged into the FCF base, so one unusual year (a
+#: one-off tax deposit or settlement) doesn't set the level of every
+#: projected year. Fewer are used when the history is shorter.
+_BASE_YEARS = 3
+
+#: Blume (1971) adjustment toward the market beta of 1.0 — the convention
+#: behind Bloomberg's default "adjusted beta". Raw regression betas are
+#: noisy and mean-revert; applied only to betas this app REGRESSES, never to
+#: a disclosed, sector-table or manual one.
+_BLUME_WEIGHT = 0.67
+
+#: Minimum gap between the cost of equity and dividend growth before the
+#: Gordon model will run. As r approaches g the value 1/(r-g) explodes; the
+#: old max(wacc, g+0.5%) floor silently valued a stock at ~200x its dividend.
+_GORDON_MIN_SPREAD = 0.01
 SECTOR_BASELINES: dict[str, dict[str, float]] = {
     "Drugs (Pharmaceutical)":            {"beta": 0.98, "operating_margin": 0.3124, "revenue_growth": 0.1845},
     "Healthcare Products":               {"beta": 0.91, "operating_margin": 0.1740, "revenue_growth": 0.1841},
@@ -252,7 +275,12 @@ class AutoAssumer:
         target_equity_weight: float = 0.80,
         default_beta: float = 1.0,
         default_volatility: float = 0.25,
+        terminal_growth_cap: float = 0.025,
     ) -> None:
+        """``terminal_growth_cap`` is the market's long-run nominal growth
+        ceiling (the country selector supplies it — see ``COUNTRIES`` in
+        terminal.js). Terminal growth is min(risk-free rate, this cap)."""
+        self.terminal_growth_cap = terminal_growth_cap
         self.rf = risk_free_rate
         self.erp = equity_risk_premium
         self.tax = tax_rate
@@ -383,6 +411,13 @@ class AutoAssumer:
         beta = o.beta if o.beta is not None else (
             data.beta if data.beta is not None else (
                 sector_baseline["beta"] if sector_baseline else self.default_beta))
+        # A beta the ticker path REGRESSED is Blume-adjusted; a disclosed,
+        # sector-table or manual one is used exactly as given.
+        beta_raw = beta
+        beta_regressed = (o.beta is None and data.beta is not None
+                          and "regression" in self._beta_source(data).lower())
+        if beta_regressed:
+            beta = _BLUME_WEIGHT * beta_raw + (1 - _BLUME_WEIGHT)
         erm = o.expected_market_return if o.expected_market_return is not None \
             else rf + self.erp
         # The premium every cost-of-equity figure below uses. An expected-
@@ -390,6 +425,7 @@ class AutoAssumer:
         # already priced off erm while WACC kept self.erp, so the same build
         # quoted two different costs of equity for one company.
         erp = erm - rf
+        cost_of_equity = rf + beta * erp
         # The filing's own effective tax rate (when confidently scraped) is a
         # real, company-specific number sitting right there in the extracted
         # data — previously scraped and then silently discarded in favour of
@@ -406,9 +442,15 @@ class AutoAssumer:
             if data.current_price is not None and data.shares_outstanding is not None
             else None
         )
+        # Lease liabilities are debt: a lessee owes those payments as surely
+        # as it owes a bond coupon. The ticker path only reports a lease
+        # field when the debt tag it used does NOT already include it.
+        lease_debt = ((data.finance_lease_liabilities or 0.0)
+                      + (data.operating_lease_liabilities or 0.0))
         we_real = None
-        if market_cap is not None and data.total_debt is not None and (market_cap + data.total_debt) > 0:
-            we_real = market_cap / (market_cap + data.total_debt)
+        if market_cap is not None and data.total_debt is not None \
+                and (market_cap + data.total_debt + lease_debt) > 0:
+            we_real = market_cap / (market_cap + data.total_debt + lease_debt)
         # Real cost of debt — interest expense / total debt — instead of a
         # flat rf+150bp spread, when both are known AND the resulting rate
         # is actually plausible. PDFExtractor._scrape_total_debt sums a
@@ -436,7 +478,12 @@ class AutoAssumer:
         wacc = o.discount_rate if o.discount_rate is not None else self._wacc(
             beta, tax, we=we_real, cost_of_debt=cost_of_debt_real, rf=rf, erp=erp)
         # Terminal growth cannot exceed the risk-free rate (Gordon constraint).
-        g_terminal = o.terminal_growth if o.terminal_growth is not None else min(rf, 0.025)
+        # Terminal growth cannot exceed the risk-free rate of the currency
+        # (Gordon constraint), nor the market's long-run nominal growth. The
+        # cap used to be a flat 2.5% everywhere, which for a rupee valuation
+        # (rf 6.9%) sat below Indian inflation.
+        g_terminal = (o.terminal_growth if o.terminal_growth is not None
+                      else min(rf, self.terminal_growth_cap))
         # A real, filing-disclosed volatility (the "expected [share price]
         # volatility" a 10-K's stock-comp footnote states as an ASC 718
         # Black-Scholes input for valuing employee option grants) is a
@@ -476,8 +523,9 @@ class AutoAssumer:
         # $84 against a $337 price, MSFT $121 against $497. The most recent
         # year is the base every projection grows from, exactly as a
         # single-figure filing already was.
-        base_fcf = self._trailing_fcf(data)
-        fcfs = self._project_fcfs(base_fcf, data)
+        lease_rate = rf + 0.015       # same credit spread as _wacc's default kd
+        base_fcf, base_note = self._normalised_base(data, tax, lease_rate)
+        fcfs = self._project_fcfs(base_fcf, data, g_terminal)
         spot = data.current_price or 100.0  # normalised units when unknown
         strike = o.strike_ratio * spot if o.strike_ratio else spot
         # Gordon Growth requires dividend > 0 — unlike DCF (which happily
@@ -522,12 +570,15 @@ class AutoAssumer:
                 "free_cash_flows": fcfs,
                 "discount_rate": wacc,
                 "terminal_growth": g_terminal,
-                "net_debt": data.net_debt or 0.0,
+                "net_debt": (data.net_debt or 0.0) + lease_debt,
                 "shares_outstanding": data.shares_outstanding or None,
             },
             "Gordon Growth Model": {
                 "dividend": dividend,
-                "required_return": max(wacc, g_div + 0.005),
+                # Dividends belong to shareholders, so they are discounted
+                # at the cost of equity — not WACC, which blends in the
+                # cheaper, tax-shielded cost of debt.
+                "required_return": cost_of_equity,
                 "growth": g_div,
                 "dividend_is_forward": False,
             },
@@ -633,7 +684,7 @@ class AutoAssumer:
             "Reverse DCF / Market-Implied Expectations": {
                 "current_price": spot,
                 "shares_outstanding": shares,
-                "net_debt": net_debt,
+                "net_debt": net_debt + lease_debt,
                 # The TRAILING figure the model grows at its solved rate —
                 # not fcfs[0], which is already one year of assumed growth
                 # (and, before the history fix above, was the OLDEST year).
@@ -665,35 +716,45 @@ class AutoAssumer:
             f" Equity weight {'= market cap/(market cap+debt), scraped' if we_real is not None else '= 80/20 default'}."
         )
         rationale[("DCF", "terminal_growth")] = (
-            f"Capped at min(rf={rf:.2%}, 2.5%) — Gordon constraint g < r."
+            f"Manually overridden = {g_terminal:.2%}." if o.terminal_growth is not None
+            else f"min(risk-free {rf:.2%}, market long-run nominal growth "
+                 f"{self.terminal_growth_cap:.2%}) = {g_terminal:.2%} — a perpetuity "
+                 f"can't outgrow the currency's risk-free rate or its economy."
         )
+        if lease_debt:
+            rationale[("DCF", "net_debt")] = (
+                f"Reported net debt plus {lease_debt:,.0f} of lease liabilities "
+                f"(finance {data.finance_lease_liabilities or 0:,.0f}, operating "
+                f"{data.operating_lease_liabilities or 0:,.0f}) — lease payments are "
+                f"owed like debt; the interest inside operating-lease payments is "
+                f"added back to FCF so it isn't counted twice."
+            )
         capped_note = (" (capped — see SECTOR_BASELINES)"
                        if sector_baseline and sector_baseline["revenue_growth"] > _MAX_SECTOR_GROWTH
                        else "")
         growth_src = ("filing" if data.revenue_growth else
                       f"{data.sector} sector{capped_note}" if sector_baseline else "generic 5%")
         g_used = data.revenue_growth or self._sector_growth(sector_baseline) or 0.05
+        fade = (f"projected {_FORECAST_YEARS} years, growth fading linearly from "
+                f"{g_used:.2%} ({growth_src}) to the {g_terminal:.2%} terminal rate")
         if data.free_cash_flows:
-            n_hist = len(data.free_cash_flows)
             src = self._disclosed_source(data)
             rationale[("DCF", "free_cash_flows")] = (
-                f"Base = most recent reported free cash flow ({base_fcf:,.0f}; "
-                f"{src[:1].lower()}{src[1:].rstrip('.')}"
-                + (f", latest of {n_hist} reported years — history is the base, "
-                   "never used as the forecast itself" if n_hist > 1 else "")
-                + f"), projected 5 years at {g_used:.2%} ({growth_src} growth)."
+                f"Base free cash flow to the firm {base_fcf:,.0f} — {base_note} "
+                f"({src[:1].lower()}{src[1:].rstrip('.')}; reported history is the "
+                f"base, never used as the forecast itself); {fade}."
             )
         elif data.revenue is None:
             rationale[("DCF", "free_cash_flows")] = (
                 "No FCF or revenue disclosed — synthesised from a placeholder "
-                f"base, grown at {growth_src} default."
+                f"base; {fade}."
             )
         else:
             margin_src = ("filing" if data.operating_margin else
                           f"{data.sector} sector" if sector_baseline else "generic 15%")
             rationale[("DCF", "free_cash_flows")] = (
                 f"No FCF disclosed — synthesised as revenue × operating margin "
-                f"({margin_src} default), grown at {growth_src} default."
+                f"({margin_src} default); {fade}."
             )
         # Checks the TRUE source beta was actually resolved from, in the same
         # priority order build() itself used (o.beta > data.beta >
@@ -705,6 +766,13 @@ class AutoAssumer:
         # authoritative-sounding false citation for their own input.
         if o.beta is not None:
             rationale[("CAPM", "beta")] = f"Manually overridden = {beta}."
+        elif data.beta is not None and beta_regressed:
+            rationale[("CAPM", "beta")] = (
+                f"{self._beta_source(data)} Raw {beta_raw:.2f}, Blume-adjusted "
+                f"{_BLUME_WEIGHT}×{beta_raw:.2f} + {1 - _BLUME_WEIGHT:.2f} = {beta:.2f} "
+                f"(Bloomberg's adjusted-beta convention: regression betas mean-revert "
+                f"toward 1)."
+            )
         elif data.beta is not None:
             rationale[("CAPM", "beta")] = self._beta_source(data)
         elif sector_baseline:
@@ -869,6 +937,21 @@ class AutoAssumer:
             rationale[("RDCF", "current_price / shares_outstanding")] = \
                 unavailable["Reverse DCF / Market-Implied Expectations"]
 
+        if data.dividend_per_share is not None and cost_of_equity - g_div < _GORDON_MIN_SPREAD:
+            unavailable["Gordon Growth Model"] = (
+                f"Cost of equity {cost_of_equity:.2%} is within "
+                f"{_GORDON_MIN_SPREAD:.0%} of dividend growth {g_div:.2%}; the "
+                f"model's 1/(r−g) term explodes as they converge, so any value "
+                f"it printed would be an artefact of the gap, not of the "
+                f"dividend. Set a lower dividend growth rate in MANUAL mode."
+            )
+            rationale[("Gordon Growth", "required_return")] = unavailable["Gordon Growth Model"]
+        elif data.dividend_per_share is not None:
+            rationale[("Gordon Growth", "required_return")] = (
+                f"Cost of equity {cost_of_equity:.2%} (rf + β·ERP) — dividends go "
+                f"to shareholders, so they're discounted at the equity holders' "
+                f"required return, not WACC."
+            )
         if data.dividend_per_share is None:
             unavailable["Gordon Growth Model"] = (
                 "No dividend per share disclosed. Gordon Growth can't "
@@ -897,7 +980,7 @@ class AutoAssumer:
         # ValidationError instead of an explained one. This states the same
         # constraint at the assumption layer, for both models, with a reason.
         terminal_fcf = fcfs[-1] if fcfs else 0.0
-        if terminal_fcf <= 0:
+        if terminal_fcf <= 0 or base_fcf <= 0:
             unavailable["Discounted Cash Flow"] = (
                 "The free cash flow this filing discloses is negative, and a "
                 "DCF closes with a perpetuity on the final year's cash flow — "
@@ -922,30 +1005,37 @@ class AutoAssumer:
         return AssumptionSet(
             kwargs_by_model=kwargs,
             market_context={"risk_free_rate": rf, "expected_market_return": erm,
-                            "beta": beta, "volatility": vol, "wacc": wacc,
+                            "beta": beta, "beta_raw": beta_raw,
+                            "cost_of_equity": cost_of_equity,
+                            "lease_debt": lease_debt, "volatility": vol, "wacc": wacc,
                             "terminal_growth": g_terminal},
             rationale=rationale,
             unavailable=unavailable,
             partial=partial,
         )
 
-    def _project_fcfs(self, base: float, data: ExtractedFinancials) -> list[float]:
-        """Grow a known base FCF into the 5-year path the DCF expects.
+    def _project_fcfs(self, base: float, data: ExtractedFinancials,
+                      g_terminal: float = 0.025) -> list[float]:
+        """Grow a trailing base FCF into the explicit forecast path.
 
-        Same growth rate :meth:`_synth_fcfs` uses, so a projection seeded from
-        a real disclosed figure and one seeded from revenue × margin behave
-        identically apart from the base itself being real.
+        Growth starts at the company's current rate and fades in a straight
+        line to ``g_terminal`` over :data:`_FORECAST_YEARS` years, so the
+        explicit period hands over to the perpetuity smoothly instead of
+        falling off a cliff at year five.
 
-        Growth prefers, in order: the filing's own disclosed/derived rate,
-        then its sector's real 5-year historical CAGR (SECTOR_BASELINES —
-        the same "a real number beats a generic one" substitution
-        PDFExtractor._derive_yoy_metrics already makes at company level, but
-        see :meth:`_sector_growth` for the one figure in that table that's
-        capped rather than used verbatim), then the flat 5% default.
+        The starting rate prefers, in order: the filing's own disclosed/
+        derived rate, then its sector's real 5-year historical CAGR
+        (SECTOR_BASELINES — see :meth:`_sector_growth` for the one figure
+        that's capped), then the flat 5% default.
         """
         sector_baseline = self._sector_baseline(data)
-        g = data.revenue_growth or self._sector_growth(sector_baseline) or 0.05
-        return [base * (1 + g) ** t for t in range(1, 6)]
+        g0 = data.revenue_growth or self._sector_growth(sector_baseline) or 0.05
+        n = _FORECAST_YEARS
+        path, value = [], base
+        for t in range(n):
+            value *= 1 + g0 + (g_terminal - g0) * t / (n - 1)
+            path.append(value)
+        return path
 
     def _synth_base(self, data: ExtractedFinancials) -> float:
         """Revenue × margin stand-in for a trailing FCF the filing lacks."""
@@ -971,14 +1061,96 @@ class AutoAssumer:
         return history[-1] if data.fcf_history_order == "oldest_first" else history[0]
 
     def _trailing_fcf(self, data: ExtractedFinancials) -> float:
-        """The trailing FCF every projection starts from: the latest reported
-        year when the filing has one, else the revenue × margin stand-in."""
+        """The latest reported FCF, else the revenue × margin stand-in."""
         latest = self._latest_reported_fcf(data)
         return latest if latest is not None else self._synth_base(data)
 
-    def _synth_fcfs(self, data: ExtractedFinancials, wacc: float) -> list[float]:
-        """Fabricate a 5-year FCF projection when the PDF has none."""
-        return self._project_fcfs(self._synth_base(data), data)
+    @staticmethod
+    def _adds_back_interest(data: ExtractedFinancials) -> bool:
+        """Whether reported FCF is after interest paid.
+
+        US GAAP puts interest paid in operating cash flow (ASC 230), so
+        OCF − capex is after interest and must have it added back to be a
+        cash flow to ALL capital providers — the flow WACC discounts. IFRS /
+        Ind AS let a company classify it as financing instead, in which case
+        it was never deducted and adding it back would double-count. Unknown
+        classification: follow the currency's usual convention.
+        """
+        cls = data.interest_paid_classification
+        if cls is not None:
+            return cls == "operating"
+        return data.currency == "USD"
+
+    def _normalised_base(
+        self, data: ExtractedFinancials, tax: float, lease_rate: float,
+    ) -> tuple[float, str]:
+        """Trailing free cash flow to the firm, normalised, plus how it was built.
+
+        For each of the latest :data:`_BASE_YEARS` reported years:
+
+            FCFF = FCF + interest × (1 − t)   [when FCF is after interest]
+                       − stock-based compensation
+                       + operating-lease liability × lease rate × (1 − t)
+
+        then averaged. Interest is added back because the DCF discounts at
+        WACC and then subtracts net debt — leaving it deducted charged the
+        cost of debt twice. Stock-based compensation is a real cost paid in
+        shares instead of cash (it dilutes every holder), so it is deducted
+        rather than left as the non-cash add-back operating cash flow treats
+        it as. Operating leases now count as debt (see build()), so the
+        interest embedded in their payments is added back the same way.
+
+        Each adjustment uses the year's own figure when the ticker path
+        supplied a per-year series, else the latest-year figure. A filing
+        with no reported FCF falls back to the revenue × margin stand-in with
+        no adjustments (there is no cash flow statement to adjust).
+        """
+        history = list(data.free_cash_flows or [])
+        if not history:
+            return self._synth_base(data), ""
+        newest_first = data.fcf_history_order != "oldest_first"
+        idx = list(range(len(history)))
+        if not newest_first:
+            idx.reverse()
+        idx = idx[:_BASE_YEARS]
+
+        def aligned(series: list, i: int, fallback: float | None) -> float | None:
+            if series and len(series) == len(history) and series[i] is not None:
+                return series[i]
+            return fallback
+
+        add_interest = self._adds_back_interest(data)
+        lease_add = ((data.operating_lease_liabilities or 0.0) * lease_rate * (1 - tax))
+        adjusted, n_int, n_sbc = [], 0, 0
+        for i in idx:
+            fcf = history[i]
+            if add_interest:
+                interest = aligned(data.interest_expense_series, i, data.interest_expense)
+                if interest:
+                    fcf += abs(interest) * (1 - tax)
+                    n_int += 1
+            sbc = aligned(data.sbc_series, i, data.stock_based_compensation)
+            if sbc:
+                fcf -= abs(sbc)
+                n_sbc += 1
+            adjusted.append(fcf + lease_add)
+        base = sum(adjusted) / len(adjusted)
+
+        parts = [f"average of the latest {len(adjusted)} reported year"
+                 f"{'s' if len(adjusted) > 1 else ''}"]
+        parts.append(f"+ after-tax interest ({n_int} of {len(adjusted)} years)" if n_int
+                     else ("interest not added back (filing classifies interest paid as financing)"
+                           if not add_interest else "no interest figure to add back"))
+        parts.append(f"− stock-based compensation ({n_sbc} of {len(adjusted)} years)" if n_sbc
+                     else "no stock-based compensation figure to deduct")
+        if lease_add:
+            parts.append(f"+ after-tax operating-lease interest ({lease_rate:.2%} on the lease liability)")
+        return base, "; ".join(parts)
+
+    def _synth_fcfs(self, data: ExtractedFinancials, wacc: float,
+                    g_terminal: float = 0.025) -> list[float]:
+        """Fabricate the FCF projection when the filing reports none."""
+        return self._project_fcfs(self._synth_base(data), data, g_terminal)
 
 
 # --------------------------------------------------------------------------- #

@@ -10,11 +10,16 @@ Formula (capitalised operating lease liability, Ind AS 116 / IFRS 16)::
     L = C * (1 - (1+r)^-n) / r        (present value of an ordinary annuity)
 
 where ``C`` is the annual lease payment, ``r`` the incremental borrowing
-rate and ``n`` the remaining lease term in years. The lease liability,
-disclosed reverse-factoring/supply-chain-finance exposure, and the
-probability-weighted expected value of disclosed contingent liabilities are
-all forms of leverage that sit in footnotes rather than the balance sheet;
-this model moves them onto it::
+rate and ``n`` the remaining lease term in years. Note that Ind AS 116 /
+IFRS 16 already put *most* lease liabilities on the balance sheet for
+fiscal years from 2019-20 onward — this lease term is for leases NOT
+already inside reported net debt (short-term/low-value exemptions that
+remain off-balance-sheet by design, pre-Ind-AS-116 or non-IFRS/non-Ind-AS
+filers, or a ``reported_net_debt`` figure that excludes the lease-liability
+line for some other reason). Disclosed reverse-factoring/supply-chain-finance
+exposure and the probability-weighted expected value of disclosed contingent
+liabilities remain genuinely footnote-only items; together with any such
+uncapitalised lease this model moves them onto the balance sheet::
 
     hidden_debt   = L + reverse_factoring + Σ(contingent_amount_i * prob_i)
     adjusted_debt = reported_net_debt + hidden_debt
@@ -42,16 +47,29 @@ if TYPE_CHECKING:  # pragma: no cover - import only needed for static type check
 class IndASHiddenDebtModel(BaseFinancialModel):
     """Adjust reported net debt / equity value for off-balance-sheet leverage.
 
-    Recognises three footnote-disclosed items most ratio analysis ignores:
+    Recognises three items most ratio analysis ignores:
 
-    1. **Capitalised operating leases** (Ind AS 116 / IFRS 16) — the present
-       value of remaining lease payments, discounted at the incremental
-       borrowing rate, as a debt-equivalent liability.
+    1. **Leases not already in reported net debt** — Ind AS 116 / IFRS 16
+       has required lessees to capitalise most operating leases onto the
+       balance sheet for fiscal years from 2019-20 onward, so this term is
+       *not* generally recovering a footnote item. It exists for leases that
+       are still genuinely off-balance-sheet: short-term/low-value
+       exemptions, pre-Ind-AS-116 or non-IFRS/non-Ind-AS filers, or a
+       ``reported_net_debt`` that excludes the lease-liability line. The
+       lease term itself is the present value of remaining lease payments,
+       discounted at the incremental borrowing rate.
     2. **Reverse factoring / supply-chain finance** — a disclosed exposure
        amount added directly to net debt (economically borrowing, reported
        as trade payables).
     3. **Contingent liabilities** — probability-weighted rather than ignored
        outright: ``expected value = disclosed amount * probability``.
+
+    .. warning::
+       Entering a lease that is **already** capitalised inside
+       ``reported_net_debt`` (the normal case for Ind AS 116 / IFRS 16
+       filers since FY2019-20) will double-count it. Only pass
+       ``annual_lease_payment`` for leases genuinely excluded from the
+       reported figure.
 
     It also recomputes Buffett-style *owner earnings*, reversing the effect
     of capitalised R&D so earnings quality is comparable to a company that
@@ -270,6 +288,13 @@ class IndASHiddenDebtModel(BaseFinancialModel):
             f"({self.cl1_amount:g}×{self.cl1_probability:.0%} + "
             f"{self.cl2_amount:g}×{self.cl2_probability:.0%})\n"
             f"- **Total hidden debt add-back = {res['hidden_debt_addback']:.4f}**\n\n"
+            "**Warning:** Ind AS 116 / IFRS 16 already require most operating "
+            "leases to be capitalised on the balance sheet for fiscal years from "
+            "2019-20 onward. This lease term is only for leases NOT already inside "
+            "`reported_net_debt` — short-term/low-value exemptions, pre-Ind-AS-116 "
+            "or non-IFRS/non-Ind-AS filers, or a reported figure that excludes the "
+            "lease-liability line. Entering a lease already captured in reported "
+            "net debt will **double-count** it.\n\n"
             "**Why this differs from the reported number:** moving the hidden debt "
             f"onto the balance sheet takes reported equity value "
             f"{self.reported_equity_value:.4f} down to adjusted equity value "

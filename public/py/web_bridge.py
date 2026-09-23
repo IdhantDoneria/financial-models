@@ -573,6 +573,8 @@ def run_report(params_json: str) -> str:
         auto_kwargs["risk_free_rate"] = float(p["live_rf"])
     if p.get("erp") is not None:
         auto_kwargs["equity_risk_premium"] = float(p["erp"])
+    if p.get("lt_growth") is not None:
+        auto_kwargs["terminal_growth_cap"] = float(p["lt_growth"])
     auto = AutoAssumer(**auto_kwargs)
 
     if p.get("mode") == "manual":

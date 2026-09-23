@@ -117,9 +117,14 @@ class MonteCarloOptionModel(BaseFinancialModel):
         drift = (self.rate - self.dividend_yield - 0.5 * self.sigma**2) * self.maturity
         diffusion = self.sigma * np.sqrt(self.maturity)
         if self.antithetic:
+            # Draw ceil(n/2) antithetic pairs (n draws, or n+1 when n is odd),
+            # then trim to exactly n so the reported path count always matches
+            # what was actually simulated. Pairing is preserved for every draw
+            # except the last one when n is odd (its antithetic partner is
+            # dropped by the trim).
             half = (n + 1) // 2
             z_half = rng.standard_normal(half)
-            z = np.concatenate([z_half, -z_half])  # antithetic pairs
+            z = np.concatenate([z_half, -z_half])[:n]  # antithetic pairs, trimmed to n
         else:
             z = rng.standard_normal(n)
         return self.spot * np.exp(drift + diffusion * z)

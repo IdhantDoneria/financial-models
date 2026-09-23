@@ -393,6 +393,7 @@ html, body {
 
 .badge { font-size: 9px; letter-spacing: 0.1em; padding: 1px 7px; border: 1px solid; }
 .badge.found { color: var(--green); border-color: var(--green); }
+#ogrid .asof { color: var(--text-dim); font-size: 10px; letter-spacing: 0.06em; }
 .badge.missing { color: var(--red); border-color: var(--red); }
 .badge.assumed { color: var(--amber); border-color: var(--amber-dim); }
 .badge.live { color: var(--cyan); border-color: var(--cyan); }

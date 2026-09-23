@@ -4,24 +4,32 @@ Provides three interchangeable estimators of downside risk, expressed as
 positive loss amounts scaled by the portfolio value ``V``. Given a confidence
 level ``c`` (e.g. ``0.95``), the lower tail probability is ``alpha = 1 - c``.
 
-Formulae (losses are reported as positive numbers):
+Formulae (losses are reported as positive numbers). Under the i.i.d. returns
+assumption, the ``h``-day mean scales as ``mu * h`` while the ``h``-day std
+scales as ``sigma * sqrt(h)`` (square-root-of-time on the *dispersion* only,
+never on the drift):
 
-* **Parametric (Gaussian)** with mean ``mu``, std ``sigma`` and horizon ``h``
-  (with ``z = N^{-1}(alpha)`` and ``phi`` the standard-normal pdf)::
+* **Parametric (Gaussian)** with per-period mean ``mu``, std ``sigma`` and
+  horizon ``h`` (with ``z = N^{-1}(alpha)`` and ``phi`` the standard-normal
+  pdf)::
 
-      VaR  = -(mu + z * sigma) * sqrt(h) * V
-      CVaR = -(mu - sigma * phi(z) / alpha) * sqrt(h) * V
+      VaR  = -(mu * h + z * sigma * sqrt(h)) * V
+      CVaR = -(mu * h - sigma * sqrt(h) * phi(z) / alpha) * V
 
-* **Historical** on an empirical return sample ``r``, scaled by the same
-  square-root-of-time rule as the parametric method::
+* **Historical** on an empirical per-period return sample ``r``: the
+  alpha-quantile is de-meaned, scaled by ``sqrt(h)``, then re-centred on the
+  ``h``-period mean (``mean(r) * h``) -- the same drift/dispersion split as
+  the parametric method, so the two agree on Gaussian data::
 
+      mean = mean(r)
       q    = quantile(r, alpha)
-      VaR  = -q * sqrt(h) * V
-      CVaR = -mean(r[r <= q]) * sqrt(h) * V
+      VaR  = -(mean * h + (q - mean) * sqrt(h)) * V
+      tail_mean = mean(r[r <= q])
+      CVaR = -(mean * h + (tail_mean - mean) * sqrt(h)) * V
 
 * **Monte Carlo**: draw ``n_sims`` i.i.d. samples from ``Normal(mu, sigma)``
-  with a seeded generator, then apply the historical formulae (including the
-  ``sqrt(h)`` scaling) to the draws.
+  with a seeded generator, then apply the historical formulae above
+  (including the drift/dispersion horizon scaling) to the draws.
 """
 
 from __future__ import annotations
@@ -49,9 +57,10 @@ class ValueAtRiskModel(BaseFinancialModel):
 
     Assumptions:
         * Returns are stationary over the estimation window.
-        * All three methods scale multi-day horizons by the
-          square-root-of-time rule; the parametric estimator additionally
-          assumes normally-distributed returns.
+        * All three methods scale multi-day horizons with drift scaling as
+          ``h`` and dispersion scaling as ``sqrt(h)`` (i.i.d. returns); the
+          parametric estimator additionally assumes normally-distributed
+          returns.
 
     Example:
         >>> m = ValueAtRiskModel(mean=0.0, std=1.0, confidence_level=0.99,
@@ -91,7 +100,7 @@ class ValueAtRiskModel(BaseFinancialModel):
             std: Distribution std ``sigma`` > 0 (required when ``returns`` omitted).
             confidence_level: Confidence ``c`` strictly in ``(0, 1)``.
             horizon_days: Positive integer holding period ``h``; all three
-                methods apply the sqrt(h) scaling.
+                methods scale drift by ``h`` and dispersion by ``sqrt(h)``.
             portfolio_value: Positive portfolio value ``V`` scaling the loss.
             method: One of ``"historical"``, ``"parametric"`` or ``"monte_carlo"``.
             seed: Seed for the Monte-Carlo random generator.
@@ -171,38 +180,53 @@ class ValueAtRiskModel(BaseFinancialModel):
     def _parametric(self, mu: float, sigma: float) -> tuple[float, float]:
         """Return ``(VaR, CVaR)`` under the Gaussian parametric model.
 
+        The ``h``-day mean scales as ``mu * h`` (drift accumulates linearly)
+        while the ``h``-day std scales as ``sigma * sqrt(h)`` (dispersion
+        under i.i.d. returns) -- these are NOT the same power of ``h``, so
+        the drift and the dispersion term are scaled separately.
+
         Args:
-            mu: Return mean.
-            sigma: Return standard deviation.
+            mu: Per-period return mean.
+            sigma: Per-period return standard deviation.
 
         Returns:
             Tuple ``(var, cvar)`` as positive loss amounts.
         """
         alpha = 1.0 - self.confidence_level          # lower-tail probability
         z = norm.ppf(alpha)                          # z = N^{-1}(alpha) < 0
-        sqrt_h = np.sqrt(self.horizon_days)          # sqrt(h) time-scaling
-        var = -(mu + z * sigma) * sqrt_h * self.portfolio_value
-        # CVaR uses the truncated-normal mean: phi(z)/alpha.
-        cvar = -(mu - sigma * norm.pdf(z) / alpha) * sqrt_h * self.portfolio_value
+        h = self.horizon_days
+        sqrt_h = np.sqrt(h)                           # sqrt(h) scales sigma only
+        var = -(mu * h + z * sigma * sqrt_h) * self.portfolio_value
+        # CVaR uses the truncated-normal mean: phi(z)/alpha, scaled like sigma.
+        cvar = -(mu * h - sigma * sqrt_h * norm.pdf(z) / alpha) * self.portfolio_value
         return float(var), float(cvar)
 
     def _empirical(self, sample: np.ndarray) -> tuple[float, float]:
         """Return ``(VaR, CVaR)`` from an empirical/simulated return sample.
 
+        ``sample`` holds per-period (1-day) returns. As in ``_parametric``,
+        the horizon scaling is split between drift and dispersion: the
+        sample mean scales as ``mean * h`` while the de-meaned quantile (and
+        de-meaned tail mean) scale as ``sqrt(h)``, so historical and
+        parametric VaR/CVaR agree on Gaussian data.
+
         Args:
-            sample: 1-D array of returns.
+            sample: 1-D array of per-period returns.
 
         Returns:
             Tuple ``(var, cvar)`` as positive loss amounts.
         """
         alpha = 1.0 - self.confidence_level          # lower-tail probability
-        q = float(np.quantile(sample, alpha))        # alpha-quantile of returns
-        tail = sample[sample <= q]                   # losses at or beyond the quantile
-        sqrt_h = np.sqrt(self.horizon_days)          # sqrt(h) time-scaling, same
-                                                       # convention as _parametric
-        var = -q * sqrt_h * self.portfolio_value
-        cvar = -float(np.mean(tail)) * sqrt_h * self.portfolio_value
-        return float(var), cvar
+        mean = float(np.mean(sample))                 # per-period sample mean
+        q = float(np.quantile(sample, alpha))          # alpha-quantile of returns
+        tail = sample[sample <= q]                     # losses at or beyond the quantile
+        tail_mean = float(np.mean(tail))
+        h = self.horizon_days
+        sqrt_h = np.sqrt(h)                            # sqrt(h) scales the de-meaned
+                                                         # quantile/tail-mean only
+        var = -(mean * h + (q - mean) * sqrt_h) * self.portfolio_value
+        cvar = -(mean * h + (tail_mean - mean) * sqrt_h) * self.portfolio_value
+        return float(var), float(cvar)
 
     def _simulate(self, seed: int, n_sims: int) -> np.ndarray:
         """Draw ``n_sims`` Gaussian returns with a seeded generator."""
@@ -253,10 +277,12 @@ class ValueAtRiskModel(BaseFinancialModel):
             f"### Value at Risk & CVaR — {self.method.replace('_', ' ').title()}\n\n"
             "With confidence $c$ and tail probability $\\alpha = 1 - c$, VaR is the "
             "loss quantile and CVaR (expected shortfall) is the mean loss beyond it. "
-            "The Gaussian closed form (with $z = N^{-1}(\\alpha)$ and pdf $\\phi$) is:\n\n"
-            r"$$\mathrm{VaR} = -(\mu + z\,\sigma)\sqrt{h}\,V, \qquad "
-            r"\mathrm{CVaR} = -\left(\mu - \sigma\,\frac{\phi(z)}{\alpha}\right)"
-            r"\sqrt{h}\,V$$"
+            "Drift scales linearly with the horizon while dispersion scales with "
+            "$\\sqrt{h}$ (i.i.d. returns), so the Gaussian closed form (with "
+            "$z = N^{-1}(\\alpha)$ and pdf $\\phi$) is:\n\n"
+            r"$$\mathrm{VaR} = -(\mu h + z\,\sigma\sqrt{h})\,V, \qquad "
+            r"\mathrm{CVaR} = -\left(\mu h - \sigma\sqrt{h}\,\frac{\phi(z)}{\alpha}\right)"
+            r"V$$"
             "\n\n**Worked example (current inputs):**\n"
             f"- Method: {self.method}, confidence c={self.confidence_level}, "
             f"alpha={1 - self.confidence_level:.4f}\n"

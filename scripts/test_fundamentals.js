@@ -20,7 +20,9 @@ const { resolveTicker, pickInstant, pickAnnualSeries, detectReportingCurrency,
         benchmarkFor, monthlyReturns, MIN_BETA_OBSERVATIONS,
         ADR_LOCAL_LISTINGS, ADR_RATIO_CANDIDATES, ADR_RATIO_TOLERANCE,
         computeSplitAdjustment, SPLIT_ALLOTMENT_LAG_MS,
-        annualizedVol, regressionStats } = _internals;
+        annualizedVol, regressionStats,
+        pickLeaseLiability, debtTagIncludesLeases, NET_INTEREST_TAGS,
+        interestExpenseFromRow, seriesAlignedTo, ifrsInterestClassification } = _internals;
 
 let passed = 0, failed = 0;
 function ok(cond, label, detail) {
@@ -577,6 +579,153 @@ console.log("\n· Realised volatility & correlation: null/guard cases");
   ok(annualizedVol([]) === null, "an empty series returns null, not NaN");
   const v = annualizedVol([0.02, -0.01, 0.03, 0.00]);
   ok(Number.isFinite(v) && v > 0, "a normal short series yields a finite positive vol");
+}
+
+/* --------------------------- lease liabilities ---------------------------- */
+console.log("\n· Lease liabilities: total-tag preference, current+noncurrent sum, double-count guard");
+{
+  // A filer that tags a total AND the split must use the total, not sum on
+  // top of it (which would double the figure).
+  const facts = {
+    OperatingLeaseLiability: { units: { USD: [
+      { end: "2025-09-27", val: 9_150_000_000, form: "10-K", filed: "2025-11-01" },
+    ] } },
+    OperatingLeaseLiabilityCurrent: { units: { USD: [
+      { end: "2025-09-27", val: 1_500_000_000, form: "10-K", filed: "2025-11-01" },
+    ] } },
+    OperatingLeaseLiabilityNoncurrent: { units: { USD: [
+      { end: "2025-09-27", val: 7_650_000_000, form: "10-K", filed: "2025-11-01" },
+    ] } },
+  };
+  const got = pickLeaseLiability(facts, ["OperatingLeaseLiability"],
+    ["OperatingLeaseLiabilityCurrent"], ["OperatingLeaseLiabilityNoncurrent"]);
+  eq(got.value, 9_150_000_000, "the total tag wins over summing current+noncurrent");
+  eq(got.source, "total", "source is reported as 'total'");
+}
+{
+  // SBUX-shape: no total tag, only current + noncurrent — must sum, not
+  // report only one half.
+  const facts = {
+    OperatingLeaseLiabilityCurrent: { units: { USD: [
+      { end: "2025-09-27", val: 1_100_000_000, form: "10-K", filed: "2025-11-01" },
+    ] } },
+    OperatingLeaseLiabilityNoncurrent: { units: { USD: [
+      { end: "2025-09-27", val: 8_050_000_000, form: "10-K", filed: "2025-11-01" },
+    ] } },
+  };
+  const got = pickLeaseLiability(facts, ["OperatingLeaseLiability"],
+    ["OperatingLeaseLiabilityCurrent"], ["OperatingLeaseLiabilityNoncurrent"]);
+  eq(got.value, 9_150_000_000, "current+noncurrent sums to the real total when no total tag exists");
+  eq(got.source, "sum", "source is reported as 'sum'");
+}
+{
+  // AAPL-shape: only a noncurrent tag (no current lease-liability tag at
+  // all) — accepted, not refused, but must say so via its `source`.
+  const facts = {
+    OperatingLeaseLiabilityNoncurrent: { units: { USD: [
+      { end: "2025-09-27", val: 10_912_000_000, form: "10-K", filed: "2025-10-30" },
+    ] } },
+  };
+  const got = pickLeaseLiability(facts, ["OperatingLeaseLiability"],
+    ["OperatingLeaseLiabilityCurrent"], ["OperatingLeaseLiabilityNoncurrent"]);
+  eq(got.value, 10_912_000_000, "noncurrent-only is accepted as a caveated figure");
+  eq(got.source, "noncurrent-only", "source flags that only the noncurrent portion was found");
+}
+{
+  ok(pickLeaseLiability({}, ["OperatingLeaseLiability"], ["OperatingLeaseLiabilityCurrent"],
+    ["OperatingLeaseLiabilityNoncurrent"]) === null,
+    "no lease tags at all yields null, never 0");
+}
+{
+  // Double-count guard: a debt tag whose name already says "Lease" already
+  // folds finance leases into total_debt.
+  ok(debtTagIncludesLeases("LongTermDebtAndCapitalLeaseObligations"),
+    "a debt tag naming leases is detected");
+  ok(debtTagIncludesLeases("FinanceLeaseLiabilityNoncurrent"),
+    "a lease-liability tag used as a 'debt' tag is also detected");
+  ok(!debtTagIncludesLeases("LongTermDebtNoncurrent"),
+    "an ordinary debt tag is not flagged");
+  ok(!debtTagIncludesLeases(null) && !debtTagIncludesLeases(undefined),
+    "a missing debt tag (no debt data at all) is not flagged");
+}
+
+/* ------------------------------ series alignment --------------------------- */
+console.log("\n· Series alignment: element i always refers to the same period as free_cash_flows[i]");
+{
+  const ends = ["2023-12-31", "2024-12-31", "2025-12-31"];
+  // interest_expense has no row for 2024 — must come back null there, not
+  // shifted so 2025's value lands in the 2024 slot.
+  const interestSeries = {
+    tag: "InterestExpense",
+    series: [
+      { end: "2023-12-31", val: 100 },
+      { end: "2025-12-31", val: 300 },
+    ],
+  };
+  const got = seriesAlignedTo(interestSeries, ends);
+  eq(got.length, 3, "output length matches the reference ends, not the source series");
+  eq(got[0], 100, "2023 aligns correctly");
+  eq(got[1], null, "the missing 2024 year is null, not shifted from 2025");
+  eq(got[2], 300, "2025 still lands in its own slot, not shifted");
+}
+{
+  ok(seriesAlignedTo(null, ["2024-12-31", "2025-12-31"]).every((v) => v === null),
+    "a missing flow (no tag matched at all) yields an all-null series of the right length");
+}
+{
+  // transform is applied per row (e.g. Math.abs for SBC).
+  const sbcSeries = { tag: "ShareBasedCompensation", series: [
+    { end: "2024-12-31", val: -50 }, { end: "2025-12-31", val: 60 },
+  ] };
+  const got = seriesAlignedTo(sbcSeries, ["2024-12-31", "2025-12-31"], (v) => Math.abs(v));
+  eq(got[0], 50, "transform is applied to each aligned value");
+  eq(got[1], 60, "transform is applied to each aligned value (already positive)");
+}
+
+/* ------------------------- interest net-tag sign rule ---------------------- */
+console.log("\n· Interest expense: a positive net-tag value is net INCOME, not expense");
+{
+  // Badger Meter FY2025 (CIK 9092): +$5.124M net, no InterestExpense tag —
+  // the unguarded Math.abs() reported that income as a $5.124M expense.
+  eq(interestExpenseFromRow(5_124_000, "InterestIncomeExpenseNet"), null,
+    "a positive InterestIncomeExpenseNet is missing, not flipped into an expense");
+  eq(interestExpenseFromRow(-5_124_000, "InterestIncomeExpenseNet"), 5_124_000,
+    "a negative InterestIncomeExpenseNet (real net expense) becomes its absolute value");
+  eq(interestExpenseFromRow(-5_124_000, "InterestExpense"), 5_124_000,
+    "a direct InterestExpense tag is taken as-is (abs), no sign-rule applied");
+  eq(interestExpenseFromRow(5_124_000, "InterestExpense"), 5_124_000,
+    "a positive InterestExpense tag is a real expense, unaffected by the net-tag rule");
+  eq(interestExpenseFromRow(null, "InterestIncomeExpenseNet"), null,
+    "a missing value stays null");
+  ok(NET_INTEREST_TAGS.includes("InterestIncomeExpenseNet"),
+    "InterestIncomeExpenseNet is the tag the sign rule guards");
+}
+
+/* --------------------------- IFRS interest classification ------------------ */
+console.log("\n· IFRS interest-paid classification: operating vs financing vs undisclosed");
+{
+  const facts = { InterestPaidClassifiedAsOperatingActivities: { units: { pure: [{ end: "2025-03-31", val: 1 }] } } };
+  eq(ifrsInterestClassification(facts), "operating",
+    "an operating-classification disclosure reports 'operating' (e.g. Infosys)");
+}
+{
+  const facts = { InterestPaidClassifiedAsFinancingActivities: { units: { pure: [{ end: "2025-03-31", val: 1 }] } } };
+  eq(ifrsInterestClassification(facts), "financing",
+    "a financing-classification disclosure reports 'financing'");
+}
+{
+  eq(ifrsInterestClassification({}), null,
+    "no classification tag at all (e.g. HDB/WIT often omit it) reports null, not a guess");
+}
+{
+  // Operating takes precedence when (implausibly) both are present, since
+  // it's the ASC-230-equivalent default and the more common IFRS choice.
+  const facts = {
+    InterestPaidClassifiedAsOperatingActivities: { units: { pure: [{ end: "2025-03-31", val: 1 }] } },
+    InterestPaidClassifiedAsFinancingActivities: { units: { pure: [{ end: "2025-03-31", val: 1 }] } },
+  };
+  eq(ifrsInterestClassification(facts), "operating",
+    "operating is checked before financing");
 }
 
 console.log(`\n${passed} passed · ${failed} failed`);

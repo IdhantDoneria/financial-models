@@ -60,6 +60,17 @@ def caplin_text() -> str:
 CR = 1e7   # one crore, the unit this filing reports in
 
 
+def _fade(base: float, g0: float, g_terminal: float = 0.025, years: int = 10) -> list[float]:
+    """The approved projection convention, written out independently: growth
+    starts at g0 in year 1 and falls in equal steps to g_terminal in the last
+    explicit year (AutoAssumer's default terminal g is min(4.25%, 2.5%))."""
+    out, v = [], base
+    for t in range(years):
+        v *= 1 + g0 + (g_terminal - g0) * t / (years - 1)
+        out.append(v)
+    return out
+
+
 # --------------------------------------------------------------------------- #
 # BLS International — quarterly results announcement, INR, no balance sheet
 # --------------------------------------------------------------------------- #
@@ -322,12 +333,13 @@ def test_caplin_ratios_match_the_filings_own_stated_percentages(caplin_text):
 def test_caplin_dcf_runs_on_a_projection_seeded_by_the_real_fcf(caplin_text):
     """A single disclosed FCF is a base, not a trajectory. Handing the DCF a
     one-element list would quietly reduce it to one explicit year plus a
-    terminal value; it must be grown into the five-year path instead."""
+    terminal value; it must be grown into the full explicit path instead."""
     data = PDFExtractor().scrape_figures(caplin_text)
     assumptions = AutoAssumer().build(data)
     fcfs = assumptions.kwargs_by_model["Discounted Cash Flow"]["free_cash_flows"]
-    assert len(fcfs) == 5
+    assert len(fcfs) == 10
     assert fcfs[0] == pytest.approx(40 * CR * (1 + data.revenue_growth), rel=0.01)
+    assert fcfs == pytest.approx(_fade(40 * CR, data.revenue_growth), rel=0.01)
     report = AnalysisRunner(data).run(assumptions, ["Discounted Cash Flow"], mode="auto")
     assert "Discounted Cash Flow" not in report.errors
     assert report.results["Discounted Cash Flow"]["enterprise_value"] > 0
@@ -507,7 +519,7 @@ def test_reported_history_is_a_base_never_the_forecast(order, history):
                                revenue_growth=0.10)
     a = AutoAssumer().build(data)
     fcfs = a.kwargs_by_model[DCF_MODEL]["free_cash_flows"]
-    assert fcfs == pytest.approx([100.0 * 1.10 ** t for t in range(1, 6)])
+    assert fcfs == pytest.approx(_fade(100.0, 0.10))
     assert a.kwargs_by_model["Reverse DCF / Market-Implied Expectations"]["base_fcf"] == 100.0
 
 
@@ -853,7 +865,7 @@ def test_synthesised_fcf_uses_the_sector_margin_and_growth_on_tesla():
     margin = SECTOR_BASELINES["Auto & Truck"]["operating_margin"]
     growth = SECTOR_BASELINES["Auto & Truck"]["revenue_growth"]
     base = data.revenue * margin
-    expected_fcfs = [base * (1 + growth) ** t for t in range(1, 6)]
+    expected_fcfs = _fade(base, growth)
     assert a.kwargs_by_model[DCF_MODEL]["free_cash_flows"] == pytest.approx(expected_fcfs)
 
 
@@ -884,7 +896,7 @@ def test_air_transport_sector_growth_is_capped_not_used_raw():
     a = AutoAssumer().build(data)
     fcfs = a.kwargs_by_model[DCF_MODEL]["free_cash_flows"]
     base = fcfs[0] / (1 + _MAX_SECTOR_GROWTH)
-    expected = [base * (1 + _MAX_SECTOR_GROWTH) ** t for t in range(1, 6)]
+    expected = _fade(base, _MAX_SECTOR_GROWTH)
     assert fcfs == pytest.approx(expected)
     assert "capped" in a.rationale[("DCF", "free_cash_flows")]
 
@@ -903,7 +915,7 @@ def test_a_legitimately_volatile_sector_growth_is_not_capped():
     a = AutoAssumer().build(data)
     fcfs = a.kwargs_by_model[DCF_MODEL]["free_cash_flows"]
     base = fcfs[0] / (1 + growth)
-    expected = [base * (1 + growth) ** t for t in range(1, 6)]
+    expected = _fade(base, growth)
     assert fcfs == pytest.approx(expected)
     assert "capped" not in a.rationale[("DCF", "free_cash_flows")]
 

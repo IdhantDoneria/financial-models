@@ -109,6 +109,29 @@ class ExtractedFinancials:
     market_volatility: float | None = None
     market_correlation: float | None = None
     return_observations: int | None = None
+    #: Lease liabilities (current + noncurrent) NOT already inside
+    #: ``total_debt`` — the ticker path leaves a field None when the debt tag
+    #: it used already includes it, so adding these never double-counts.
+    #: IFRS 16 / Ind AS 116 filers report one lease liability, mapped to the
+    #: finance field (every IFRS 16 lease is on-balance-sheet financing).
+    finance_lease_liabilities: float | None = None
+    operating_lease_liabilities: float | None = None
+    #: Stock-based compensation expense for the latest fiscal year (a
+    #: non-cash add-back in operating cash flow, treated as a real cost when
+    #: normalising FCF — see AutoAssumer._normalised_base).
+    stock_based_compensation: float | None = None
+    #: Per-year series aligned one-to-one with ``free_cash_flows`` (same
+    #: order, ``None`` for a year the filing didn't tag), plus the period
+    #: ends they refer to. Ticker path only.
+    interest_expense_series: list[float | None] = field(default_factory=list)
+    sbc_series: list[float | None] = field(default_factory=list)
+    fcf_period_ends: list[str] = field(default_factory=list)
+    #: Where the cash-flow statement puts interest paid: ``"operating"``
+    #: (always under US GAAP), ``"financing"`` (allowed under IFRS / Ind AS),
+    #: or ``None`` when unknown. Decides whether FCF gets interest added back.
+    interest_paid_classification: str | None = None
+    #: When the market price was struck (ISO 8601 UTC), when known.
+    price_as_of: str | None = None
     #: ISO 4217 code the filing's own figures are denominated in (detected
     #: from currency symbols/codes in the document text — see
     #: :meth:`PDFExtractor._detect_currency`). Every monetary field above is
@@ -188,6 +211,14 @@ class ExtractedFinancials:
             "market_volatility": self.market_volatility,
             "market_correlation": self.market_correlation,
             "return_observations": self.return_observations,
+            "finance_lease_liabilities": self.finance_lease_liabilities,
+            "operating_lease_liabilities": self.operating_lease_liabilities,
+            "stock_based_compensation": self.stock_based_compensation,
+            "interest_expense_series": self.interest_expense_series,
+            "sbc_series": self.sbc_series,
+            "fcf_period_ends": self.fcf_period_ends,
+            "interest_paid_classification": self.interest_paid_classification,
+            "price_as_of": self.price_as_of,
             "currency": self.currency,
             "dividend_is_annual": self.dividend_is_annual,
             "statement_basis": self.statement_basis,

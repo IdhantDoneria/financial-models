@@ -112,6 +112,10 @@ const FLOW_TAGS = {
   interest_expense: ["InterestExpense", "InterestExpenseDebt",
                      "InterestIncomeExpenseNet"],
   income_tax_expense: ["IncomeTaxExpenseBenefit"],
+  //: Positive-only expense. ShareBasedCompensation is by far the dominant
+  //  tag; AllocatedShareBasedCompensationExpense is the fallback some filers
+  //  use when the expense is broken out by segment/allocation instead.
+  stock_based_compensation: ["ShareBasedCompensation", "AllocatedShareBasedCompensationExpense"],
   //: Dividends are the sharpest annual-vs-quarterly trap in this file. Apple
   //  tags CommonStockDividendsPerShareDeclared 61 times at annual length AND
   //  187 times at quarterly length in the same series; taking "the latest
@@ -149,6 +153,7 @@ const IFRS_FLOW_TAGS = {
   income_tax_expense: ["IncomeTaxExpenseContinuingOperations"],
   dividends_per_share: ["DividendsPaidOrdinarySharePerShare", "DividendsRecognisedAsDistributionsToOwnersOfParentPerShare"],
   pretax_income: ["ProfitLossBeforeTax"],
+  stock_based_compensation: ["AdjustmentsForSharebasedPayments"],
 };
 
 const IFRS_STOCK_TAGS = {
@@ -170,6 +175,28 @@ const STOCK_TAGS = {
                     "ShortTermBorrowings", "OtherShortTermBorrowings"],
   shares_outstanding: ["CommonStockSharesOutstanding", "CommonStockSharesIssued"],
 };
+
+/* ---------------------------- lease liabilities ---------------------------- *
+ * Leases sit outside FLOW_TAGS/STOCK_TAGS because they need a THIRD shape:
+ * some filers disclose one total tag, others only a current/noncurrent pair,
+ * and the right answer depends on which is present — see pickLeaseLiability().
+ * IFRS 16 collapses the finance/operating distinction entirely (a single
+ * on-balance-sheet lease liability), so IFRS filers are handled separately in
+ * the handler rather than through this cascade. */
+const LEASE_TAGS = {
+  financeTotal: ["FinanceLeaseLiability"],
+  financeCurrent: ["FinanceLeaseLiabilityCurrent"],
+  financeNoncurrent: ["FinanceLeaseLiabilityNoncurrent"],
+  operatingTotal: ["OperatingLeaseLiability"],
+  operatingCurrent: ["OperatingLeaseLiabilityCurrent"],
+  operatingNoncurrent: ["OperatingLeaseLiabilityNoncurrent"],
+};
+
+//: SBUX (CIK 829224) has no OperatingLeaseLiability total tag — only current
+//  + noncurrent — while AAPL reports OperatingLeaseLiabilityNoncurrent plus a
+//  current portion folded into "other current liabilities" (no current lease
+//  tag at all), so the noncurrent-only branch below is a real, not
+//  theoretical, code path.
 
 /**
  * The currency a filing actually reports in.
@@ -306,6 +333,94 @@ function pickAnnualSeries(facts, tags, maxYears = 6, prefer = null) {
   });
   const best = candidates[0];
   return { series: best.series, tag: best.tag, unit: best.unit };
+}
+
+/**
+ * Total lease liability from whichever shape a filer actually discloses.
+ *
+ * Preferring the total tag when it exists avoids double-summing a company
+ * that also tags a total alongside the split (some filers do both); falling
+ * back to current+noncurrent covers the common case where only the split is
+ * tagged. Noncurrent-only is accepted (not refused) because several large
+ * filers — AAPL's operating lease among them — never tag a current lease
+ * liability separately, folding it into "other current liabilities" instead;
+ * refusing the figure entirely would be worse than a caveated understatement.
+ */
+function pickLeaseLiability(facts, totalTags, currentTags, noncurrentTags, prefer = null) {
+  const total = pickInstant(facts, totalTags, prefer);
+  if (total) return { value: total.value, end: total.end, source: "total" };
+
+  const cur = pickInstant(facts, currentTags, prefer);
+  const nc = pickInstant(facts, noncurrentTags, prefer);
+  if (!cur && !nc) return null;
+  if (nc && !cur) return { value: nc.value, end: nc.end, source: "noncurrent-only" };
+  if (cur && !nc) return { value: cur.value, end: cur.end, source: "current-only" };
+  return { value: cur.value + nc.value, end: nc.end, source: "sum" };
+}
+
+//: A debt tag whose NAME already says "Lease" (e.g.
+//  LongTermDebtAndCapitalLeaseObligations) already folds finance-lease
+//  liabilities into total_debt. Reporting finance_lease_liabilities
+//  alongside it would double-count the same dollars under two field names —
+//  a wrong balance sheet that would look like a complete one. This cascade
+//  does not currently select such a tag, but the guard is cheap and the
+//  failure mode (silent double-count) is exactly the kind this file exists
+//  to prevent, so it stays live rather than only documented.
+function debtTagIncludesLeases(tag) {
+  return typeof tag === "string" && /lease/i.test(tag);
+}
+
+//: us-gaap tags whose value is a NET figure (income minus expense, or vice
+//  versa) rather than a pure expense. A positive value here means net
+//  interest INCOME, not expense — treating it as expense (the historical
+//  bug) turns a company with more interest income than expense into one
+//  reporting a large interest cost. Only a NEGATIVE net value (net expense)
+//  is a valid interest_expense; a positive one is reported missing rather
+//  than flipped, because the sign is the one part of a net figure that
+//  cannot be silently reinterpreted as its opposite.
+const NET_INTEREST_TAGS = ["InterestIncomeExpenseNet"];
+
+/**
+ * Interest expense from one raw XBRL row, applying the net-tag sign rule.
+ * `tag` is the SERIES' tag (pickAnnualSeries picks one tag for the whole
+ * series), so the rule is evaluated once per series, not per row — but is
+ * expressed as a per-row function since it is applied to every row when
+ * building interest_expense_series.
+ */
+function interestExpenseFromRow(val, tag) {
+  if (val == null) return null;
+  if (NET_INTEREST_TAGS.includes(tag)) return val < 0 ? Math.abs(val) : null;
+  return Math.abs(val);
+}
+
+/**
+ * Project a pickAnnualSeries() result onto an externally-supplied list of
+ * period ends (typically free_cash_flows' own ends), so a second series can
+ * be reported ONE-TO-ONE with a first — null at any index whose period this
+ * series didn't report, never shifted to fill the gap. `transform` lets the
+ * caller apply a per-row rule (e.g. interestExpenseFromRow's sign check)
+ * while still going through the same end-keyed lookup.
+ */
+function seriesAlignedTo(flowResult, ends, transform = (v) => v) {
+  if (!flowResult) return ends.map(() => null);
+  const byEnd = new Map(flowResult.series.map((r) => [r.end, transform(r.val, flowResult.tag)]));
+  return ends.map((e) => (byEnd.has(e) ? byEnd.get(e) : null));
+}
+
+//: IFRS classification tags are disclosure flags, not monetary facts — some
+//  filers tag them with a boolean-ish "pure" unit and no numeric magnitude at
+//  all. Presence of ANY row is therefore what "disclosed" means here; there
+//  is no amount to filter by duration or restatement the way pickAnnualSeries
+//  does for real financial concepts.
+function ifrsInterestClassification(facts) {
+  const hasDisclosure = (tag) => {
+    const f = facts[tag];
+    if (!f || !f.units) return false;
+    return Object.values(f.units).some((rows) => Array.isArray(rows) && rows.length > 0);
+  };
+  if (hasDisclosure("InterestPaidClassifiedAsOperatingActivities")) return "operating";
+  if (hasDisclosure("InterestPaidClassifiedAsFinancingActivities")) return "financing";
+  return null;
 }
 
 /* --------------------------------- beta ---------------------------------- *
@@ -654,8 +769,14 @@ async function fetchPrice(ticker) {
     const j = await r.json();
     const meta = j?.chart?.result?.[0]?.meta;
     const px = meta?.regularMarketPrice;
+    //: regularMarketTime is Yahoo's epoch SECONDS for the quote, distinct from
+    //  the fetch time — a quote can be stale (last close, after-hours) even
+    //  though the request just succeeded, and nothing else in this payload
+    //  says when the price is actually as of.
+    const asOf = typeof meta?.regularMarketTime === "number"
+      ? new Date(meta.regularMarketTime * 1000).toISOString() : null;
     return typeof px === "number" && px > 0
-      ? { price: px, currency: meta.currency || "USD" } : null;
+      ? { price: px, currency: meta.currency || "USD", asOf } : null;
   } catch { return null; }
 }
 
@@ -718,6 +839,17 @@ async function marketOnly(ticker) {
         return_observations: betaInfo ? betaInfo.observations : null,
         currency: price.currency,
         free_cash_flows: [],
+        //: This path has no EDGAR filing behind it at all, so every figure
+        //  below that only ever comes from XBRL is null rather than omitted —
+        //  same reasoning as the `missing` list below.
+        finance_lease_liabilities: null,
+        operating_lease_liabilities: null,
+        stock_based_compensation: null,
+        interest_expense_series: [],
+        sbc_series: [],
+        fcf_period_ends: [],
+        interest_paid_classification: null,
+        price_as_of: price.asOf ?? null,
         backends_used: ["market-data"],
       },
       //: Everything a full extraction would have carried is named here, so
@@ -725,7 +857,10 @@ async function marketOnly(ticker) {
       missing: ["company_name", "revenue", "free_cash_flows", "net_income", "total_debt",
                 "cash_and_equivalents", "shares_outstanding", "dividend_per_share",
                 "revenue_growth", "operating_margin", "tax_rate",
-                "depreciation_amortization", "rd_expense", "capital_expenditures"],
+                "depreciation_amortization", "rd_expense", "capital_expenditures",
+                "finance_lease_liabilities", "operating_lease_liabilities",
+                "stock_based_compensation", "interest_expense_series", "sbc_series",
+                "fcf_period_ends", "interest_paid_classification"],
       notes,
       beta: betaInfo || null,
       sources: [
@@ -885,22 +1020,77 @@ module.exports = async (req, res) => {
   // OCF for a year it didn't report capex, and zipping positionally would
   // silently pair mismatched years.
   let freeCashFlows = [];
+  //: The period `end` for each surviving row, in the SAME order — this is
+  //  what interest_expense_series/sbc_series are projected onto below, so a
+  //  year that free_cash_flows dropped (no matching capex) is dropped from
+  //  those series too, and element i of every series always refers to the
+  //  same fiscal year as free_cash_flows[i].
+  let fcfPeriodEnds = [];
   if (flows.operating_cash_flow) {
     const capexByEnd = new Map(
       (flows.capital_expenditures?.series || []).map((r) => [r.end, r.val]));
-    freeCashFlows = flows.operating_cash_flow.series.map((r) => {
+    const fcfRows = flows.operating_cash_flow.series.map((r) => {
       const capex = capexByEnd.get(r.end);
       // Capex is reported as a positive outflow in the cash-flow statement.
-      return capex == null ? null : r.val - Math.abs(capex);
+      return capex == null ? null : { end: r.end, val: r.val - Math.abs(capex) };
     }).filter((v) => v !== null);
+    freeCashFlows = fcfRows.map((r) => r.val);
+    fcfPeriodEnds = fcfRows.map((r) => r.end);
     if (flows.capital_expenditures
         && freeCashFlows.length < flows.operating_cash_flow.series.length) {
       notes.push("Some years had operating cash flow but no matching capital-expenditure disclosure; those years are omitted from the FCF series rather than assumed zero.");
     }
     if (!flows.capital_expenditures) {
       freeCashFlows = [];
+      fcfPeriodEnds = [];
       notes.push("No capital-expenditure tag found, so free cash flow could not be derived from operating cash flow.");
     }
+  }
+
+  // --- interest expense / SBC series, aligned to fcfPeriodEnds ------------
+  const interestExpenseSeries = seriesAlignedTo(flows.interest_expense, fcfPeriodEnds,
+    interestExpenseFromRow);
+  const sbcSeries = seriesAlignedTo(flows.stock_based_compensation, fcfPeriodEnds,
+    (v) => (v == null ? null : Math.abs(v)));
+
+  // --- lease liabilities ---------------------------------------------------
+  // Kept out of STOCK_TAGS's simple cascade because the right figure depends
+  // on WHICH shape a filer discloses (total tag vs. current+noncurrent split)
+  // — see pickLeaseLiability(). IFRS 16 has no finance/operating split at
+  // all, so IFRS filers get a single LeaseLiabilities lookup instead.
+  let financeLease, operatingLease;
+  if (taxonomy === "ifrs-full") {
+    financeLease = pickInstant(facts, ["LeaseLiabilities"], reportingCurrency);
+    operatingLease = null;
+    if (financeLease) {
+      notes.push("This filer reports under IFRS 16, which has no operating/finance lease "
+        + "split; the single LeaseLiabilities balance is reported as finance_lease_liabilities "
+        + "and operating_lease_liabilities is left null.");
+    }
+  } else {
+    financeLease = pickLeaseLiability(facts, LEASE_TAGS.financeTotal, LEASE_TAGS.financeCurrent,
+      LEASE_TAGS.financeNoncurrent, reportingCurrency);
+    operatingLease = pickLeaseLiability(facts, LEASE_TAGS.operatingTotal, LEASE_TAGS.operatingCurrent,
+      LEASE_TAGS.operatingNoncurrent, reportingCurrency);
+  }
+  if (operatingLease && operatingLease.source === "noncurrent-only") {
+    notes.push("operating_lease_liabilities reflects only the noncurrent portion; this filer "
+      + "has no separate current operating-lease-liability tag.");
+  }
+  if (financeLease && financeLease.source === "noncurrent-only") {
+    notes.push("finance_lease_liabilities reflects only the noncurrent portion; this filer "
+      + "has no separate current finance-lease-liability tag.");
+  }
+  //: Guard against double-counting: if the tag already feeding total_debt has
+  //  "Lease" in its own name, finance leases are already inside total_debt
+  //  and reporting them again as a separate field would double-count them.
+  let financeLeaseValue = financeLease ? financeLease.value : null;
+  if (financeLeaseValue !== null
+      && (debtTagIncludesLeases(stocks.long_term_debt?.tag) || debtTagIncludesLeases(stocks.short_term_debt?.tag))) {
+    notes.push("finance_lease_liabilities is reported null: the debt tag already used for "
+      + "total_debt appears to include finance-lease liabilities, and reporting both would "
+      + "double-count the same dollars.");
+    financeLeaseValue = null;
   }
 
   // --- debt and cash ------------------------------------------------------
@@ -1101,6 +1291,30 @@ module.exports = async (req, res) => {
   const latestEnd = revSeries.length ? revSeries[revSeries.length - 1].end
                                      : (stocks.cash_and_equivalents?.end || null);
 
+  //: Interest expense from InterestIncomeExpenseNet, applied through the
+  //  sign rule in interestExpenseFromRow(): a positive net value is net
+  //  interest INCOME, not expense (Badger Meter FY2025, CIK 9092: +$5.124M
+  //  net, no InterestExpense tag at all — the unguarded Math.abs() reported
+  //  that income as a $5.124M interest cost). Only a negative net value
+  //  (net expense) becomes a value here; a positive one is reported missing.
+  const interestExpenseTag = flows.interest_expense?.tag;
+  const interestExpenseValue = interestExpenseTag
+    ? interestExpenseFromRow(latestFlow("interest_expense"), interestExpenseTag) : null;
+  if (interestExpenseValue === null && NET_INTEREST_TAGS.includes(interestExpenseTag)
+      && latestFlow("interest_expense") != null) {
+    notes.push("interest_expense is reported missing: the only available tag "
+      + `(${interestExpenseTag}) reported net interest INCOME for the latest year, `
+      + "not expense, and a net-income figure is not reinterpreted as an expense.");
+  }
+
+  //: us-gaap filers report under ASC 230, which requires interest paid to be
+  //  classified within operating activities — that is a rule, not a
+  //  per-filer disclosure, so it needs no XBRL lookup. IFRS (IAS 7) leaves
+  //  the choice to the filer, so ifrs-full readers look for whichever
+  //  classification tag was actually disclosed.
+  const interestPaidClassification = taxonomy === "ifrs-full"
+    ? ifrsInterestClassification(facts) : "operating";
+
   //: Field names mirror ExtractedFinancials exactly (see
   //  src/pipeline/pdf_extractor.py) so web_bridge.load_fundamentals() can
   //  rehydrate them without a second translation layer.
@@ -1126,10 +1340,23 @@ module.exports = async (req, res) => {
       const v = latestFlow("capital_expenditures");
       return v == null ? null : Math.abs(v);
     })(),
-    interest_expense: (() => {
-      const v = latestFlow("interest_expense");
+    interest_expense: interestExpenseValue,
+    interest_expense_series: interestExpenseSeries,
+    sbc_series: sbcSeries,
+    fcf_period_ends: fcfPeriodEnds,
+    interest_paid_classification: interestPaidClassification,
+    stock_based_compensation: (() => {
+      const v = latestFlow("stock_based_compensation");
       return v == null ? null : Math.abs(v);
     })(),
+    finance_lease_liabilities: financeLeaseValue,
+    operating_lease_liabilities: operatingLease ? operatingLease.value : null,
+    //: The quote's OWN as-of time (Yahoo's regularMarketTime), not the
+    //  request time — a quote can be a prior close, and nothing else here
+    //  says so. Reported whenever a price was fetched, independent of the
+    //  currency gate on current_price below, since it describes the quote
+    //  itself rather than whether it was usable alongside these financials.
+    price_as_of: priceInfo ? priceInfo.asOf : null,
     tax_rate: taxRate,
     revenue_growth: revenueGrowth,
     operating_margin: operatingMargin,
@@ -1198,6 +1425,8 @@ module.exports = async (req, res) => {
 //  response, so they are tested directly rather than only through the handler.
 module.exports._internals = { resolveTicker, detectReportingCurrency, deriveAdrRatio,
                               ADR_LOCAL_LISTINGS, ADR_RATIO_CANDIDATES, ADR_RATIO_TOLERANCE, pickInstant, pickAnnualSeries, FLOW_TAGS, STOCK_TAGS,
-                              IFRS_FLOW_TAGS, IFRS_STOCK_TAGS,
+                              IFRS_FLOW_TAGS, IFRS_STOCK_TAGS, LEASE_TAGS,
                               benchmarkFor, monthlyReturns, monthKey, BENCHMARKS, MIN_BETA_OBSERVATIONS,
-                              computeSplitAdjustment, SPLIT_ALLOTMENT_LAG_MS, annualizedVol, regressionStats };
+                              computeSplitAdjustment, SPLIT_ALLOTMENT_LAG_MS, annualizedVol, regressionStats,
+                              pickLeaseLiability, debtTagIncludesLeases, NET_INTEREST_TAGS,
+                              interestExpenseFromRow, seriesAlignedTo, ifrsInterestClassification };
