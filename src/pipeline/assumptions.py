@@ -233,6 +233,17 @@ _COMMODITY_SECTORS = frozenset({"Oil/Gas (Integrated)", "Oil/Gas Production and 
                                 "Metals & Mining", "Steel"})
 _CYCLE_BASE_YEARS = 10
 
+#: Lenders, brokers and insurers by SIC (6000-6499: depository institutions,
+#: credit institutions, security brokers, insurance). Their cash-flow
+#: statements run deposits, loans, trading books and insurance float through
+#: operating cash flow, so "free cash flow to the firm" and "net debt" mean
+#: something else entirely for them. 65xx-67xx (real estate, holding
+#: companies) are deliberately outside: a REIT's cash flow is a real one. So
+#: is 6324 (hospital and medical service plans: UnitedHealth, Elevance, Cigna),
+#: whose operating cash flow is ordinary enough to value on.
+_FINANCIAL_SIC_RANGES = ((6000, 6323), (6325, 6499))
+_FINANCIAL_SECTORS = frozenset({"Bank (Money Center)", "Insurance (General)"})
+
 #: Blume (1971) adjustment toward the market beta of 1.0 — the convention
 #: behind Bloomberg's default "adjusted beta". Raw regression betas are
 #: noisy and mean-revert; applied only to betas this app REGRESSES, never to
@@ -433,6 +444,30 @@ class AutoAssumer:
         if data.sic_code is not None:
             return any(lo <= data.sic_code <= hi for lo, hi in _COMMODITY_SIC_RANGES)
         return data.sector in _COMMODITY_SECTORS
+
+    @staticmethod
+    def _is_financial_firm(data: ExtractedFinancials) -> bool:
+        """Whether this is a bank, broker or insurer — see
+        :data:`_FINANCIAL_SIC_RANGES`."""
+        if data.sic_code is not None:
+            return any(lo <= data.sic_code <= hi for lo, hi in _FINANCIAL_SIC_RANGES)
+        return data.sector in _FINANCIAL_SECTORS
+
+    @staticmethod
+    def _reported_base(data: ExtractedFinancials) -> float | None:
+        """Mean of the reported FCF over the window ``_normalised_base`` uses,
+        before any interest, stock-comp or lease adjustment — what the filing
+        itself says, so a message can tell "reported cash flow is negative"
+        from "negative only after the model's own deductions"."""
+        history = list(data.free_cash_flows or [])
+        if not history:
+            return None
+        idx = list(range(len(history)))
+        if data.fcf_history_order == "oldest_first":
+            idx.reverse()
+        cycle = AutoAssumer._is_commodity_producer(data)
+        idx = idx[:_CYCLE_BASE_YEARS if cycle else _BASE_YEARS]
+        return sum(history[i] for i in idx) / len(idx)
 
     def _starting_growth(self, data: ExtractedFinancials,
                          g_terminal: float) -> tuple[float, str]:
@@ -1020,6 +1055,17 @@ class AutoAssumer:
             partial["Discounted Cash Flow"] = (
                 partial["Discounted Cash Flow"] + " " + msg if "Discounted Cash Flow" in partial else msg)
             partly_assessed.add("Discounted Cash Flow")
+        if self._is_financial_firm(data):
+            msg = ("This is a bank, broker or insurer. Its cash-flow statement runs "
+                   "deposits, loans, trading and insurance float through operating "
+                   "cash flow, and its borrowings are raw material rather than "
+                   "financing, so free cash flow to the firm and net debt do not "
+                   "mean here what they mean for other companies. Treat this value "
+                   "as indicative only; a dividend-discount (Gordon Growth) or "
+                   "price-to-book view is the conventional method for lenders.")
+            for name in ("Discounted Cash Flow", "Reverse DCF / Market-Implied Expectations"):
+                partial[name] = partial[name] + " " + msg if name in partial else msg
+                partly_assessed.add(name)
         # A $0 hidden-debt adjustment reads identically whether the model
         # found genuinely nothing to adjust, or was simply never given any
         # lease/reverse-factoring/contingent-liability figures to look at —
@@ -1196,24 +1242,64 @@ class AutoAssumer:
         # ValidationError instead of an explained one. This states the same
         # constraint at the assumption layer, for both models, with a reason.
         terminal_fcf = fcfs[-1] if fcfs else 0.0
-        if terminal_fcf <= 0 or base_fcf <= 0:
+        if not data.free_cash_flows and data.revenue is None:
+            # Neither a cash flow nor a revenue figure: the base is the
+            # placeholder company (revenue 100), so any value the DCF printed
+            # would describe nothing real. ETFs, crypto and every listing
+            # outside SEC coverage arrive here. Gordon Growth and Reverse DCF
+            # already refuse for the same reason; this closes the last gap.
             unavailable["Discounted Cash Flow"] = (
-                "The free cash flow this filing discloses is negative, and a "
-                "DCF closes with a perpetuity on the final year's cash flow — "
-                "projecting a cash burn forever produces a negative terminal "
-                "value, which is arithmetic rather than a valuation. This is "
-                "a real disclosed figure, not a missing one: value a "
-                "cash-burning company on a forecast that reaches breakeven, "
-                "by entering the projected free cash flows manually."
+                "No cash flow or revenue figure is available for this listing, "
+                "so a DCF would be built from a made-up placeholder company and "
+                "its value would describe nothing real. Upload the annual "
+                "report as a PDF, or enter the company's free cash flow or "
+                "revenue manually, to run it."
             )
-            rationale[("DCF", "free_cash_flows")] = unavailable["Discounted Cash Flow"]
-        if base_fcf <= 0:
+            unavailable.setdefault(
+                "Reverse DCF / Market-Implied Expectations",
+                unavailable["Discounted Cash Flow"])
+        elif terminal_fcf <= 0 or base_fcf <= 0:
+            reported = self._reported_base(data)
+            if reported is not None and reported > 0:
+                # The filing's own free cash flow is positive; it is the
+                # model's stock-comp (or lease) deduction that turns the base
+                # negative. Saying "the filing discloses negative free cash
+                # flow" here would be false (Snowflake, Arm, Reddit).
+                why = (
+                    "The free cash flow this filing reports is positive, but the "
+                    "base this DCF projects from is negative once stock-based "
+                    "compensation is deducted as the real cost it is. A DCF "
+                    "closes with a perpetuity on the final year's cash flow, so "
+                    "projecting a negative base forever produces a negative "
+                    "terminal value, which is arithmetic rather than a "
+                    "valuation. To value the company on its reported cash flow "
+                    "or on a forecast that stays positive, enter the projected "
+                    "free cash flows manually."
+                )
+            else:
+                why = (
+                    "The free cash flow this filing discloses is negative, and a "
+                    "DCF closes with a perpetuity on the final year's cash flow — "
+                    "projecting a cash burn forever produces a negative terminal "
+                    "value, which is arithmetic rather than a valuation. This is "
+                    "a real disclosed figure, not a missing one: value a "
+                    "cash-burning company on a forecast that reaches breakeven, "
+                    "by entering the projected free cash flows manually."
+                )
+            unavailable["Discounted Cash Flow"] = why
+            rationale[("DCF", "free_cash_flows")] = why
+        if base_fcf <= 0 and (data.free_cash_flows or data.revenue is not None):
+            reported = self._reported_base(data)
+            after_sbc = (" (the reported figure is positive, but the base is "
+                         "negative once stock-based compensation is deducted)"
+                         if reported is not None and reported > 0 else "")
             reason = (
                 "Reverse DCF solves for the growth rate that justifies the "
                 "market price by projecting a trailing free cash flow forward "
-                "— a negative base can't be grown into the positive enterprise "
-                "value a share price implies, at any growth rate. Enter a "
-                "normalised or forecast base free cash flow manually to run it."
+                f"— a negative base{after_sbc} can't be grown into the positive "
+                "enterprise value a share price implies, at any growth rate. "
+                "Enter a normalised or forecast base free cash flow manually "
+                "to run it."
             )
             unavailable.setdefault("Reverse DCF / Market-Implied Expectations", reason)
             rationale.setdefault(("RDCF", "base_fcf"), reason)

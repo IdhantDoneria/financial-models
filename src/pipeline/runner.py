@@ -82,6 +82,43 @@ class AnalysisReport:
             rows.append({"Model": name, "Headline result": "-", "Status": err})
         return pd.DataFrame(rows)
 
+    #: DCF equity value / market cap outside this band draws a plain-language
+    #: warning. It is deliberately wide: it flags a model that is far from the
+    #: market, not one that merely disagrees with it.
+    _DIVERGENCE_BAND = (0.4, 2.5)
+
+    def divergence_note(self) -> str | None:
+        """Say so when the DCF equity value is far from the market cap.
+
+        A valuation 7x the market cap reads as a bargain, and 0.05x as a
+        disaster, when the cause is usually the model's inputs (a base year
+        that isn't representative, a growth rate the market doesn't share, or a
+        capital structure that drags WACC down, as a captive finance arm's
+        debt does). The number computes cleanly either way, so this states the
+        gap instead of leaving the user to work it out."""
+        dcf = self.results.get("Discounted Cash Flow")
+        price, shares = self.company.current_price, self.company.shares_outstanding
+        if not dcf or not price or not shares:
+            return None
+        equity = dcf.get("equity_value")
+        if not isinstance(equity, (int, float, np.floating)):
+            return None
+        ratio = equity / (price * shares)
+        lo, hi = self._DIVERGENCE_BAND
+        if lo <= ratio <= hi:
+            return None
+        if ratio <= 0:
+            gap = ("a negative equity value: the DCF's enterprise value is smaller than "
+                   "the company's net debt")
+        else:
+            gap = f"{ratio:.2f}x the market capitalisation"
+        return (f"The DCF equity value is {gap}. A gap this wide usually means the "
+                "model's inputs differ from the market's: growth expectations (the "
+                "Reverse DCF shows what the market is pricing in), a base year that "
+                "isn't representative, or a capital structure the model reads badly "
+                "(a captive finance arm's debt pulls WACC down). Treat the DCF as one "
+                "input, not a price target.")
+
     #: Models whose headline unit switches from "$" to "%" when
     #: AssumptionSet.partial flags them — VaR/CVaR's dollar figure only
     #: means something with a real portfolio value; without one, the model
