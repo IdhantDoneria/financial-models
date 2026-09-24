@@ -16,6 +16,8 @@
 // error, which is the failure mode this whole product exists to avoid.
 
 const { _internals } = require("../api/fundamentals.js");
+const { parseInlineXbrl, impliedSharesFromEps, segmentDebt, sumQuarterlyPerShare,
+        correctQuarterTaggedAsAnnual } = _internals;
 const { resolveTicker, pickInstant, pickAnnualSeries, detectReportingCurrency,
         benchmarkFor, monthlyReturns, MIN_BETA_OBSERVATIONS,
         ADR_LOCAL_LISTINGS, ADR_RATIO_CANDIDATES, ADR_RATIO_TOLERANCE, STOCK_TAGS, FLOW_TAGS, IFRS_FLOW_TAGS,
@@ -51,6 +53,87 @@ console.log("· Ticker resolution — SEC spells share classes with a hyphen, hu
   // The resolved symbol is what the price lookup uses downstream; returning
   // the user's spelling instead would 404 against Yahoo for all 543 of these.
   eq(resolveTicker(map, "BRK.B").cik, "0001067983", "resolved entry carries the right CIK");
+}
+
+
+/* ---- audit round 3 (2026-09-24): dimensioned facts, quarterly dividends ---- */
+console.log("\n· Inline XBRL: per-class shares and per-segment debt (companyfacts drops both)");
+{
+  const ctx = (id, dims, period) => `<xbrli:context id="${id}"><xbrli:entity><xbrli:identifier>1</xbrli:identifier>`
+    + (dims.length ? `<xbrli:segment>${dims.map(([a, m]) => `<xbrldi:explicitMember dimension="${a}">${m}</xbrldi:explicitMember>`).join("")}</xbrli:segment>` : "")
+    + `</xbrli:entity><xbrli:period>${period.instant ? `<xbrli:instant>${period.instant}</xbrli:instant>`
+      : `<xbrli:startDate>${period.start}</xbrli:startDate><xbrli:endDate>${period.end}</xbrli:endDate>`}</xbrli:period></xbrli:context>`;
+  const fact = (name, c, text, extra = "") => `<ix:nonFraction name="${name}" contextRef="${c}" unitRef="usd" ${extra}>${text}</ix:nonFraction>`;
+  const Q = { start: "2026-04-01", end: "2026-06-30" }, NINE = { start: "2025-10-01", end: "2026-06-30" };
+  const A = [["us-gaap:StatementClassOfStockAxis", "us-gaap:CommonClassAMember"]];
+  const B1 = [["us-gaap:StatementClassOfStockAxis", "v:CommonClassB1Member"]];
+  // Visa's real Q2 2026 figures (10-Q for 2026-06-30).
+  const visa = [ctx("q", [], Q), ctx("n", [], NINE), ctx("qa", A, Q), ctx("na", A, NINE), ctx("qb", B1, Q)].join("")
+    + fact("us-gaap:NetIncomeLoss", "q", "5,628", 'scale="6"') + fact("us-gaap:NetIncomeLoss", "n", "17,502", 'scale="6"')
+    + fact("us-gaap:EarningsPerShareBasic", "qa", "2.97") + fact("us-gaap:EarningsPerShareBasic", "na", "9.15")
+    + fact("us-gaap:EarningsPerShareBasic", "qb", "4.59");
+  const ix = parseInlineXbrl(visa);
+  eq(ix.length, 5, "parses every numeric fact, with scale applied");
+  const v = impliedSharesFromEps(ix, "A");
+  ok(v && Math.abs(v.value - 5628e6 / 2.97) < 1, "Visa: Class A shares = NI 5,628m / EPS 2.97 (latest quarter)", v && v.value);
+  eq(v && v.start, "2026-04-01", "the quarter is used, not the nine months");
+  ok(impliedSharesFromEps(ix, "C") === null, "no EPS for the class -> null, not a guess");
+  const tiny = parseInlineXbrl(ctx("q", [], Q) + ctx("qa", A, Q)
+    + fact("us-gaap:NetIncomeLoss", "q", "5", 'scale="6"') + fact("us-gaap:EarningsPerShareBasic", "qa", "0.03"));
+  ok(impliedSharesFromEps(tiny, "A") === null, "EPS below 1.00 is refused (cent rounding)");
+
+  // GM's balance sheet segment columns (10-Q, 2025-12-31 comparative).
+  const G = (m) => [["gm:BusinessGroupAxis", `gm:${m}Member`]];
+  const Y = { instant: "2025-12-31" };
+  const gm = parseInlineXbrl([ctx("a", G("Automotive"), Y), ctx("f", G("GmFinancial"), Y)].join("")
+    + fact("us-gaap:DebtCurrent", "a", "514", 'scale="6"') + fact("us-gaap:LongTermDebtAndCapitalLeaseObligations", "a", "15,700", 'scale="6"')
+    + fact("us-gaap:DebtCurrent", "f", "38,000", 'scale="6"') + fact("us-gaap:LongTermDebtAndCapitalLeaseObligations", "f", "76,030", 'scale="6"'));
+  const seg = segmentDebt(gm, "2025-12-31");
+  ok(seg && seg.finance === 114.03e9 && seg.industrial === 16.214e9, "GM: finance arm 114.03bn, automotive 16.21bn",
+    seg && `${seg.finance} / ${seg.industrial}`);
+  // Deere splits debt by TYPE; "ProductFinancingArrangement" is not a lending arm.
+  const T = (m) => [["us-gaap:ShortTermDebtTypeAxis", `us-gaap:${m}Member`]];
+  const de = parseInlineXbrl([ctx("cp", T("CommercialPaper"), Y), ctx("pf", T("ProductFinancingArrangement"), Y)].join("")
+    + fact("us-gaap:DebtCurrent", "cp", "6,777", 'scale="6"') + fact("us-gaap:DebtCurrent", "pf", "43", 'scale="6"'));
+  ok(segmentDebt(de, "2025-12-31") === null, "Deere: a debt-type axis is never read as a finance arm");
+  // Berkshire: debt only per segment, no finance arm -> a total.
+  const P = (m) => [["srt:ProductOrServiceAxis", `brka:${m}Member`]];
+  const brk = parseInlineXbrl([ctx("i", P("InsuranceAndOther"), Y), ctx("r", P("RailroadUtilitiesAndEnergy"), Y)].join("")
+    + fact("us-gaap:DebtAndCapitalLeaseObligations", "i", "43,302", 'scale="6"')
+    + fact("us-gaap:DebtAndCapitalLeaseObligations", "r", "85,297", 'scale="6"'));
+  const b = segmentDebt(brk, "2025-12-31");
+  ok(b && b.finance === 0 && b.industrial === 128.599e9, "Berkshire: segment totals sum to 128.6bn", b && b.industrial);
+}
+
+console.log("\n· A quarter's dividend tagged as the year's is corrected (Visa FY2025)");
+{
+  const r = (start, end, val) => ({ start, end, val, form: "10-Q", filed: "2025-11-06" });
+  const facts = { CommonStockDividendsPerShareDeclared: { units: { "USD/shares": [
+    r("2024-10-01", "2024-12-31", 0.59), r("2025-01-01", "2025-03-31", 0.59), r("2025-04-01", "2025-06-30", 0.59),
+    r("2024-10-01", "2025-06-30", 0.59), r("2024-10-01", "2025-09-30", 0.59)] } } };
+  const pick = { tag: "CommonStockDividendsPerShareDeclared", unit: "USD/shares",
+                 series: [{ start: "2024-10-01", end: "2025-09-30", val: 0.59 }] };
+  const fix = correctQuarterTaggedAsAnnual(facts, pick);
+  eq(fix && fix.annual, 2.36, "Visa: 3 tagged quarters of 0.59 + the year row's 0.59 = 2.36, not 0.59");
+  // Apple's genuine annual 1.02 against quarters of 0.25/0.26 is left alone.
+  const aapl = { CommonStockDividendsPerShareDeclared: { units: { "USD/shares": [
+    r("2024-09-29", "2024-12-28", 0.25), r("2024-12-29", "2025-03-29", 0.25), r("2025-03-30", "2025-06-28", 0.26)] } } };
+  ok(correctQuarterTaggedAsAnnual(aapl, { ...pick, series: [{ start: "2024-09-29", end: "2025-09-27", val: 1.02 }] }) === null,
+    "a real annual figure (Apple 1.02 vs 0.25-0.26 quarters) is not touched");
+}
+
+console.log("\n· Quarterly dividends summed when no annual figure is tagged (Citigroup)");
+{
+  const q = (start, end, val, filed) => ({ start, end, val, form: "10-K", filed });
+  const facts = { CommonStockDividendsPerShareDeclared: { units: { "USD/shares": [
+    q("2024-10-01", "2024-12-31", 0.56, "2026-02-20"), q("2025-01-01", "2025-03-31", 0.56, "2026-02-20"),
+    q("2025-04-01", "2025-06-30", 0.56, "2026-02-20"), q("2025-07-01", "2025-09-30", 0.6, "2026-02-20"),
+    q("2025-10-01", "2025-12-31", 0.6, "2026-02-20")] } } };
+  const s = sumQuarterlyPerShare(facts, ["CommonStockDividendsPerShareDeclared"], "2025-12-31", "USD");
+  eq(s && s.series[0].val, 2.32, "Citi FY2025: 0.56 + 0.56 + 0.60 + 0.60 = 2.32 (prior-year Q4 excluded)");
+  const three = { CommonStockDividendsPerShareDeclared: { units: { "USD/shares": facts.CommonStockDividendsPerShareDeclared.units["USD/shares"].slice(0, 4) } } };
+  ok(sumQuarterlyPerShare(three, ["CommonStockDividendsPerShareDeclared"], "2025-12-31", "USD") === null,
+    "three quarters is not a year: null");
 }
 
 /* ------------------------------ restatements ----------------------------- */
@@ -1146,7 +1229,12 @@ console.log("\n· Balance sheet — every line from one date, debt summed by rol
         10: { cik_str: 1467858, ticker: "GM", title: "GENERAL MOTORS Co" },
         11: { cik_str: 1111111, ticker: "OLDD", title: "OLD DEBT CO" },
         12: { cik_str: 1094517, ticker: "TMX", title: "TOYOTA-LIKE" },
-        13: { cik_str: 1094517, ticker: "TMY", title: "CURRENT-LIKE" } });
+        13: { cik_str: 1094517, ticker: "TMY", title: "CURRENT-LIKE" },
+        14: { cik_str: 1403161, ticker: "V", title: "VISA INC." },
+        15: { cik_str: 1467858, ticker: "GMX", title: "CAPTIVE CO" },
+        16: { cik_str: 726728, ticker: "O", title: "REALTY INCOME CORP" },
+        17: { cik_str: 1512673, ticker: "XYZ", title: "Block, Inc." },
+        18: { cik_str: 831001, ticker: "C", title: "CITIGROUP INC" } });
       if (url.includes("companyfacts")) { factsCalls++; return factsBehaviour(); }
       if (url.includes("finance.yahoo.com")) return json(chart);
       return { ok: false, status: 404, json: async () => ({}), text: async () => "" };
@@ -1199,10 +1287,14 @@ console.log("\n· Balance sheet — every line from one date, debt summed by rol
                   adjclose: [{ adjclose: Array.from({ length: months }, (_, i) => price + (i % 5)) }] },
     events: {},
   }] } });
-  const runCase = async ({ ticker, cik, factsByCik, quotes, rates = {}, sic = null, filings = null }) => {
+  const runCase = async ({ ticker, cik, factsByCik, quotes, rates = {}, sic = null, filings = null,
+                           inlineDoc = null, quoteMeta = {} }) => {
     global.fetch = async (url) => {
       url = String(url);
       if (url.includes("company_tickers")) return json({ 0: { cik_str: Number(cik), ticker, title: ticker } });
+      if (url.includes("/Archives/edgar/")) {
+        return inlineDoc ? { ok: true, status: 200, text: async () => inlineDoc } : { ok: false, status: 404 };
+      }
       if (url.includes("/submissions/")) {
         return sic || filings ? json({ sic: sic ? String(sic) : "", sicDescription: "x", filings: { recent: filings || {} } })
                               : { ok: false, status: 404, json: async () => ({}) };
@@ -1212,7 +1304,11 @@ console.log("\n· Balance sheet — every line from one date, debt summed by rol
       if (url.includes("open.er-api.com")) return json({ rates: { USD: 1, ...rates } });
       const sym = decodeURIComponent((url.match(/chart\/([^?]+)/) || [])[1] || "");
       if (url.includes("finance.yahoo.com")) {
-        if (quotes[sym]) return json(chartFor(...quotes[sym]));
+        if (quotes[sym]) {
+          const body = chartFor(...quotes[sym]);
+          Object.assign(body.chart.result[0].meta, quoteMeta[sym] || {});
+          return json(body);
+        }
         if (sym.startsWith("^")) return json(chartFor(5000, "USD"));
       }
       return { ok: false, status: 404, json: async () => ({}), text: async () => "" };
@@ -1463,6 +1559,89 @@ console.log("\n· Balance sheet — every line from one date, debt summed by rol
       });
       ok(!(fresh.notes || []).some((n) => /newer annual report/.test(n)),
         "no warning when the data already covers the newest annual report");
+    }
+
+    console.log("\n· Handler — dual-class shares, captive finance, REITs, retired tickers, ETFs");
+    {
+      const Q = { start: "2026-04-01", end: "2026-06-30" };
+      const ctx = (id, dims, p) => `<xbrli:context id="${id}"><xbrli:entity>`
+        + (dims.length ? `<xbrli:segment>${dims.map(([a, m]) => `<xbrldi:explicitMember dimension="${a}">${m}</xbrldi:explicitMember>`).join("")}</xbrli:segment>` : "")
+        + `</xbrli:entity><xbrli:period>${p.instant ? `<xbrli:instant>${p.instant}</xbrli:instant>`
+          : `<xbrli:startDate>${p.start}</xbrli:startDate><xbrli:endDate>${p.end}</xbrli:endDate>`}</xbrli:period></xbrli:context>`;
+      const fx = (n, c, t) => `<ix:nonFraction name="${n}" contextRef="${c}" scale="6">${t}</ix:nonFraction>`;
+      const report = { form: ["10-Q"], reportDate: ["2026-06-30"], filingDate: ["2026-07-28"],
+                       accessionNumber: ["0001403161-26-000104"], primaryDocument: ["v-20260630.htm"] };
+
+      const visaDoc = ctx("q", [], Q) + ctx("qa", [["us-gaap:StatementClassOfStockAxis", "us-gaap:CommonClassAMember"]], Q)
+        + fx("us-gaap:NetIncomeLoss", "q", "5,628")
+        + `<ix:nonFraction name="us-gaap:EarningsPerShareBasic" contextRef="qa">2.97</ix:nonFraction>`;
+      const v = await runCaseSpaced({
+        ticker: "V", cik: "0001403161", sic: 7389, filings: report, inlineDoc: visaDoc,
+        factsByCik: { "0001403161": { entityName: "VISA INC.", facts: { "us-gaap": {
+          Revenues: { units: { USD: [yr(2024, 36e9, "10-K"), yr(2025, 40e9, "10-K")] } },
+          NetIncomeLoss: { units: { USD: [yr(2024, 19.7e9, "10-K"), yr(2025, 20.1e9, "10-K")] } },
+          CashAndCashEquivalentsAtCarryingValue: { units: { USD: [inst("2025-12-31", 12e9, "10-K")] } },
+        } } } },
+        quotes: { V: [365, "USD"] },
+      });
+      ok(v && Math.abs(v.fields.shares_outstanding - 5628e6 / 2.97) < 1,
+        "Visa: share count from its own 10-Q (NI / Class A EPS), where it used to be null", v && v.fields.shares_outstanding);
+      ok((v.notes || []).some((n) => /Common Class A-equivalent shares/.test(n)), "and the method is disclosed");
+
+      const Y = { instant: "2025-12-31" };
+      const G = (m) => [["gm:BusinessGroupAxis", `gm:${m}Member`]];
+      const gmDoc = ctx("a", G("Automotive"), Y) + ctx("f", G("GmFinancial"), Y)
+        + fx("us-gaap:DebtCurrent", "a", "514") + fx("us-gaap:LongTermDebtAndCapitalLeaseObligations", "a", "15,700")
+        + fx("us-gaap:DebtCurrent", "f", "38,000") + fx("us-gaap:LongTermDebtAndCapitalLeaseObligations", "f", "76,030");
+      const gm = await runCaseSpaced({
+        ticker: "GMX", cik: "0001467858", sic: 3711, filings: report, inlineDoc: gmDoc,
+        factsByCik: { "0001467858": { entityName: "CAPTIVE CO", facts: { "us-gaap": {
+          Revenues: { units: { USD: [yr(2024, 187e9, "10-K"), yr(2025, 185e9, "10-K")] } },
+          ProceedsFromCollectionOfFinanceReceivables: { units: { USD: [yr(2025, 35e9, "10-K")] } },
+          CashAndCashEquivalentsAtCarryingValue: { units: { USD: [inst("2025-12-31", 27.669e9, "10-K")] } },
+          LongTermDebtAndCapitalLeaseObligationsIncludingCurrentMaturities: { units: { USD: [inst("2025-12-31", 131.574e9, "10-K")] } },
+        } } } },
+        quotes: { GMX: [82, "USD"] },
+      });
+      eq(gm.fields.finance_arm_debt, 114.03e9, "captive: the finance arm's 114.03bn is reported separately");
+      eq(gm.fields.total_debt, 130.244e9, "captive: total debt from the same segment columns");
+      ok((gm.notes || []).some((n) => /finance arm \(Gm Financial\)/.test(n)), "captive: the split is disclosed");
+
+      const reit = await runCaseSpaced({
+        ticker: "O", cik: "0000726728", sic: 6798,
+        factsByCik: { "0000726728": { entityName: "REALTY INCOME CORP", facts: { "us-gaap": {
+          Revenues: { units: { USD: [2023, 2024, 2025].map((y) => yr(y, 5e9, "10-K")) } },
+          NetCashProvidedByUsedInOperatingActivities: { units: { USD: [yr(2023, 2.96e9, "10-K"), yr(2024, 3.57e9, "10-K"), yr(2025, 3.99e9, "10-K")] } },
+          PaymentsForCapitalImprovements: { units: { USD: [yr(2023, 0.1e9, "10-K"), yr(2024, 0.12e9, "10-K"), yr(2025, 0.13e9, "10-K")] } },
+          DepreciationDepletionAndAmortization: { units: { USD: [2023, 2024, 2025].map((y) => yr(y, 2.5e9, "10-K")) } },
+          CashAndCashEquivalentsAtCarryingValue: { units: { USD: [inst("2025-12-31", 0.5e9, "10-K")] } },
+          NotesPayable: { units: { USD: [inst("2025-12-31", 25.09e9, "10-K")] } },
+        } } } },
+        quotes: { O: [55, "USD"] },
+      });
+      eq(reit.fields.fcf_basis, "ocf_minus_recurring_capex", "REIT: OCF minus recurring capex, not OCF minus D&A");
+      eq(reit.fields.free_cash_flows[2], 3.99e9 - 0.13e9, "REIT: FY2025 = 3.99bn − 0.13bn");
+      eq(reit.fields.total_debt, 25.09e9, "REIT: bonds tagged only as NotesPayable are counted");
+
+      const sq = await runCaseSpaced({
+        ticker: "SQ", cik: "0001512673",
+        factsByCik: { "0001512673": { entityName: "Block, Inc.", facts: { "us-gaap": {
+          Revenues: { units: { USD: [yr(2025, 24e9, "10-K")] } },
+          CashAndCashEquivalentsAtCarryingValue: { units: { USD: [inst("2025-12-31", 6e9, "10-K")] } },
+        } } } },
+        quotes: { XYZ: [75, "USD"] },
+      });
+      eq(sq && sq.ticker, "XYZ", "SQ resolves to XYZ, Block's ticker since January 2025");
+      ok((sq.notes || []).some((n) => /changed its ticker from SQ to XYZ/.test(n)), "and says so");
+
+      const tw = await runCaseSpaced({ ticker: "TWTR", cik: "0000000001", factsByCik: {}, quotes: {} });
+      ok(tw && tw.ok === false && /taken private in October 2022/.test(tw.error), "TWTR: a clear message, not 'not found'");
+
+      const etf = await runCaseSpaced({ ticker: "SPYX", cik: "0000000001", factsByCik: {},
+        quotes: { SPYX: [764, "USD"] }, quoteMeta: { SPYX: { instrumentType: "ETF", longName: "SPDR S&P 500 ETF Trust" } } });
+      eq(etf.fields.instrument_type, "ETF", "ETF: the instrument type reaches the pipeline");
+      eq(etf.fields.company_name, "SPDR S&P 500 ETF Trust", "ETF: the report is headed by its real name");
+      ok((etf.notes || []).some((n) => /is an ETF .* not a company/.test(n)), "ETF: labelled up front");
     }
     Date.now = realClock;
   } catch (e) {

@@ -128,5 +128,15 @@ console.log("\n· FRED series ids — a dead id silently drops a market to its b
     "every configured id is a bare FRED series id");
 }
 
+console.log("\n· FRED's OECD series are monthly averages, published with a lag");
+{
+  const { fredLabel } = _internals;
+  const at = new Date("2026-09-24T00:00:00Z");
+  const jul = fredLabel("2026-07-01", at);
+  ok(/JUL 2026 MONTHLY AVERAGE/.test(jul), "2026-07-01 is labelled as July's average, not a daily quote", jul);
+  ok(!/MONTHS OLD/.test(jul), "two months behind is normal publication lag, not flagged");
+  ok(/4 MONTHS OLD/.test(fredLabel("2026-05-01", at)), "four months behind is flagged as the latest published");
+}
+
 console.log(`\n${passed} passed · ${failed} failed`);
 process.exit(failed ? 1 : 0);

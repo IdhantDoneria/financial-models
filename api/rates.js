@@ -104,6 +104,17 @@ async function usTreasury() {
            rfSource: `US TREASURY PAR YIELD CURVE · 10Y · ${hit.iso}` };
 }
 
+//: FRED's OECD series are MONTHLY AVERAGES dated the first of the month, and
+//  are published with a lag (India's latest in late September 2026 was July).
+//  "2026-07-01" read as a daily quote from July 1st; say what it is instead.
+const MONTHS = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
+function fredLabel(isoDate, now = new Date()) {
+  const [y, m] = String(isoDate).split("-").map(Number);
+  const label = `FRED/OECD 10Y GOVT YIELD · ${MONTHS[m - 1]} ${y} MONTHLY AVERAGE`;
+  const monthsOld = (now.getUTCFullYear() - y) * 12 + (now.getUTCMonth() + 1 - m);
+  return monthsOld >= 3 ? `${label} (LATEST PUBLISHED, ${monthsOld} MONTHS OLD)` : label;
+}
+
 //: OECD long-term (10Y) government bond yield via FRED. % p.a. monthly.
 async function fredYield(series) {
   const key = process.env.FRED_API_KEY;
@@ -114,8 +125,7 @@ async function fredYield(series) {
   if (!r.ok) throw new Error(`fred ${r.status}`);
   const obs = (await r.json()).observations?.[0];
   if (!obs || obs.value === ".") return null;
-  return { rf: parseFloat(obs.value) / 100,
-           rfSource: `FRED/OECD 10Y GOVT YIELD · ${obs.date}` };
+  return { rf: parseFloat(obs.value) / 100, rfSource: fredLabel(obs.date) };
 }
 
 //: Country currency per 1 USD (keyless, ECB-style daily fix).
@@ -169,4 +179,4 @@ module.exports = async (req, res) => {
 
 //: Pure helper exported for scripts/test_*.js — tested against an inline CSV
 //  fixture rather than a live fetch.
-module.exports._internals = { parseTenYearParYield, MARKETS };
+module.exports._internals = { parseTenYearParYield, MARKETS, fredLabel };
