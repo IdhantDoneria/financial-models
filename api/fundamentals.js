@@ -43,18 +43,33 @@ const TICKERS_URL = "https://www.sec.gov/files/company_tickers.json";
 const FACTS_URL = (cik) => `https://data.sec.gov/api/xbrl/companyfacts/CIK${cik}.json`;
 const SUBMISSIONS_URL = (cik) => `https://data.sec.gov/submissions/CIK${cik}.json`;
 
-//: The registrant's SIC code from EDGAR submissions, or null. The pipeline
-//  uses it to recognise commodity producers (assumptions.py
-//  _COMMODITY_SIC_RANGES); a failed lookup only loses that refinement, so
-//  it never fails the request.
-async function fetchSicCode(cik) {
+//: The registrant's SIC code and newest annual report from EDGAR
+//  submissions. The pipeline uses the SIC code to recognise commodity
+//  producers and lenders (assumptions.py); the annual-report date lets the
+//  handler say when the structured data trails the latest filing. A failed
+//  lookup only loses those refinements, so it never fails the request.
+async function fetchFilerInfo(cik) {
+  const none = { sic: null, latestAnnual: null };
   try {
     const r = await secFetch(SUBMISSIONS_URL(cik));
-    if (!r.ok) return null;
-    const sic = parseInt((await r.json()).sic, 10);
-    return Number.isFinite(sic) && sic > 0 ? sic : null;
+    if (!r.ok) return none;
+    const j = await r.json();
+    const sic = parseInt(j.sic, 10);
+    //: The newest annual report on file (10-K, 20-F or 40-F, not an
+    //  amendment). companyfacts can lag it by months for foreign filers, so
+    //  the handler compares its period to the data it actually found.
+    const rec = (j.filings && j.filings.recent) || {};
+    const forms = rec.form || [];
+    let latestAnnual = null;
+    for (let i = 0; i < forms.length; i++) {
+      if (!/^(10-K|20-F|40-F)$/.test(forms[i]) || !rec.reportDate?.[i]) continue;
+      if (!latestAnnual || rec.reportDate[i] > latestAnnual.reportDate) {
+        latestAnnual = { form: forms[i], reportDate: rec.reportDate[i], filed: rec.filingDate?.[i] || null };
+      }
+    }
+    return { sic: Number.isFinite(sic) && sic > 0 ? sic : null, latestAnnual };
   } catch {
-    return null;
+    return none;
   }
 }
 
@@ -159,15 +174,27 @@ function resolveTicker(map, raw) {
 
 //: Duration (flow) concepts — income statement and cash flow.
 const FLOW_TAGS = {
+  //: RevenuesNetOfInterestExpense is how Morgan Stanley, Wells Fargo and
+  //  Goldman Sachs report total net revenue. None of them uses `Revenues`
+  //  any more (MS stopped in 2014, WFC in 2019), so without this tag the
+  //  freshest-tag rule picked the abandoned one and showed MS as FY2014.
   revenue: ["RevenueFromContractWithCustomerExcludingAssessedTax",
             "RevenueFromContractWithCustomerIncludingAssessedTax",
-            "Revenues", "SalesRevenueNet", "SalesRevenueGoodsNet"],
+            "Revenues", "SalesRevenueNet", "SalesRevenueGoodsNet",
+            "RevenuesNetOfInterestExpense"],
   net_income: ["NetIncomeLoss", "ProfitLoss",
                "NetIncomeLossAvailableToCommonStockholdersBasic"],
   operating_cash_flow: ["NetCashProvidedByUsedInOperatingActivities",
                         "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations"],
+  //: The two "Other" tags are the capex line for Eli Lilly
+  //  (PaymentsToAcquireOtherPropertyPlantAndEquipment, $7.8bn FY2025) and
+  //  Verizon (PaymentsToAcquireOtherProductiveAssets, $17.0bn). Without them
+  //  both fell back to OCF minus D&A, overstating Lilly's FCF by ~60%.
+  //  They rank last, so a filer tagging the main line too still uses it.
   capital_expenditures: ["PaymentsToAcquirePropertyPlantAndEquipment",
-                         "PaymentsToAcquireProductiveAssets"],
+                         "PaymentsToAcquireProductiveAssets",
+                         "PaymentsToAcquireOtherPropertyPlantAndEquipment",
+                         "PaymentsToAcquireOtherProductiveAssets"],
   depreciation_amortization: ["DepreciationDepletionAndAmortization",
                               "DepreciationAmortizationAndAccretionNet",
                               "DepreciationAndAmortization", "Depreciation"],
@@ -570,12 +597,12 @@ function pickCoverShares(dei) {
   return { value: latest[0].val, end, tag: "dei:EntityCommonStockSharesOutstanding", unit: "shares" };
 }
 
-function pickBalanceSheet(facts, taxonomy, currency) {
+function pickBalanceSheet(facts, taxonomy, currency, anchorOverride = null) {
   const ifrs = taxonomy === "ifrs-full";
   const stockTags = ifrs ? IFRS_STOCK_TAGS : STOCK_TAGS;
   const debtTags = ifrs ? IFRS_DEBT_TAGS : DEBT_TAGS;
-  const cashPick = pickInstant(facts, stockTags.cash_and_equivalents, currency);
-  let anchor = cashPick ? cashPick.end : null;
+  const cashPick = anchorOverride ? null : pickInstant(facts, stockTags.cash_and_equivalents, currency);
+  let anchor = anchorOverride || (cashPick ? cashPick.end : null);
   if (!anchor) {
     const allDebt = Object.values(debtTags).flat();
     anchor = pickInstant(facts, allDebt, currency)?.end || null;
@@ -647,6 +674,36 @@ function pickBalanceSheet(facts, taxonomy, currency) {
   out.hasLongTerm = out.neverBorrowed || out.debtParts.some((p) => !/Current|Shortterm|ShortTerm|CommercialPaper/.test(p.tag)
     || /IncludingCurrentMaturities/.test(p.tag));
   return out;
+}
+
+//: pickBalanceSheet at the freshest cash date, falling back to an earlier
+//  date when that balance sheet tags no debt at all. GM's 10-Q (2026-06-30)
+//  carries no debt lines while its 10-K (2025-12-31) tags $131.6bn, so total
+//  debt came back missing and equity was overstated by the whole amount.
+//  Cash and debt are still read from ONE date (the earlier one), never mixed;
+//  only a date with genuine long-term debt qualifies, and no more than a year
+//  back, so a stale balance sheet never stands in silently (the handler notes it).
+function pickBalanceSheetWithFallback(facts, taxonomy, currency) {
+  const bs = pickBalanceSheet(facts, taxonomy, currency);
+  if (bs.debt !== null || !bs.anchor) return bs;
+  const cashTags = (taxonomy === "ifrs-full" ? IFRS_STOCK_TAGS : STOCK_TAGS).cash_and_equivalents;
+  const ends = new Set();
+  for (const tag of cashTags) {
+    for (const rows of Object.values((facts[tag] && facts[tag].units) || {})) {
+      for (const r of rows) {
+        if (r.start || !r.end || r.end >= bs.anchor) continue;
+        if ((Date.parse(bs.anchor) - Date.parse(r.end)) / 86_400_000 <= 400) ends.add(r.end);
+      }
+    }
+  }
+  for (const end of [...ends].sort().reverse()) {
+    const alt = pickBalanceSheet(facts, taxonomy, currency, end);
+    if (alt.debt !== null && alt.hasLongTerm && !alt.neverBorrowed) {
+      alt.fellBackFrom = bs.anchor;
+      return alt;
+    }
+  }
+  return bs;
 }
 
 /**
@@ -1539,7 +1596,7 @@ module.exports = async (req, res) => {
 
   let facts, entityName, taxonomy = "us-gaap", deiFacts = null, predecessorNote = null;
   //: Started alongside companyfacts so it adds no latency.
-  const sicPromise = fetchSicCode(entry.cik);
+  const filerInfoPromise = fetchFilerInfo(entry.cik);
   try {
     const t0 = Date.now();
     let r = await secFetch(FACTS_URL(entry.cik)).catch((e) => e);
@@ -1626,6 +1683,25 @@ module.exports = async (req, res) => {
   for (const [k, tags] of Object.entries(flowTags)) {
     flows[k] = pickAnnualSeries(facts, tags, 6, reportingCurrency, k === "revenue");
   }
+  //: Every income and cash-flow concept must describe the same fiscal year
+  //  as revenue. A revenue tag the filer abandoned years ago (Morgan Stanley's
+  //  `Revenues` ended FY2014, Wells Fargo's FY2019) is still the freshest
+  //  candidate when nothing newer is in the cascade, and it paired 2014
+  //  revenue with 2025 net income into a 49% "margin". Revenue more than a
+  //  year behind the company's own net income or operating cash flow is
+  //  stale, not current: drop it (it is reported missing) rather than show it.
+  let staleRevenueDropped = false;
+  {
+    const lastEnd = (k) => flows[k]?.series?.length ? flows[k].series[flows[k].series.length - 1].end : null;
+    const freshest = [lastEnd("net_income"), lastEnd("operating_cash_flow")].filter(Boolean).sort().pop();
+    const revEnd = lastEnd("revenue");
+    if (freshest && revEnd && (Date.parse(freshest) - Date.parse(revEnd)) / 86_400_000 > 400) {
+      notes.push(`Revenue is not shown: the only revenue tag this filer still carries ends at ${revEnd}, `
+        + `while its net income runs to ${freshest}, so showing it would mix fiscal years.`);
+      flows.revenue = null;
+      staleRevenueDropped = true;
+    }
+  }
   for (const [k, tags] of Object.entries(stockTags)) {
     //: Share counts are unit-'shares' so the currency pin doesn't apply, and
     //  they get the fragment guard — see pickInstant's minRelative.
@@ -1643,8 +1719,14 @@ module.exports = async (req, res) => {
   //  2011 (its classes are now dimensioned), and that 941,481 figure beside a
   //  2026 price read as a $0.5bn company. It must be no older than half a
   //  year before the latest fiscal year end.
+  //: When the stale-revenue guard above dropped the series, net income's
+  //  year stands in so the cover-count and weighted-average share fallbacks
+  //  still have a date. A filer that never tagged revenue keeps today's
+  //  behaviour (no date, so no fallback).
   const latestRevEnd = flows.revenue?.series?.length
-    ? flows.revenue.series[flows.revenue.series.length - 1].end : null;
+    ? flows.revenue.series[flows.revenue.series.length - 1].end
+    : (staleRevenueDropped && flows.net_income?.series?.length
+        ? flows.net_income.series[flows.net_income.series.length - 1].end : null);
   const coverCandidate = pickCoverShares(deiFacts);
   const deiShares = coverCandidate && latestRevEnd
     && (Date.parse(latestRevEnd) - Date.parse(coverCandidate.end)) / 86_400_000 <= 180
@@ -1758,7 +1840,7 @@ module.exports = async (req, res) => {
   //: Cash, investments and debt all from ONE balance sheet — see
   //  pickBalanceSheet and the DEBT_TAGS note for the four ways the old
   //  independent picks went wrong.
-  const bs = pickBalanceSheet(facts, taxonomy, reportingCurrency);
+  const bs = pickBalanceSheetWithFallback(facts, taxonomy, reportingCurrency);
   let financeLease, operatingLease;
   if (taxonomy === "ifrs-full") {
     financeLease = pickInstant(facts, ["LeaseLiabilities"], reportingCurrency);
@@ -1827,6 +1909,10 @@ module.exports = async (req, res) => {
     const lines = bs.debtParts.map((p) => p.tag).join(" + ");
     notes.push(`Cash and total debt are from the balance sheet dated ${bs.anchor}`
       + (lines ? `; total debt = ${lines}.` : "."));
+    if (bs.fellBackFrom) {
+      notes.push(`The newer balance sheet dated ${bs.fellBackFrom} tags no borrowings, so cash and `
+        + `total debt are both taken from the ${bs.anchor} balance sheet instead.`);
+    }
   }
   if (bs.neverBorrowed) {
     notes.push("Total debt is 0: this company has never tagged a borrowing of any kind in its "
@@ -2107,7 +2193,25 @@ module.exports = async (req, res) => {
   }
 
   const latestEnd = revSeries.length ? revSeries[revSeries.length - 1].end
-                                     : (stocks.cash_and_equivalents?.end || null);
+                                     : (staleRevenueDropped && flows.net_income?.series?.length
+                                         ? flows.net_income.series[flows.net_income.series.length - 1].end
+                                         : (stocks.cash_and_equivalents?.end || null));
+
+  //: EDGAR's structured data can trail a filing by months: Toyota, Sony,
+  //  Infosys, HDFC Bank and TSMC had 2026 20-Fs on file while companyfacts
+  //  still held only the year before. Nothing in the figures shows that, so
+  //  say it whenever the newest annual report ends ten months or more past
+  //  the year the data covers.
+  const filerInfo = await filerInfoPromise;
+  const newest = filerInfo.latestAnnual;
+  const dataEnd = flows.net_income?.series?.length
+    ? flows.net_income.series[flows.net_income.series.length - 1].end : latestEnd;
+  if (newest && dataEnd && (Date.parse(newest.reportDate) - Date.parse(dataEnd)) / 86_400_000 > 300) {
+    notes.push(`A newer annual report is on file with the SEC (${newest.form} for the year ending `
+      + `${newest.reportDate}, filed ${newest.filed || "recently"}), but SEC's structured data does not `
+      + `include its statements yet, so the financials here are for the year ending ${dataEnd}. `
+      + `Upload the newer annual report as a PDF for the latest figures.`);
+  }
 
   //: Interest expense from InterestIncomeExpenseNet, applied through the
   //  sign rule in interestExpenseFromRow(): a positive net value is net
@@ -2217,7 +2321,7 @@ module.exports = async (req, res) => {
     //  us-gaap tried first, ifrs-full on a 20-F filer) — see the comment
     //  above `facts = (j.facts && j.facts["us-gaap"])`.
     accounting_standard: taxonomy,
-    sic_code: await sicPromise,
+    sic_code: filerInfo.sic,
     currency: reportingCurrency || (priceInfo ? priceInfo.currency : "USD"),
     statement_basis: "annual",
     //: Provenance. assumptions.py reads this to decide whether a figure may be
