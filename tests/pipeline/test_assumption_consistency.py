@@ -357,3 +357,13 @@ def test_hidden_debt_on_a_ticker_load_counts_leases_and_reports_partial():
     b = AutoAssumer().build(_us(net_income=50.0))
     df2 = AnalysisRunner(_us(net_income=50.0)).run(b, [hd]).summary_frame()
     assert df2.loc[df2["Model"] == hd, "Status"].iloc[0] == "UNASSESSED"
+
+
+def test_ocf_minus_da_fcf_reports_dcf_partial():
+    """TM/INFY/PDD tag no capex line; the ticker path builds FCF as OCF − D&A
+    and the DCF must say so rather than read OK."""
+    data = _us(current_price=50.0, shares_outstanding=100.0, total_debt=10.0,
+               cash_and_equivalents=5.0, fcf_basis="ocf_minus_da")
+    a = AutoAssumer().build(data)
+    assert DCF in a.partly_assessed and "depreciation" in a.partial[DCF]
+    assert "D&A" in a.rationale[("DCF", "free_cash_flows")]

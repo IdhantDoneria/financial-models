@@ -949,7 +949,10 @@ console.log("\n· Balance sheet — every line from one date, debt summed by rol
     "LongTermDebt is not summed with its own current portion");
 
   // No debt tag on the date: missing, never zero.
-  const noDebt = { CashAndCashEquivalentsAtCarryingValue: T([inst("2026-06-30", 1e9)]) };
+  // A company that has borrowed (maturity schedule) but whose face lines are
+  // unrecognisable (Berkshire's custom tags): missing, never zero.
+  const noDebt = { CashAndCashEquivalentsAtCarryingValue: T([inst("2026-06-30", 1e9)]),
+                   LongTermDebtMaturitiesRepaymentsOfPrincipalInYearTwo: T([inst("2025-12-31", 6.6e9)]) };
   ok(pickBalanceSheet(noDebt, "us-gaap", "USD").debt === null, "no debt line -> null, not 0");
 
   // TSMC: bonds are a separate IFRS line, and current bonds exist only in TWD.
@@ -1044,6 +1047,67 @@ console.log("\n· Balance sheet — every line from one date, debt summed by rol
   const smfgDei = { EntityCommonStockSharesOutstanding: { units: { shares: [
     { end: "2026-03-31", val: 3.9e9, form: "20-F", filed: "2026-06-27" }] } } };
   eq(latestFilingForm([smfgDei, {}]), "20-F", "SMFG: form read from the cover facts");
+
+  // Alibaba: no role tag, three face-line components on the anchor date.
+  const { hasEverBorrowed, pickWeightedAverageShares } = _internals;
+  const baba = {
+    CashAndCashEquivalentsAtCarryingValue: T([inst("2026-03-31", 19.07e9)]),
+    LongTermLoansFromBank: T([inst("2026-03-31", 6.879e9)]),
+    SeniorLongTermNotes: T([inst("2026-03-31", 17.03e9)]),
+    ConvertibleDebtNoncurrent: T([inst("2026-03-31", 8.098e9)]),
+    SeniorNotesCurrent: T([inst("2025-03-31", 0)]),
+  };
+  const bb = pickBalanceSheet(baba, "us-gaap", "USD");
+  eq(Math.round(bb.debt / 1e6), 32007, "BABA: bank loans + senior notes + convertibles");
+  ok(bb.fromComponents, "BABA: flagged as summed from components");
+  // A role tag on the date wins; components are never added on top of it.
+  const both = { ...aapl, SeniorLongTermNotes: T([inst("2026-06-27", 60e9)]) };
+  eq(Math.round(pickBalanceSheet(both, "us-gaap", "USD").debt / 1e6), 84344,
+    "components are ignored when a role tag exists (no double count)");
+
+  // Infosys: nothing borrowed, ever — a 4.5% rate tag is not a borrowing.
+  const infy = {
+    CashAndCashEquivalents: { units: { USD: [inst("2025-03-31", 2.861e9)] } },
+    BankBorrowingsUndiscountedCashFlows: { units: { USD: [inst("2025-03-31", 0)] } },
+    WeightedAverageLesseesIncrementalBorrowingRateAppliedToLeaseLiabilitiesRecognisedAtDateOfInitialApplicationOfIFRS16:
+      { units: { pure: [inst("2019-04-01", 0.045)] } },
+  };
+  const ib = pickBalanceSheet(infy, "ifrs-full", "USD");
+  ok(ib.debt === 0 && ib.neverBorrowed, "INFY: debt-free, reported as 0 with the reason");
+  // PDD repaid its convertibles in 2025 and tags no debt line now: unknown,
+  // not zero — it HAS borrowed before.
+  const pdd = {
+    CashAndCashEquivalentsAtCarryingValue: T([inst("2025-12-31", 8e9)]),
+    ConvertibleDebtCurrent: T([inst("2024-12-31", 0.727e9)]),
+  };
+  ok(pickBalanceSheet(pdd, "us-gaap", "USD").debt === null, "PDD: a past borrower with no line now is missing, not 0");
+  ok(hasEverBorrowed({ LongTermDebtMaturitiesRepaymentsOfPrincipalInYearTwo: T([inst("2025-12-31", 6.6e9)]) }),
+    "a maturity schedule alone (Berkshire) proves borrowing");
+  ok(!hasEverBorrowed({ AvailableForSaleSecuritiesDebtSecurities: T([inst("2026-06-30", 17e9)]) }),
+    "debt securities HELD are not borrowings");
+
+  // META: the quarter's weighted average, not year-to-date, at the same end.
+  const meta = { WeightedAverageNumberOfSharesOutstandingBasic: { units: { shares: [
+    { start: "2026-01-01", end: "2026-06-30", val: 2.551e9, filed: "2026-07-30" },
+    { start: "2026-04-01", end: "2026-06-30", val: 2.543e9, filed: "2026-07-30" },
+    { start: "2025-01-01", end: "2025-12-31", val: 2.59e9, filed: "2026-01-29" }] } } };
+  const w = pickWeightedAverageShares(meta, "us-gaap");
+  ok(w.value === 2.543e9 && w.start === "2026-04-01", "META: latest quarter's basic weighted average");
+  ok(IFRS_FLOW_TAGS.dividends_per_share.includes("DividendsPaidOrdinarySharesPerShare"),
+    "Shell/AstraZeneca's plural dividend tag is read");
+  // Novo: a bare "DKK" unit of monthly rows beside the real DKK/shares figure.
+  const nvo = { DividendsPaidOrdinarySharesPerShare: { units: {
+    DKK: [{ start: "2020-01-01", end: "2020-12-31", val: 9.1 }, { start: "2020-08-01", end: "2020-08-31", val: 3.25 }],
+    "DKK/shares": [yr(2024, 11.4), yr(2025, 11.7)] } } };
+  eq(pickAnnualSeries(nvo, IFRS_FLOW_TAGS.dividends_per_share, 6, "DKK").series.pop().val, 11.7,
+    "NVO: DKK/shares 11.70, not the mislabelled bare-DKK rows");
+  // Sony: cash paid in the year (a ¥10 interim) must not beat the ¥95 recognised.
+  const sony = {
+    DividendsPaidOrdinarySharesPerShare: { units: { "JPY/shares": [{ start: "2024-04-01", end: "2025-03-31", val: 10 }] } },
+    DividendsRecognisedAsDistributionsToOwnersPerShare: { units: { "JPY/shares": [{ start: "2024-04-01", end: "2025-03-31", val: 95 }] } },
+  };
+  eq(pickAnnualSeries(sony, IFRS_FLOW_TAGS.dividends_per_share, 6, "JPY").series.pop().val, 95,
+    "SONY: recognised dividend wins a same-year tie over cash paid");
 }
 
 (async () => {
@@ -1073,7 +1137,9 @@ console.log("\n· Balance sheet — every line from one date, debt summed by rol
         1: { cik_str: 1000184, ticker: "SAP", title: "SAP SE" },
         2: { cik_str: 9999999, ticker: "ZZADR", title: "Foreign Co" },
         3: { cik_str: 1144967, ticker: "HDB", title: "HDFC BANK LTD" },
-        4: { cik_str: 2115436, ticker: "XOM", title: "ExxonMobil Holdings Corp" } });
+        4: { cik_str: 2115436, ticker: "XOM", title: "ExxonMobil Holdings Corp" },
+        5: { cik_str: 1094517, ticker: "TM", title: "TOYOTA MOTOR CORP" },
+        6: { cik_str: 1000275, ticker: "RY", title: "ROYAL BANK OF CANADA" } });
       if (url.includes("companyfacts")) { factsCalls++; return factsBehaviour(); }
       if (url.includes("finance.yahoo.com")) return json(chart);
       return { ok: false, status: 404, json: async () => ({}), text: async () => "" };
@@ -1221,6 +1287,41 @@ console.log("\n· Balance sheet — every line from one date, debt summed by rol
     eq(X.revenue, 332.238e9, "XOM: FY2025 revenue from the predecessor registrant");
     eq(Math.round(X.total_debt / 1e6), 42368, "XOM: 2026 debt from the successor's balance sheet");
     ok((xom.notes || []).some((n) => /predecessor registrant/.test(n)), "XOM: the merge is disclosed");
+
+    // Toyota-style: OCF and D&A tagged, no capex line -> OCF − D&A, flagged.
+    const tm = await runCase({
+      ticker: "TM", cik: "0001094517",
+      factsByCik: { "0001094517": { entityName: "TOYOTA MOTOR CORP", facts: { "ifrs-full": {
+        Revenue: { units: { JPY: [2022, 2023, 2024].map((y) => yr(y, 40e12)) } },
+        CashFlowsFromUsedInOperatingActivities: { units: { JPY: [yr(2022, 3.0e12), yr(2023, 3.5e12), yr(2024, 3.7e12)] } },
+        DepreciationAndAmortisationExpense: { units: { JPY: [yr(2022, 2.0e12), yr(2023, 2.1e12), yr(2024, 2.25e12)] } },
+        CashAndCashEquivalents: { units: { JPY: [inst("2024-12-31", 15e12)] } },
+      } } } },
+      quotes: { TM: [190, "USD"], "7203.T": [190 * 158 / 10, "JPY"] },
+      rates: { JPY: 158 },
+    });
+    const TF = tm && tm.fields || {};
+    eq(TF.fcf_basis, "ocf_minus_da", "TM: FCF built as OCF − D&A and flagged");
+    eq(JSON.stringify(TF.free_cash_flows), JSON.stringify([1.0e12, 1.4e12, 1.45e12]),
+      "TM: each year's OCF minus that year's D&A");
+    ok(!(tm.notes || []).some((n) => n.startsWith("No capital-expenditure tag found")),
+      "TM: no contradictory 'could not be derived' note");
+
+    // A deposit-taking bank never gets the proxy (its OCF is loan/deposit flow).
+    const bank = await runCase({
+      ticker: "RY", cik: "0001000275",
+      factsByCik: { "0001000275": { entityName: "ROYAL BANK OF CANADA", facts: { "ifrs-full": {
+        Revenue: { units: { CAD: [2022, 2023, 2024].map((y) => yr(y, 60e9, "40-F")) } },
+        CashFlowsFromUsedInOperatingActivities: { units: { CAD: [yr(2022, -20e9, "40-F"), yr(2023, 45e9, "40-F"), yr(2024, 12e9, "40-F")] } },
+        DepreciationAndAmortisationExpense: { units: { CAD: [2022, 2023, 2024].map((y) => yr(y, 2e9, "40-F")) } },
+        DepositsFromBanks: { units: { CAD: [inst("2024-12-31", 30e9, "40-F")] } },
+        CashAndCashEquivalents: { units: { CAD: [inst("2024-12-31", 50e9, "40-F")] } },
+      } } } },
+      quotes: { RY: [200, "USD"] },
+      rates: { CAD: 1.4 },
+    });
+    ok(bank && bank.fields && !bank.fields.free_cash_flows.length && bank.fields.fcf_basis === null,
+      "RY: no OCF − D&A proxy for a bank");
   } catch (e) {
     ok(false, "handler basis simulation ran", e && e.stack);
   } finally {

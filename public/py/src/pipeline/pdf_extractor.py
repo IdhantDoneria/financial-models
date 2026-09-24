@@ -126,6 +126,10 @@ class ExtractedFinancials:
     interest_expense_series: list[float | None] = field(default_factory=list)
     sbc_series: list[float | None] = field(default_factory=list)
     fcf_period_ends: list[str] = field(default_factory=list)
+    #: How ``free_cash_flows`` was built on the ticker path: ``"reported"``
+    #: (operating cash flow − capex) or ``"ocf_minus_da"`` (no capex line
+    #: tagged, so D&A stands in for maintenance capex). ``None`` for PDFs.
+    fcf_basis: str | None = None
     #: Where the cash-flow statement puts interest paid: ``"operating"``
     #: (always under US GAAP), ``"financing"`` (allowed under IFRS / Ind AS),
     #: or ``None`` when unknown. Decides whether FCF gets interest added back.
@@ -229,6 +233,7 @@ class ExtractedFinancials:
             "interest_expense_series": self.interest_expense_series,
             "sbc_series": self.sbc_series,
             "fcf_period_ends": self.fcf_period_ends,
+            "fcf_basis": self.fcf_basis,
             "interest_paid_classification": self.interest_paid_classification,
             "price_as_of": self.price_as_of,
             "monthly_returns": self.monthly_returns,
