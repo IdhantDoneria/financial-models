@@ -18,7 +18,7 @@ Both produce an :class:`AssumptionSet`: a single dict of ``{model_name:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from .pdf_extractor import ExtractedFinancials
@@ -107,6 +107,8 @@ class ManualOverrides:
     cl2_probability: float | None = None
     # Reverse DCF — total addressable market, almost never a labelled figure.
     total_addressable_market: float | None = None
+    # Reverse DCF revenue mode (cash-burning companies) — steady-state FCF margin.
+    target_fcf_margin: float | None = None
 
 
 # --------------------------------------------------------------------------- #
@@ -318,6 +320,62 @@ SECTOR_BASELINES: dict[str, dict[str, float]] = {
     "Shipbuilding & Marine":             {"beta": 0.75, "operating_margin": 0.1260, "revenue_growth": -0.0012},
 }
 
+#: SEC SIC code ranges -> the SECTOR_BASELINES industry they belong to, for
+#: ticker loads (which carry an SIC code but no text to classify). A range is
+#: listed only where the SIC definition and the Damodaran industry match;
+#: anything else (aerospace, health plans, "business services NEC" such as
+#: Visa) stays unmapped and falls back to the market's 1.0, as before.
+#:
+#: Oil and gas (1311, 2911) are deliberately NOT mapped. Their sector betas
+#: (0.30 integrated, 0.72 E&P) are the same low recent correlations that the
+#: significance test rejects in a company's own regression: Shell's 0.10
+#: would be replaced by 0.72, XOM's by 0.30, and the DCF would be back near
+#: 4x the market value. Commodity chemicals (DOW, 2821) are not "Specialty".
+_SIC_SECTORS: tuple[tuple[int, int, str], ...] = (
+    (1000, 1099, "Metals & Mining"), (1400, 1499, "Metals & Mining"),
+    (1500, 1799, "Engineering/Construction"),
+    (2000, 2079, "Food Processing"), (2090, 2099, "Food Processing"),
+    (2300, 2399, "Apparel"), (3020, 3021, "Apparel"), (3140, 3149, "Apparel"),
+    (2710, 2741, "Publishing & Newspapers"),
+    (2830, 2836, "Drugs (Pharmaceutical)"),
+    (3240, 3299, "Building Materials"),
+    (3310, 3317, "Steel"), (3330, 3399, "Metals & Mining"),
+    (3510, 3569, "Machinery"), (3580, 3599, "Machinery"),
+    (3674, 3674, "Semiconductor"),
+    (3711, 3716, "Auto & Truck"),
+    (3730, 3732, "Shipbuilding & Marine"),
+    (3840, 3851, "Healthcare Products"),
+    (4011, 4499, "Transportation"), (4513, 4513, "Transportation"), (4700, 4799, "Transportation"),
+    (4512, 4512, "Air Transport"), (4522, 4522, "Air Transport"),
+    (4812, 4812, "Telecom (Wireless)"), (4813, 4899, "Telecom Services"),
+    (4911, 4939, "Power"),
+    (5311, 5331, "Retail (General)"), (5399, 5399, "Retail (General)"),
+    (5411, 5499, "Retail (Grocery and Food)"),
+    (6020, 6029, "Bank (Money Center)"),
+    (6311, 6323, "Insurance (General)"), (6325, 6399, "Insurance (General)"),
+    (6500, 6599, "Real Estate (General/Diversified)"),
+    (7011, 7011, "Hotel/Gaming"), (7990, 7999, "Hotel/Gaming"),
+    (7370, 7370, "Software (Internet)"), (7374, 7374, "Software (Internet)"),
+    (7371, 7371, "Computer Services"), (7373, 7373, "Computer Services"),
+    (7372, 7372, "Software (System & Application)"),
+)
+
+
+def sector_from_sic(sic: int | None) -> str | None:
+    """The SECTOR_BASELINES industry for an SEC SIC code, or ``None``."""
+    if sic is None:
+        return None
+    for lo, hi, sector in _SIC_SECTORS:
+        if lo <= sic <= hi:
+            return sector
+    return None
+
+
+#: Regulated utilities (electric, gas, combination): they fund rate-base
+#: growth with new debt, so free cash flow to the firm is persistently low or
+#: negative (Duke: negative in five of six years) and a DCF on it misleads.
+_UTILITY_SIC_RANGES = ((4900, 4949),)
+
 
 class AutoAssumer:
     """Fill every missing model input with a practitioner-style default.
@@ -446,6 +504,44 @@ class AutoAssumer:
         return data.sector in _COMMODITY_SECTORS
 
     @staticmethod
+    def _prepare(data: ExtractedFinancials) -> tuple[ExtractedFinancials, dict[str, Any]]:
+        """Normalise the extraction before any assumption is built.
+
+        * A ticker load carries an SIC code but no sector text: map it to the
+          SECTOR_BASELINES industry (see :data:`_SIC_SECTORS`), so the beta,
+          margin and growth fallbacks use the industry, not a flat default.
+        * A manufacturer with a captive finance arm (``finance_arm_debt``):
+          value the industrial business. Its debt is the total less the arm's,
+          and only the industrial share of interest is interest on it. The
+          arm's borrowings fund its loan book, which is not in the DCF either.
+
+        Returns the adjusted copy and what changed, for the rationale.
+        """
+        changes: dict[str, Any] = {}
+        info: dict[str, Any] = {"sic_sector": None, "captive": None}
+        if data.sector is None:
+            mapped = sector_from_sic(data.sic_code)
+            if mapped:
+                changes["sector"] = mapped
+                info["sic_sector"] = data.sic_code
+        fin, total = data.finance_arm_debt, data.total_debt
+        if fin and total and 0 < fin <= total:
+            share = (total - fin) / total
+            changes["total_debt"] = total - fin
+            if data.interest_expense is not None:
+                changes["interest_expense"] = data.interest_expense * share
+            if data.interest_expense_series:
+                changes["interest_expense_series"] = [
+                    None if v is None else v * share for v in data.interest_expense_series]
+            info["captive"] = {"finance": fin, "total": total, "industrial_share": share}
+        return (replace(data, **changes) if changes else data), info
+
+    @staticmethod
+    def _is_utility(data: ExtractedFinancials) -> bool:
+        return data.sic_code is not None and any(
+            lo <= data.sic_code <= hi for lo, hi in _UTILITY_SIC_RANGES)
+
+    @staticmethod
     def _is_financial_firm(data: ExtractedFinancials) -> bool:
         """Whether this is a bank, broker or insurer — see
         :data:`_FINANCIAL_SIC_RANGES`."""
@@ -478,6 +574,11 @@ class AutoAssumer:
         rate (see :data:`_COMMODITY_SIC_RANGES`)."""
         if self._is_commodity_producer(data):
             return g_terminal, "commodity producer"
+        # A REIT grows mostly by buying property with new equity and debt.
+        # Its cash flow here excludes those purchases, so it must not also get
+        # the revenue growth they bought: only organic (terminal-rate) growth.
+        if data.sic_code == 6798:
+            return g_terminal, "REIT: organic growth only, acquisitions are not in its cash flow"
         sector_baseline = self._sector_baseline(data)
         if data.revenue_growth:
             return data.revenue_growth, "filing"
@@ -532,6 +633,7 @@ class AutoAssumer:
             A populated :class:`AssumptionSet` covering all twelve models.
         """
         o = overrides or ManualOverrides()
+        data, prep = self._prepare(data)
         rf = o.risk_free_rate if o.risk_free_rate is not None else self.rf
         sector_baseline = self._sector_baseline(data)
         # A real, filing-disclosed beta always wins; failing that, a real
@@ -665,6 +767,17 @@ class AutoAssumer:
         # single-figure filing already was.
         lease_rate = rf + 0.015       # same credit spread as _wacc's default kd
         base_fcf, base_note = self._normalised_base(data, tax, lease_rate)
+        # Stock comp is a real cost and is deducted. But when that deduction
+        # alone turns a company's positive cash flow negative (Snowflake, Arm,
+        # Reddit), refusing the DCF leaves the user nothing: value it on the
+        # cash flow before stock comp and say, in the status, that the result
+        # is high by the dilution stock comp represents.
+        sbc_not_deducted = False
+        reported_base = self._reported_base(data)
+        if base_fcf <= 0 and reported_base is not None and reported_base > 0:
+            pre_sbc, pre_note = self._normalised_base(data, tax, lease_rate, deduct_sbc=False)
+            if pre_sbc > 0:
+                base_fcf, base_note, sbc_not_deducted = pre_sbc, pre_note, True
         fcfs = self._project_fcfs(base_fcf, data, g_terminal)
         spot = data.current_price or 100.0  # normalised units when unknown
         strike = o.strike_ratio * spot if o.strike_ratio else spot
@@ -858,8 +971,29 @@ class AutoAssumer:
                 "terminal_growth": g_terminal,
             },
         }
+        # A cash-burning company with real revenue: no FCF growth rate turns a
+        # negative base into a positive value, so solve for the REVENUE growth
+        # the price implies while the FCF margin moves from today's to a
+        # steady-state one. That target is an assumption, stated below.
+        rdcf_revenue_mode = (base_fcf <= 0 and data.free_cash_flows
+                             and data.revenue is not None and data.revenue > 0
+                             and not self._is_financial_firm(data))
+        target_margin = target_src = None
+        if rdcf_revenue_mode:
+            if o.target_fcf_margin is not None:
+                target_margin, target_src = o.target_fcf_margin, "manually set"
+            else:
+                op = sector_baseline["operating_margin"] if sector_baseline else 0.15
+                target_margin = op * (1 - tax)
+                target_src = (f"the {data.sector} sector's median operating margin {op:.1%} after "
+                              f"{tax:.0%} tax" if sector_baseline
+                              else f"a generic 15% operating margin after {tax:.0%} tax (no sector known)")
+            kwargs["Reverse DCF / Market-Implied Expectations"].update(
+                growth_profile="revenue", target_fcf_margin=target_margin, base_revenue=data.revenue)
 
         rationale: dict[tuple[str, str], str] = {}
+        sector_origin = (f" (industry from the company's SEC code {prep['sic_sector']})"
+                         if prep["sic_sector"] else "")
         we_shown = we_real if we_real is not None else self.we
         kd_shown = cost_of_debt_real if cost_of_debt_real is not None else rf + 0.015
         rationale[("DCF", "discount_rate")] = (
@@ -904,6 +1038,11 @@ class AutoAssumer:
                     f"trailing growth"
                     + (f" ({data.revenue_growth:.2%} a year)" if data.revenue_growth else "")
                     + " reflects the price cycle, not a rate it can compound at")
+        elif growth_src.startswith("REIT"):
+            fade = (f"projected {_FORECAST_YEARS} years at the {g_terminal:.2%} terminal rate — "
+                    f"a REIT grows mostly by buying property with new capital, and those "
+                    f"purchases are not deducted from its cash flow here, so it is credited "
+                    f"with organic growth only")
         else:
             fade = (f"projected {_FORECAST_YEARS} years, growth fading linearly from "
                     f"{g_used:.2%} ({growth_src}) to the {g_terminal:.2%} terminal rate")
@@ -916,7 +1055,12 @@ class AutoAssumer:
                 + (" Capex is not tagged in this filing, so each year's FCF is "
                    "operating cash flow minus depreciation & amortisation (D&A "
                    "standing in for maintenance capex)."
-                   if data.fcf_basis == "ocf_minus_da" else "")
+                   if data.fcf_basis == "ocf_minus_da"
+                   else " As a REIT, each year's FCF is operating cash flow minus recurring capital "
+                        "improvements (property acquisitions are growth investment)."
+                   if data.fcf_basis == "ocf_minus_recurring_capex"
+                   else " As a REIT with no recurring-capex line, each year's FCF is operating cash flow."
+                   if data.fcf_basis == "ocf_reit" else "")
             )
         elif data.revenue is None:
             rationale[("DCF", "free_cash_flows")] = (
@@ -947,7 +1091,7 @@ class AutoAssumer:
                 f"{data.market_correlation ** 2:.0%} of the stock's monthly moves (t = {beta_t:.1f}, "
                 f"below the {_BETA_MIN_T:.0f} needed to tell it apart from zero), so it is not "
                 f"used. "
-                + (f"{data.sector} sector median (Damodaran, Jan 2026) = {beta:.2f} instead."
+                + (f"{data.sector} sector median (Damodaran, Jan 2026){sector_origin} = {beta:.2f} instead."
                    if sector_baseline else
                    f"The market's own beta of {beta:.2f} is used instead, as when no "
                    f"regression is possible.")
@@ -963,7 +1107,7 @@ class AutoAssumer:
             rationale[("CAPM", "beta")] = self._beta_source(data)
         elif sector_baseline:
             rationale[("CAPM", "beta")] = (
-                f"{data.sector} sector median (Damodaran, Jan 2026) = {beta}."
+                f"{data.sector} sector median (Damodaran, Jan 2026){sector_origin} = {beta}."
             )
         else:
             rationale[("CAPM", "beta")] = f"Sector-neutral default = {beta}."
@@ -1288,7 +1432,22 @@ class AutoAssumer:
                 )
             unavailable["Discounted Cash Flow"] = why
             rationale[("DCF", "free_cash_flows")] = why
-        if base_fcf <= 0 and (data.free_cash_flows or data.revenue is not None):
+        RDCF_NAME = "Reverse DCF / Market-Implied Expectations"
+        DCF_NAME = "Discounted Cash Flow"
+
+        def add_partial(name: str, msg: str) -> None:
+            partial[name] = partial[name] + " " + msg if name in partial else msg
+            partly_assessed.add(name)
+
+        if rdcf_revenue_mode:
+            msg = (f"The free cash flow base is negative ({base_fcf:,.0f}), so this solves for the "
+                   f"REVENUE growth today's price implies, with the FCF margin moving in a straight "
+                   f"line from today's {base_fcf / data.revenue:.1%} to {target_margin:.1%} by year "
+                   f"{_FORECAST_YEARS} ({target_src}). The answer depends on that target margin; "
+                   f"set your own in MANUAL mode.")
+            add_partial(RDCF_NAME, msg)
+            rationale[("RDCF", "implied growth")] = msg
+        elif base_fcf <= 0 and (data.free_cash_flows or data.revenue is not None):
             reported = self._reported_base(data)
             after_sbc = (" (the reported figure is positive, but the base is "
                          "negative once stock-based compensation is deducted)"
@@ -1303,6 +1462,49 @@ class AutoAssumer:
             )
             unavailable.setdefault("Reverse DCF / Market-Implied Expectations", reason)
             rationale.setdefault(("RDCF", "base_fcf"), reason)
+
+        if sbc_not_deducted:
+            msg = ("Valued on free cash flow BEFORE stock-based compensation: deducting it, as the "
+                   "model normally does, turns this company's positive reported cash flow negative, "
+                   "and a DCF cannot value a permanent cash burn. Stock comp is a real cost paid in "
+                   "shares, so this value is high by the dilution it represents.")
+            add_partial(DCF_NAME, msg)
+            add_partial(RDCF_NAME, msg)
+        if prep["captive"]:
+            c = prep["captive"]
+            msg = (f"Industrial business only: {c['finance']:,.0f} of the {c['total']:,.0f} total debt "
+                   f"belongs to the captive finance arm and funds its customer loans, so it is left out "
+                   f"of net debt and WACC, and only the industrial share of interest is added back. The "
+                   f"consolidated cash flow still includes the finance arm's earnings, and its leasing "
+                   f"investment is not in capex, so treat the value as indicative.")
+            add_partial(DCF_NAME, msg)
+            rationale[("DCF", "net_debt")] = (
+                f"Industrial net debt: total debt {c['total']:,.0f} less the finance arm's "
+                f"{c['finance']:,.0f} (from the balance sheet's segment columns), less cash. "
+                + rationale.get(("DCF", "net_debt"), ""))
+        if self._is_utility(data):
+            add_partial(DCF_NAME,
+                "This is a regulated utility. Utilities fund the growth of their regulated asset "
+                "base with new borrowing, so free cash flow to the firm is persistently low or "
+                "negative and a DCF on it understates the business. The dividend (Gordon Growth) "
+                "is the conventional valuation for a utility.")
+        if data.fcf_basis == "ocf_reit":
+            add_partial(DCF_NAME,
+                "This REIT tags no recurring-capex line, so free cash flow is operating cash flow "
+                "with no maintenance deduction: the value is somewhat high.")
+        # ETFs, crypto, indices: there is no company behind the price, so no
+        # cash flow, dividend policy or balance sheet for these models to use.
+        kind = (data.instrument_type or "EQUITY").upper()
+        if kind != "EQUITY":
+            label = {"ETF": "an ETF", "CRYPTOCURRENCY": "a cryptocurrency", "MUTUALFUND": "a mutual fund",
+                     "INDEX": "an index"}.get(kind, f"a {kind.lower()}")
+            why = (f"This listing is {label}, not a company, so there are no company cash flows, "
+                   f"dividend policy or balance sheet for this model to value. The market models "
+                   f"(CAPM, VaR, options, MPT, Fama-French) still apply to its price history.")
+            for name in (DCF_NAME, "Gordon Growth Model", RDCF_NAME, "Ind AS 116 Hidden-Debt Normalizer"):
+                unavailable[name] = why
+                partial.pop(name, None)
+                partly_assessed.discard(name)
 
         return AssumptionSet(
             kwargs_by_model=kwargs,
@@ -1392,6 +1594,7 @@ class AutoAssumer:
 
     def _normalised_base(
         self, data: ExtractedFinancials, tax: float, lease_rate: float,
+        deduct_sbc: bool = True,
     ) -> tuple[float, str]:
         """Trailing free cash flow to the firm, normalised, plus how it was built.
 
@@ -1439,17 +1642,33 @@ class AutoAssumer:
                 if interest:
                     fcf += abs(interest) * (1 - tax)
                     n_int += 1
-            sbc = aligned(data.sbc_series, i, data.stock_based_compensation)
+            sbc = aligned(data.sbc_series, i, data.stock_based_compensation) if deduct_sbc else None
             if sbc:
                 fcf -= abs(sbc)
                 n_sbc += 1
             adjusted.append(fcf + lease_add)
         base = sum(adjusted) / len(adjusted)
 
-        parts = [f"average of the latest {len(adjusted)} reported year"
-                 f"{'s' if len(adjusted) > 1 else ''}"
-                 + (" (the full reported cycle, as this is a commodity producer)"
-                    if cycle and len(adjusted) > _BASE_YEARS else "")]
+        # A grower's plain average sits a year or more behind its current
+        # scale: three years of a company growing 20% average to about 80%
+        # of today's. Averaging the FCF MARGIN instead keeps the smoothing
+        # (one year's working-capital swing still can't set the base) and
+        # applies it to the latest revenue. Not for commodity producers,
+        # whose latest revenue is one point on the price cycle.
+        revs = [aligned(data.revenue_series, i, None) for i in idx]
+        margin_based = (not cycle and len(adjusted) > 1
+                        and all(r is not None and r > 0 for r in revs))
+        if margin_based:
+            margin = sum(a / r for a, r in zip(adjusted, revs)) / len(adjusted)
+            base = margin * revs[0]
+            parts = [f"the average FCF margin of the latest {len(adjusted)} reported years "
+                     f"({margin:.1%}) applied to the latest revenue ({revs[0]:,.0f}), so a "
+                     f"growing or shrinking company's base reflects its current scale"]
+        else:
+            parts = [f"average of the latest {len(adjusted)} reported year"
+                     f"{'s' if len(adjusted) > 1 else ''}"
+                     + (" (the full reported cycle, as this is a commodity producer)"
+                        if cycle and len(adjusted) > _BASE_YEARS else "")]
         parts.append(f"+ after-tax interest ({n_int} of {len(adjusted)} years)" if n_int
                      else ("interest not added back (interest paid is classified as financing, "
                            "so operating cash flow never deducted it)"
@@ -1461,6 +1680,7 @@ class AutoAssumer:
                            "presented under financing)"
                            if not add_interest else "no interest figure to add back"))
         parts.append(f"− stock-based compensation ({n_sbc} of {len(adjusted)} years)" if n_sbc
+                     else "stock-based compensation NOT deducted (see the DCF status)" if not deduct_sbc
                      else "no stock-based compensation figure to deduct")
         if lease_add:
             parts.append(f"+ after-tax operating-lease interest ({lease_rate:.2%} on the lease liability)")

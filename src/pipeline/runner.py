@@ -72,7 +72,8 @@ class AnalysisReport:
         rows = []
         for name, res in self.results.items():
             is_partial = name in self.assumptions.partial
-            headline = self._headline(name, res, currency_symbol, partial=is_partial)
+            headline = self._headline(name, res, currency_symbol, partial=is_partial,
+                                      price=self.company.current_price)
             status = ("OK" if not is_partial
                       else "PARTIAL" if name in self.assumptions.partly_assessed
                       else "UNASSESSED")
@@ -129,6 +130,7 @@ class AnalysisReport:
     @staticmethod
     def _headline(
         name: str, res: dict[str, Any], currency_symbol: str = "$", partial: bool = False,
+        price: float | None = None,
     ) -> str:
         """Pick the single most-useful number per model for the summary row.
 
@@ -154,6 +156,20 @@ class AnalysisReport:
             "Ind AS 116 Hidden-Debt Normalizer": ("adjusted_net_debt", "$"),
             "Reverse DCF / Market-Implied Expectations": ("implied_fcf_cagr", "%"),
         }
+        # The DCF answers "what is a share worth?", so with a share count its
+        # headline is value per share beside the price the user can compare it
+        # to. A bare enterprise value ("$56,731,867,744.10") answered nothing
+        # a reader could act on. Without shares, the enterprise value, labelled.
+        if name == "Discounted Cash Flow":
+            pps, ev = res.get("price_per_share"), res.get("enterprise_value")
+            if isinstance(pps, (int, float, np.floating)):
+                return (f"{currency_symbol}{pps:,.2f} / share"
+                        + (f" · price {currency_symbol}{price:,.2f}" if price else ""))
+            if isinstance(ev, (int, float, np.floating)):
+                return f"{currency_symbol}{ev:,.0f} enterprise value"
+        if name == "Reverse DCF / Market-Implied Expectations" and res.get("growth_profile") == "revenue":
+            g = res.get("implied_revenue_cagr")
+            return f"{g * 100:.2f}% revenue growth" if isinstance(g, (int, float)) else "-"
         key, unit = picks.get(name, (None, ""))
         if partial and name in AnalysisReport._PERCENT_WHEN_PARTIAL:
             unit = "%"

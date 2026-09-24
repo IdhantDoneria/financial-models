@@ -174,3 +174,32 @@ def test_scorer_components(cls):
     assert scorer.score_clarity()[0] >= 9.0
     assert scorer.score_accuracy()[0] >= 9.0
     assert scorer.score_production()[0] >= 9.0
+
+
+def test_reverse_dcf_revenue_mode_round_trips_to_the_market_ev():
+    """A cash-burning company: FCF -2.5bn on 6bn revenue, margin moving to 8%
+    over 10 years. The solved revenue growth must reproduce the price."""
+    from src import DiscountedCashFlowModel, ReverseDCFModel
+    m = ReverseDCFModel(current_price=15, shares_outstanding=1.2e9, net_debt=-5e9, base_fcf=-2.5e9,
+                        base_revenue=6e9, discount_rate=0.11, terminal_growth=0.025, years=10,
+                        growth_profile="revenue", target_fcf_margin=0.08)
+    res = m.calculate()
+    path = m._fcf_path(res["implied_revenue_cagr"])
+    assert path[-1] == pytest.approx(6e9 * (1 + res["implied_revenue_cagr"]) ** 10 * 0.08)
+    ev = DiscountedCashFlowModel(free_cash_flows=path, discount_rate=0.11,
+                                 terminal_growth=0.025).calculate()["enterprise_value"]
+    assert ev == pytest.approx(res["implied_ev"], rel=1e-9)
+    assert res["implied_fcf_cagr"] is None
+
+
+@pytest.mark.parametrize("kw", [dict(growth_profile="revenue"),
+                                dict(growth_profile="revenue", target_fcf_margin=1.2),
+                                dict(growth_profile="fade", base_fcf=-1.0)])
+def test_reverse_dcf_revenue_mode_validation(kw):
+    from src import ReverseDCFModel
+    from src.base_model import ValidationError
+    base = dict(current_price=15, shares_outstanding=1e9, net_debt=0, base_fcf=-1e9, base_revenue=5e9,
+                discount_rate=0.1, terminal_growth=0.02, years=10)
+    base.update(kw)
+    with pytest.raises(ValidationError):
+        ReverseDCFModel(**base)

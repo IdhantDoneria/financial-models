@@ -1480,7 +1480,11 @@ function syncIBMarket(c) {
 async function applyCountryToIB(c) {
   const seq = (state.ib.rateSeq = (state.ib.rateSeq || 0) + 1);
   state.ib.liveRf = c.rf;
-  state.ib.rfSource = `${c.name.toUpperCase()} 10Y SOVEREIGN BASELINE (DAMODARAN)`;
+  //: Replaced by the live figure when /api/rates returns one. China, Hong
+  //  Kong, Taiwan and Saudi Arabia have no free live 10Y series, so for them
+  //  this stays, and must not read as a live yield.
+  state.ib.rfSource = `${c.name.toUpperCase()} 10Y · STATIC BASELINE (DAMODARAN), NOT A LIVE YIELD`;
+  state.ib.rfLive = false;
   state.ib.fx = null; state.ib.fxDate = null;
   syncIBMarket(c);
   renderIBContext();
@@ -1492,6 +1496,7 @@ async function applyCountryToIB(c) {
     if (typeof j.rf === "number" && j.rf > 0 && j.rf < 0.5) {
       state.ib.liveRf = j.rf;
       state.ib.rfSource = j.rfSource || state.ib.rfSource;
+      state.ib.rfLive = !!j.rfSource;
       //: live yield also re-anchors the manual sliders' defaults
       applyCountryDefaults({ ...c, rf: j.rf });
       syncIBMarket(c);
@@ -2110,7 +2115,7 @@ function renderIBContext() {
   const rf = state.ib.liveRf;
   ctx.innerHTML = `<td class="k">RISK-FREE (${c.code})</td><td class="v">${
     rf !== null && rf !== undefined ? (rf * 100).toFixed(3) + "%" : "—"
-  } <span class="badge live">${esc(state.ib.rfSource || "FETCHING…")}</span></td>`;
+  } <span class="badge ${state.ib.rfLive === false ? "assumed" : "live"}">${esc(state.ib.rfSource || "FETCHING…")}</span></td>`;
   grid.appendChild(ctx);
 
   let mkt = $("#ibmkt");

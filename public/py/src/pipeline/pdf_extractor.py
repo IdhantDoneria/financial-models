@@ -195,6 +195,17 @@ class ExtractedFinancials:
     #: submissions ``sic``), supplied by the ticker path only. Used to spot
     #: commodity producers — see ``_COMMODITY_SIC_RANGES`` in assumptions.py.
     sic_code: int | None = None
+    #: Revenue for each year of ``free_cash_flows``, element for element
+    #: (ticker path only). Lets the FCF base be a normalised margin applied to
+    #: the latest revenue — see ``AutoAssumer._normalised_base``.
+    revenue_series: list[float | None] = field(default_factory=list)
+    #: The part of ``total_debt`` owed by a captive finance arm (GM Financial,
+    #: Ford Credit), from the balance sheet's segment columns. ``None`` when
+    #: the company has no finance arm or the split is not disclosed.
+    finance_arm_debt: float | None = None
+    #: The quote's instrument type (EQUITY, ETF, CRYPTOCURRENCY...), ticker
+    #: path only. The company models refuse anything but an EQUITY.
+    instrument_type: str | None = None
     #: Which backends actually produced text (for debugging in the UI).
     backends_used: list[str] = field(default_factory=list)
     #: Raw text (first ~50k chars) kept for downstream inspection.
@@ -249,6 +260,9 @@ class ExtractedFinancials:
             "ttm_flows": self.ttm_flows,
             "sector": self.sector,
             "sic_code": self.sic_code,
+            "revenue_series": self.revenue_series,
+            "finance_arm_debt": self.finance_arm_debt,
+            "instrument_type": self.instrument_type,
             "backends_used": self.backends_used,
         }
 
