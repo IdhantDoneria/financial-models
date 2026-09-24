@@ -18,7 +18,7 @@
 const { _internals } = require("../api/fundamentals.js");
 const { resolveTicker, pickInstant, pickAnnualSeries, detectReportingCurrency,
         benchmarkFor, monthlyReturns, MIN_BETA_OBSERVATIONS,
-        ADR_LOCAL_LISTINGS, ADR_RATIO_CANDIDATES, ADR_RATIO_TOLERANCE,
+        ADR_LOCAL_LISTINGS, ADR_RATIO_CANDIDATES, ADR_RATIO_TOLERANCE, STOCK_TAGS, FLOW_TAGS, IFRS_FLOW_TAGS,
         computeSplitAdjustment, SPLIT_ALLOTMENT_LAG_MS,
         annualizedVol, regressionStats,
         pickLeaseLiability, debtTagIncludesLeases, NET_INTEREST_TAGS,
@@ -887,6 +887,165 @@ console.log("\n· A transient SEC failure must never be CDN-cached as the answer
   ok(!_internals.isTransient(new Error("no us-gaap or ifrs-full facts")), "no XBRL is permanent");
 }
 
+/* ------------------- balance sheet: one date, all debt lines -------------- */
+//  Values are the real filed figures from the 2026-09 audit (SEC companyfacts
+//  on 2026-09-24), trimmed to the rows that matter.
+console.log("\n· Balance sheet — every line from one date, debt summed by role");
+{
+  const { pickBalanceSheet, pickCoverShares, mergeFacts, PREDECESSOR_CIKS,
+          ADR_PINNED_RATIOS, ADR_PINNED_BAND, MINOR_UNIT_QUOTES } = _internals;
+  const inst = (end, val, filed = "2026-08-01") => ({ end, val, form: "10-Q", filed });
+  const T = (rows, unit = "USD") => ({ units: { [unit]: rows } });
+
+  // KO: LongTermDebt abandoned after Q1 2024; the 2026 lines are the
+  // CapitalLeaseObligations family plus commercial paper.
+  const ko = {
+    CashAndCashEquivalentsAtCarryingValue: T([inst("2025-12-31", 10.27e9), inst("2026-04-03", 10.574e9)]),
+    MarketableSecuritiesCurrent: T([inst("2020-12-31", 2.348e9)]),
+    LongTermDebtNoncurrent: T([inst("2024-03-29", 35.104e9)]),
+    LongTermDebt: T([inst("2024-03-29", 36.496e9)]),
+    LongTermDebtCurrent: T([inst("2024-03-29", 1.392e9)]),
+    LongTermDebtAndCapitalLeaseObligations: T([inst("2026-04-03", 39.065e9)]),
+    LongTermDebtAndCapitalLeaseObligationsCurrent: T([inst("2026-04-03", 4.493e9)]),
+    CommercialPaper: T([inst("2026-04-03", 0.25e9)]),
+  };
+  const k = pickBalanceSheet(ko, "us-gaap", "USD");
+  eq(k.anchor, "2026-04-03", "KO: anchored on the latest cash date");
+  eq(Math.round(k.debt / 1e6), 43808, "KO: $43.808bn, not the March-2024 $36.5bn");
+  ok(k.sti === null, "KO: a 2020 marketable-securities figure is not added to 2026 cash");
+
+  // XOM: DebtCurrent + LongTermDebtAndCapitalLeaseObligations only.
+  const xom = {
+    CashAndCashEquivalentsAtCarryingValue: T([inst("2026-06-30", 10.588e9)]),
+    DebtCurrent: T([inst("2026-06-30", 10.139e9)]),
+    LongTermDebtAndCapitalLeaseObligations: T([inst("2026-06-30", 32.229e9)]),
+  };
+  const x = pickBalanceSheet(xom, "us-gaap", "USD");
+  eq(Math.round(x.debt / 1e6), 42368, "XOM: long-term bonds counted ($42.4bn, not $10.1bn)");
+  ok(x.debtParts.some((p) => debtTagIncludesLeases(p.tag)),
+    "XOM: the lease-inclusive tag is visible to the finance-lease double-count guard");
+
+  // AAPL: commercial paper is its own line beside current maturities.
+  const aapl = {
+    CashAndCashEquivalentsAtCarryingValue: T([inst("2026-06-27", 39.544e9)]),
+    MarketableSecuritiesCurrent: T([inst("2026-06-27", 22.855e9)]),
+    LongTermDebtNoncurrent: T([inst("2026-06-27", 71.34e9)]),
+    LongTermDebt: T([inst("2026-06-27", 82.3e9)]),
+    LongTermDebtCurrent: T([inst("2026-06-27", 11.007e9)]),
+    CommercialPaper: T([inst("2026-06-27", 1.997e9)]),
+    OtherShortTermBorrowings: T([inst("2020-06-27", 11.166e9)]),
+  };
+  const a = pickBalanceSheet(aapl, "us-gaap", "USD");
+  eq(Math.round(a.debt / 1e6), 84344, "AAPL: commercial paper included, 2020 borrowings not");
+  eq(Math.round((a.cash + a.sti) / 1e6), 62399, "AAPL: cash + marketable securities on the same date");
+
+  // LongTermDebt already includes current maturities — never add them again.
+  const totalOnly = {
+    CashAndCashEquivalentsAtCarryingValue: T([inst("2026-06-30", 1e9)]),
+    LongTermDebt: T([inst("2026-06-30", 10e9)]),
+    LongTermDebtCurrent: T([inst("2026-06-30", 2e9)]),
+  };
+  eq(pickBalanceSheet(totalOnly, "us-gaap", "USD").debt, 10e9,
+    "LongTermDebt is not summed with its own current portion");
+
+  // No debt tag on the date: missing, never zero.
+  const noDebt = { CashAndCashEquivalentsAtCarryingValue: T([inst("2026-06-30", 1e9)]) };
+  ok(pickBalanceSheet(noDebt, "us-gaap", "USD").debt === null, "no debt line -> null, not 0");
+
+  // TSMC: bonds are a separate IFRS line, and current bonds exist only in TWD.
+  const tsm = {
+    CashAndCashEquivalents: { units: {
+      USD: [inst("2024-12-31", 64.886e9)], TWD: [inst("2024-12-31", 2127.627e9)] } },
+    LongtermBorrowings: { units: { USD: [inst("2024-12-31", 0.971e9)] } },
+    NoncurrentPortionOfNoncurrentBondsIssued: { units: { USD: [inst("2024-12-31", 28.259e9)] } },
+    CurrentPortionOfLongtermBorrowings: { units: { USD: [inst("2024-12-31", 1.825e9)] } },
+    ShorttermBorrowings: { units: { USD: [inst("2021-12-31", 4.143e9)] } },
+    CurrentBondsIssuedAndCurrentPortionOfNoncurrentBondsIssued: { units: { TWD: [inst("2024-12-31", 57.148e9)] } },
+  };
+  const t = pickBalanceSheet(tsm, "ifrs-full", "USD");
+  const rate = 64.886 / 2127.627;
+  ok(Math.abs(t.debt - (0.971e9 + 28.259e9 + 1.825e9 + 57.148e9 * rate)) < 1e3,
+    "TSM: loans + bonds, TWD-only current bonds at the filer's own rate; 2021 borrowings excluded",
+    String(t.debt));
+  eq(t.translated.length, 1, "TSM: the translated line is reported");
+
+  // A foreign-currency-only line with no same-date cash pair is left out.
+  const noRate = { ...tsm, CashAndCashEquivalents: { units: { USD: [inst("2024-12-31", 64.886e9)] } } };
+  ok(pickBalanceSheet(noRate, "ifrs-full", "USD").translated.length === 0,
+    "no filer-implied rate -> the TWD line is not guessed into USD");
+
+  // Currency: the currency reaching the newest fiscal year wins (SAP).
+  const yr = (y, v) => ({ start: `${y}-01-01`, end: `${y}-12-31`, val: v, form: "20-F", filed: `${y + 1}-03-01` });
+  const sap = { Revenue: { units: { USD: [yr(2017, 28.205e9)], EUR: [yr(2017, 23.461e9), yr(2025, 36.8e9)] } } };
+  eq(detectReportingCurrency(sap, ["Revenue"]), "EUR", "SAP: EUR (FY2025), not USD frozen at FY2017");
+
+  // Shares: an ISSUED count is not a substitute for a staler OUTSTANDING one.
+  const jpm = {
+    CommonStockSharesOutstanding: { units: { shares: [inst("2025-12-31", 2.6962e9)] } },
+    CommonStockSharesIssued: { units: { shares: [inst("2026-06-30", 4.104933895e9)] } },
+  };
+  eq(pickInstant(jpm, STOCK_TAGS.shares_outstanding, null, 0.01, false).value, 2.6962e9,
+    "JPM: shares outstanding, not 4.1bn issued (treasury included)");
+
+  // Cover-page shares: usable single-class, refused multi-class.
+  const dei1 = { EntityCommonStockSharesOutstanding: { units: { shares: [
+    { end: "2026-06-30", val: 2658186195, filed: "2026-08-06" }] } } };
+  eq(pickCoverShares(dei1).value, 2658186195, "single-class cover count is read");
+  const brk = { EntityCommonStockSharesOutstanding: { units: { shares: [
+    { end: "2026-07-20", val: 552000, filed: "2026-08-03" },
+    { end: "2026-07-20", val: 1300000000, filed: "2026-08-03" }] } } };
+  ok(pickCoverShares(brk) === null, "Berkshire's two classes on one date -> refused");
+
+  // Predecessor facts merge beneath the successor's.
+  eq(PREDECESSOR_CIKS["0002115436"], "0000034088", "XOM holdings maps to Exxon Mobil Corp");
+  const merged = mergeFacts(
+    { "us-gaap": { Revenues: { units: { USD: [yr(2025, 332.238e9)] } } } },
+    { "us-gaap": { Revenues: { units: { USD: [{ start: "2026-01-01", end: "2026-06-30", val: 201e9, filed: "2026-08-03" }] } } } });
+  const rev = pickAnnualSeries(merged["us-gaap"], ["Revenues"]);
+  eq(rev.series[rev.series.length - 1].val, 332.238e9, "XOM: FY2025 revenue comes through the merge");
+
+  // ADRs.
+  eq(ADR_PINNED_RATIOS.TSM.ratio, 5, "TSM carries its contractual 1 ADS = 5 shares");
+  // Implied ratios carry TSM's ~15% premium whatever the ratio is, so a real
+  // change to 6 or 10 shares per ADS would imply ~6.9 or ~11.5.
+  ok(Math.abs(5.735 / 5 - 1) <= ADR_PINNED_BAND, "TSM's live 5.735 (15% premium) is accepted");
+  ok(Math.abs(6 * 1.147 / 5 - 1) > ADR_PINNED_BAND && Math.abs(10 * 1.147 / 5 - 1) > ADR_PINNED_BAND,
+    "a changed ratio (6 or 10) at the same premium is refused");
+  ok(ADR_RATIO_CANDIDATES.includes(8) && ADR_RATIO_CANDIDATES.includes(0.25),
+    "BABA (8) and POSCO (0.25) ratios are candidates");
+  ok(["BABA", "TM", "SHEL", "SAP", "BHP"].every((s) => ADR_LOCAL_LISTINGS[s]),
+    "major non-Indian ADRs map to home listings");
+  eq(MINOR_UNIT_QUOTES.GBp.div, 100, "London pence quotes normalise to pounds");
+
+  // Spotify: a component revenue tag must not beat the total on a tie.
+  const { latestAnnualEnd, latestFilingForm } = _internals;
+  const spot = {
+    RevenueFromContractsWithCustomers: { units: { EUR: [yr(2025, 0.665e9)] } },
+    Revenue: { units: { EUR: [yr(2025, 17.186e9)] } },
+  };
+  eq(pickAnnualSeries(spot, IFRS_FLOW_TAGS.revenue, 6, "EUR", true).series[0].val, 17.186e9,
+    "SPOT: EUR 17.2bn total revenue, not the EUR 0.67bn component");
+  eq(pickAnnualSeries(spot, IFRS_FLOW_TAGS.revenue, 6, "EUR").series[0].val, 0.665e9,
+    "(the tie-break only applies where asked — other concepts keep cascade order)");
+
+  // Toyota/Sony: the taxonomy reaching the newest year wins.
+  const toyotaGaap = { Revenues: { units: { JPY: [{ start: "2019-04-01", end: "2020-03-31", val: 29.9e12 }] } } };
+  const toyotaIfrs = { Revenue: { units: { JPY: [{ start: "2024-04-01", end: "2025-03-31", val: 48.0e12 }] } } };
+  ok(latestAnnualEnd(toyotaIfrs, IFRS_FLOW_TAGS.revenue) > latestAnnualEnd(toyotaGaap, FLOW_TAGS.revenue),
+    "TM: IFRS (FY2025) is fresher than the abandoned US GAAP (FY2020)");
+
+  // Berkshire: a 2011 cover count is not a current one (the handler's
+  // recency window); the helper itself still reads it.
+  const brkOld = { EntityCommonStockSharesOutstanding: { units: { shares: [
+    { end: "2011-04-29", val: 941481, form: "10-Q", filed: "2011-05-06" }] } } };
+  eq(pickCoverShares(brkOld).end, "2011-04-29", "BRK's last plain cover count is from 2011");
+
+  // SMFG: no revenue tags, but the filing form still identifies a 20-F filer.
+  const smfgDei = { EntityCommonStockSharesOutstanding: { units: { shares: [
+    { end: "2026-03-31", val: 3.9e9, form: "20-F", filed: "2026-06-27" }] } } };
+  eq(latestFilingForm([smfgDei, {}]), "20-F", "SMFG: form read from the cover facts");
+}
+
 (async () => {
   //: Real regression: one SEC timeout on KO was served to every visitor for
   //  an hour as a CDN HIT ("market data only", no cash flows). Simulate it.
@@ -907,7 +1066,14 @@ console.log("\n· A transient SEC failure must never be CDN-cached as the answer
     let factsCalls = 0;
     global.fetch = async (url) => {
       url = String(url);
-      if (url.includes("company_tickers")) return json({ 0: { cik_str: 21344, ticker: "KO", title: "COCA COLA CO" } });
+      //: The handler caches this directory for 24h, so it lists every ticker
+      //  the later handler scenarios resolve too.
+      if (url.includes("company_tickers")) return json({
+        0: { cik_str: 21344, ticker: "KO", title: "COCA COLA CO" },
+        1: { cik_str: 1000184, ticker: "SAP", title: "SAP SE" },
+        2: { cik_str: 9999999, ticker: "ZZADR", title: "Foreign Co" },
+        3: { cik_str: 1144967, ticker: "HDB", title: "HDFC BANK LTD" },
+        4: { cik_str: 2115436, ticker: "XOM", title: "ExxonMobil Holdings Corp" } });
       if (url.includes("companyfacts")) { factsCalls++; return factsBehaviour(); }
       if (url.includes("finance.yahoo.com")) return json(chart);
       return { ok: false, status: 404, json: async () => ({}), text: async () => "" };
@@ -944,6 +1110,119 @@ console.log("\n· A transient SEC failure must never be CDN-cached as the answer
     ok(c.headers["cache-control"] !== "no-store", "a permanent 404 stays cacheable");
   } catch (e) {
     ok(false, "transient-failure simulation ran", e && e.stack);
+  } finally {
+    global.fetch = realFetch;
+  }
+
+  //: End-to-end through the handler: currency basis, depositary basis and a
+  //  predecessor registrant, with SEC / Yahoo / FX mocked from real shapes.
+  console.log("\n· Handler — price, shares and dividend on the listing's basis");
+  const yr = (y, v, form = "20-F") => ({ start: `${y}-01-01`, end: `${y}-12-31`, val: v, form, filed: `${y + 1}-03-01` });
+  const inst = (end, val, form = "20-F") => ({ end, val, form, filed: "2026-03-01" });
+  const chartFor = (price, currency) => ({ chart: { result: [{
+    meta: { regularMarketPrice: price, regularMarketTime: now, currency },
+    timestamp: Array.from({ length: months }, (_, i) => now - (months - i) * 30 * 86400),
+    indicators: { quote: [{ close: Array.from({ length: months }, (_, i) => price + (i % 5)) }],
+                  adjclose: [{ adjclose: Array.from({ length: months }, (_, i) => price + (i % 5)) }] },
+    events: {},
+  }] } });
+  const runCase = async ({ ticker, cik, factsByCik, quotes, rates = {} }) => {
+    global.fetch = async (url) => {
+      url = String(url);
+      if (url.includes("company_tickers")) return json({ 0: { cik_str: Number(cik), ticker, title: ticker } });
+      const m = url.match(/CIK(\d{10})\.json/);
+      if (m) return factsByCik[m[1]] ? json(factsByCik[m[1]]) : { ok: false, status: 404, json: async () => ({}) };
+      if (url.includes("open.er-api.com")) return json({ rates: { USD: 1, ...rates } });
+      const sym = decodeURIComponent((url.match(/chart\/([^?]+)/) || [])[1] || "");
+      if (url.includes("finance.yahoo.com")) {
+        if (quotes[sym]) return json(chartFor(...quotes[sym]));
+        if (sym.startsWith("^")) return json(chartFor(5000, "USD"));
+      }
+      return { ok: false, status: 404, json: async () => ({}), text: async () => "" };
+    };
+    let body = null;
+    const res = { setHeader() {}, status() { return this; }, json(o) { body = o; return this; }, end() { return this; } };
+    await handler({ method: "GET", url: `/api/fundamentals?ticker=${ticker}`, query: { ticker },
+                    headers: { "x-forwarded-for": `198.51.100.${Math.floor(Math.random() * 200)}` } }, res);
+    return body;
+  };
+  try {
+    // SAP: EUR financials, USD ADR, 1:1 with SAP.DE, cover-page share count.
+    const sap = await runCase({
+      ticker: "SAP", cik: "0001000184",
+      factsByCik: { "0001000184": { entityName: "SAP SE", facts: {
+        dei: { EntityCommonStockSharesOutstanding: { units: { shares: [inst("2025-12-31", 1228504232)] } } },
+        "ifrs-full": {
+          Revenue: { units: { USD: [yr(2017, 28.205e9)], EUR: [yr(2024, 34.176e9), yr(2025, 36.8e9)] } },
+          CashAndCashEquivalents: { units: { EUR: [inst("2025-12-31", 8.22e9)] } },
+          Borrowings: { units: { EUR: [inst("2025-12-31", 6.15e9)] } },
+        } } } },
+      quotes: { SAP: [210.62, "USD"], "SAP.DE": [184.8, "EUR"] },
+      rates: { EUR: 0.8774 },
+    });
+    const S = sap && sap.fields || {};
+    eq(S.currency, "EUR", "SAP reports in EUR (FY2025), not USD frozen at 2017");
+    eq(S.fiscal_year, 2025, "SAP's fiscal year is 2025");
+    ok(Math.abs(S.current_price - 210.62 * 0.8774) < 1e-6, "USD ADR price converted to EUR at the live rate",
+      String(S.current_price));
+    eq(S.shares_outstanding, 1228504232, "cover-page share count used when no statement count exists");
+    eq(S.total_debt, 6.15e9, "SAP debt from the same balance sheet");
+
+    // An unmapped Form 20-F filer: shares and dividend withheld, not mixed.
+    const unk = await runCase({
+      ticker: "ZZADR", cik: "0009999999",
+      factsByCik: { "0009999999": { entityName: "Foreign Co", facts: { "us-gaap": {
+        Revenues: { units: { USD: [yr(2025, 5e9)] } },
+        CommonStockSharesOutstanding: { units: { shares: [inst("2025-12-31", 8e9)] } },
+        CommonStockDividendsPerShareDeclared: { units: { "USD/shares": [yr(2025, 0.4)] } },
+        CashAndCashEquivalentsAtCarryingValue: { units: { USD: [inst("2025-12-31", 1e9)] } },
+      } } } },
+      quotes: { ZZADR: [40, "USD"] },
+    });
+    const U = unk && unk.fields || {};
+    ok(U.shares_outstanding === null, "unmapped 20-F filer: ordinary share count withheld");
+    ok(U.dividend_per_share === null, "unmapped 20-F filer: per-ordinary-share dividend withheld");
+    eq(U.current_price, 40, "its price is still reported");
+
+    // HDB-style ratio 3: shares divided, dividend multiplied.
+    const hdb = await runCase({
+      ticker: "HDB", cik: "0001144967",
+      factsByCik: { "0001144967": { entityName: "HDFC BANK LTD", facts: { "ifrs-full": {
+        Revenue: { units: { USD: [yr(2025, 20e9)] } },
+        NumberOfSharesOutstanding: { units: { shares: [inst("2025-12-31", 15.3e9)] } },
+        DividendsPaidOrdinarySharePerShare: { units: { "USD/shares": [yr(2025, 0.25)] } },
+        CashAndCashEquivalents: { units: { USD: [inst("2025-12-31", 5e9)] } },
+      } } } },
+      quotes: { HDB: [70, "USD"], "HDFCBANK.NS": [70 * 95.8 / 3, "INR"] },
+      rates: { INR: 95.8 },
+    });
+    const H = hdb && hdb.fields || {};
+    eq(H.shares_outstanding, 5.1e9, "HDB: 15.3bn ordinary shares -> 5.1bn ADS");
+    ok(Math.abs(H.dividend_per_share - 0.75) < 1e-9, "HDB: dividend restated per ADS (0.25 x 3)",
+      String(H.dividend_per_share));
+
+    // XOM: successor registrant with only 10-Qs; history from the predecessor.
+    const xom = await runCase({
+      ticker: "XOM", cik: "0002115436",
+      factsByCik: {
+        "0002115436": { entityName: "ExxonMobil Holdings Corp", facts: { "us-gaap": {
+          Revenues: { units: { USD: [{ start: "2026-01-01", end: "2026-06-30", val: 201.155e9, form: "10-Q", filed: "2026-08-03" }] } },
+          CashAndCashEquivalentsAtCarryingValue: { units: { USD: [inst("2026-06-30", 10.588e9, "10-Q")] } },
+          DebtCurrent: { units: { USD: [inst("2026-06-30", 10.139e9, "10-Q")] } },
+          LongTermDebtAndCapitalLeaseObligations: { units: { USD: [inst("2026-06-30", 32.229e9, "10-Q")] } },
+        } } },
+        "0000034088": { entityName: "EXXON MOBIL CORP", facts: { "us-gaap": {
+          Revenues: { units: { USD: [yr(2024, 339.247e9, "10-K"), yr(2025, 332.238e9, "10-K")] } },
+        } } },
+      },
+      quotes: { XOM: [161.23, "USD"] },
+    });
+    const X = xom && xom.fields || {};
+    eq(X.revenue, 332.238e9, "XOM: FY2025 revenue from the predecessor registrant");
+    eq(Math.round(X.total_debt / 1e6), 42368, "XOM: 2026 debt from the successor's balance sheet");
+    ok((xom.notes || []).some((n) => /predecessor registrant/.test(n)), "XOM: the merge is disclosed");
+  } catch (e) {
+    ok(false, "handler basis simulation ran", e && e.stack);
   } finally {
     global.fetch = realFetch;
   }

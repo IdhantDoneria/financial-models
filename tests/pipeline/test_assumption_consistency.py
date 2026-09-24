@@ -210,10 +210,63 @@ def test_gordon_discounts_dividends_at_the_cost_of_equity():
 
 def test_gordon_refuses_when_cost_of_equity_hugs_dividend_growth():
     """G: ke 3.5% vs 3% dividend growth leaves a 0.5% gap — the old floor
-    would have printed a value ~200x the dividend; now it's unavailable."""
+    would have printed a value ~200x the dividend; now it's unavailable.
+    Dividend growth is the terminal growth min(rf, cap), so a 3% cap with a
+    3% risk-free rate puts growth at 3%."""
     data = _us(dividend_per_share=2.0, beta=0.1, backends_used=[])
-    a = AutoAssumer(risk_free_rate=0.03, equity_risk_premium=0.05).build(data)
+    a = AutoAssumer(risk_free_rate=0.03, equity_risk_premium=0.05,
+                    terminal_growth_cap=0.03).build(data)
     assert "Gordon Growth Model" in a.unavailable
+
+
+@pytest.mark.parametrize("rf, cap, expected", [
+    (0.0511, 0.025, 0.025),   # US, Sept 2026: capped by long-run growth
+    (0.0294, 0.010, 0.010),   # Japan
+    (0.0047, 0.010, 0.0047),  # Switzerland: capped by the risk-free rate
+])
+def test_gordon_dividend_growth_is_the_dcf_terminal_growth(rf, cap, expected):
+    """A perpetual dividend can't outgrow the same ceiling the DCF's terminal
+    value obeys; the old flat 3% exceeded it in every one of these markets."""
+    data = _us(dividend_per_share=2.0, current_price=50.0, shares_outstanding=100.0)
+    a = AutoAssumer(risk_free_rate=rf, equity_risk_premium=0.05,
+                    terminal_growth_cap=cap).build(data)
+    assert a.kwargs_by_model["Gordon Growth Model"]["growth"] == pytest.approx(expected)
+    assert a.kwargs_by_model[DCF]["terminal_growth"] == pytest.approx(expected)
+
+
+def test_gordon_manual_dividend_growth_still_wins():
+    from src.pipeline import ManualAssumer, ManualOverrides
+    data = _us(dividend_per_share=2.0, current_price=50.0, shares_outstanding=100.0)
+    a = ManualAssumer(AutoAssumer()).build(data, ManualOverrides(dividend_growth=0.04))
+    assert a.kwargs_by_model["Gordon Growth Model"]["growth"] == pytest.approx(0.04)
+
+
+def test_missing_total_debt_reports_dcf_partial_not_ok():
+    """BRK-B (2026-09 audit): no debt tag, so borrowings counted as zero while
+    the DCF status read OK."""
+    data = _us(current_price=50.0, shares_outstanding=100.0, total_debt=None,
+               cash_and_equivalents=10.0)
+    a = AutoAssumer().build(data)
+    assert DCF in a.partial and DCF in a.partly_assessed
+    assert RDCF in a.partly_assessed
+    assert "zero" in a.rationale[("DCF", "net_debt")]
+
+
+def test_synthesised_fcf_reports_dcf_partial():
+    """JPM (2026-09 audit): no cash-flow statement, FCF estimated from
+    revenue x margin, and the DCF still read OK."""
+    data = _us(current_price=50.0, shares_outstanding=100.0, total_debt=10.0,
+               cash_and_equivalents=5.0, free_cash_flows=[], revenue=1000.0,
+               operating_margin=0.3)
+    a = AutoAssumer().build(data)
+    assert DCF in a.partly_assessed and "estimated" in a.partial[DCF]
+
+
+def test_complete_filing_dcf_stays_ok():
+    data = _us(current_price=50.0, shares_outstanding=100.0, total_debt=10.0,
+               cash_and_equivalents=5.0)
+    a = AutoAssumer().build(data)
+    assert DCF not in a.partial
 
 
 def test_reverse_dcf_uses_the_forward_dcfs_horizon_and_fade():

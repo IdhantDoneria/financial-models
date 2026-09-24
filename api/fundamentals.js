@@ -42,6 +42,34 @@ const SEC_UA = process.env.SEC_USER_AGENT
 const TICKERS_URL = "https://www.sec.gov/files/company_tickers.json";
 const FACTS_URL = (cik) => `https://data.sec.gov/api/xbrl/companyfacts/CIK${cik}.json`;
 
+//: Successor registrant CIK -> predecessor CIK, for reorganisations that move
+//  a ticker to a new filer with no annual XBRL history. EDGAR's JSON APIs do
+//  not link the two, so each is listed explicitly. Verified 2026-09-24:
+//  ExxonMobil Holdings Corp (2115436) took over XOM in July 2026; EXXON MOBIL
+//  CORP (34088) holds FY2009-FY2025.
+const PREDECESSOR_CIKS = {
+  "0002115436": "0000034088",
+};
+
+//: Union of two companyfacts `facts` objects, predecessor rows first. Rows
+//  for the same period are resolved downstream by filing date, so nothing is
+//  deduplicated here.
+function mergeFacts(older, newer) {
+  const out = {};
+  for (const src of [older, newer]) {
+    for (const [tax, tags] of Object.entries(src || {})) {
+      out[tax] = out[tax] || {};
+      for (const [tag, body] of Object.entries(tags)) {
+        const dst = out[tax][tag] || (out[tax][tag] = { ...body, units: {} });
+        for (const [unit, rows] of Object.entries(body.units || {})) {
+          dst.units[unit] = (dst.units[unit] || []).concat(rows);
+        }
+      }
+    }
+  }
+  return out;
+}
+
 //: The ticker→CIK map is ~1 MB and changes rarely. Cached per warm lambda so a
 //  burst of lookups costs SEC one fetch, not one per request.
 let tickerMap = null;
@@ -128,9 +156,12 @@ const FLOW_TAGS = {
                               "DepreciationAmortizationAndAccretionNet",
                               "DepreciationAndAmortization", "Depreciation"],
   rd_expense: ["ResearchAndDevelopmentExpense"],
-  interest_expense: ["InterestExpense", "InterestExpenseDebt",
+  //: InterestExpenseNonoperating is the 2024-taxonomy tag MSFT and NVDA moved
+  //  to; without it their interest stopped at FY2024 and was carried forward.
+  interest_expense: ["InterestExpense", "InterestExpenseNonoperating", "InterestExpenseDebt",
                      "InterestIncomeExpenseNet"],
   income_tax_expense: ["IncomeTaxExpenseBenefit"],
+  operating_income: ["OperatingIncomeLoss"],
   //: Positive-only expense. ShareBasedCompensation is by far the dominant
   //  tag; AllocatedShareBasedCompensationExpense is the fallback some filers
   //  use when the expense is broken out by segment/allocation instead.
@@ -155,31 +186,33 @@ const FLOW_TAGS = {
  * "no filing data" for every one of them, which is both wrong and exactly the
  * set of companies most relevant to this project's India angle.
  *
- * These filings are denominated in USD (the 20-F reports in USD), and the ADR
- * price fetched alongside is USD too, so the two are coherent. The ADR RATIO
- * is the caveat that cannot be resolved from EDGAR — see the note attached in
- * the handler.                                                              */
+ * Many report in USD beside a USD ADR price; others (SAP in EUR, Novo in
+ * DKK) do not, and their USD price is converted in the handler. The ADR
+ * RATIO cannot be read from EDGAR — see ADR_LOCAL_LISTINGS.                 */
 const IFRS_FLOW_TAGS = {
   revenue: ["RevenueFromContractsWithCustomers", "Revenue"],
   net_income: ["ProfitLossAttributableToOwnersOfParent", "ProfitLoss"],
   operating_cash_flow: ["CashFlowsFromUsedInOperatingActivities"],
+  //: SAP tags capex only as the combined PP&E + intangibles purchase line —
+  //  still capital expenditure, and without it SAP had no FCF at all.
   capital_expenditures: ["PurchaseOfPropertyPlantAndEquipmentClassifiedAsInvestingActivities",
-                         "PurchaseOfPropertyPlantAndEquipment"],
+                         "PurchaseOfPropertyPlantAndEquipment",
+                         "PurchaseOfPropertyPlantAndEquipmentIntangibleAssetsOtherThanGoodwillInvestmentPropertyAndOtherNoncurrentAssets"],
   depreciation_amortization: ["DepreciationAndAmortisationExpense",
                               "DepreciationAmortisationAndImpairmentLossReversalOfImpairmentLossRecognisedInProfitOrLoss"],
   rd_expense: ["ResearchAndDevelopmentExpense"],
   interest_expense: ["InterestExpense", "FinanceCosts"],
   income_tax_expense: ["IncomeTaxExpenseContinuingOperations"],
-  dividends_per_share: ["DividendsPaidOrdinarySharePerShare", "DividendsRecognisedAsDistributionsToOwnersOfParentPerShare"],
+  dividends_per_share: ["DividendsPaidOrdinarySharePerShare", "DividendsRecognisedAsDistributionsToOwnersOfParentPerShare",
+                        "DividendsRecognisedAsDistributionsToOwnersPerShare"],
   pretax_income: ["ProfitLossBeforeTax"],
+  operating_income: ["ProfitLossFromOperatingActivities"],
   stock_based_compensation: ["AdjustmentsForSharebasedPayments"],
 };
 
 const IFRS_STOCK_TAGS = {
   cash_and_equivalents: ["CashAndCashEquivalents"],
   short_term_investments: ["OtherCurrentFinancialAssets", "CurrentInvestments"],
-  long_term_debt: ["NoncurrentPortionOfNoncurrentBorrowings", "Borrowings"],
-  short_term_debt: ["CurrentPortionOfNoncurrentBorrowings", "ShorttermBorrowings"],
   shares_outstanding: ["NumberOfSharesOutstanding", "NumberOfSharesIssuedAndFullyPaid"],
 };
 
@@ -187,12 +220,55 @@ const IFRS_STOCK_TAGS = {
 const STOCK_TAGS = {
   cash_and_equivalents: ["CashAndCashEquivalentsAtCarryingValue",
                          "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents"],
+  //: DebtSecuritiesCurrent is NVIDIA's marketable-securities line ($34bn).
+  //  Only the first tag present on the anchor date is used, so a filer that
+  //  tags two of these is never summed twice.
   short_term_investments: ["ShortTermInvestments", "MarketableSecuritiesCurrent",
-                           "AvailableForSaleSecuritiesDebtSecuritiesCurrent"],
-  long_term_debt: ["LongTermDebtNoncurrent", "LongTermDebt"],
-  short_term_debt: ["LongTermDebtCurrent", "DebtCurrent",
-                    "ShortTermBorrowings", "OtherShortTermBorrowings"],
+                           "AvailableForSaleSecuritiesDebtSecuritiesCurrent", "DebtSecuritiesCurrent"],
   shares_outstanding: ["CommonStockSharesOutstanding", "CommonStockSharesIssued"],
+};
+
+/* ---------------------------------- debt ---------------------------------- *
+ * Total debt is a SUM of balance-sheet lines, and filers split it in several
+ * incompatible ways, so it is assembled from roles rather than read off two
+ * independently chosen tags. The old two-tag cascade failed four ways on real
+ * data (2026-09 audit):
+ *   - XOM tags LongTermDebtAndCapitalLeaseObligations + DebtCurrent; neither
+ *     long-term tag was in the cascade, so $32bn of bonds vanished and total
+ *     debt read $10.1bn instead of $42.4bn.
+ *   - KO abandoned LongTermDebt after Q1 2024; with no date check, its
+ *     March-2024 figure was published beside 2026 cash as if current.
+ *   - AAPL's commercial paper sat outside the one short-term tag picked.
+ *   - LongTermDebt INCLUDES the current portion, so pairing it with
+ *     LongTermDebtCurrent double-counted whenever the noncurrent tag was absent.
+ * Every role is read at ONE balance-sheet date (see pickBalanceSheet).
+ *
+ * `noncurrent` excludes current maturities; `longTermTotal` includes them;
+ * `debtCurrent` is ALL current debt (current maturities + short-term
+ * borrowings); `shortTerm` is borrowings other than current maturities.
+ * CommercialPaper and OtherShortTermBorrowings are disjoint by definition, and
+ * are only summed when the filer tags no ShortTermBorrowings total. */
+const DEBT_TAGS = {
+  noncurrent: ["LongTermDebtNoncurrent", "LongTermDebtAndCapitalLeaseObligations"],
+  longTermTotal: ["LongTermDebt", "LongTermDebtAndCapitalLeaseObligationsIncludingCurrentMaturities"],
+  currentMaturities: ["LongTermDebtCurrent", "LongTermDebtAndCapitalLeaseObligationsCurrent"],
+  debtCurrent: ["DebtCurrent"],
+  shortTermTotal: ["ShortTermBorrowings"],
+  shortTermParts: ["CommercialPaper", "OtherShortTermBorrowings"],
+};
+
+//: IFRS: `Borrowings` is the total when tagged. Otherwise sum the noncurrent
+//  loans and bonds with the current side. TSMC reports its NT$927bn of bonds
+//  only as NoncurrentPortionOfNoncurrentBondsIssued, beside a separate
+//  LongtermBorrowings line for bank loans — reading loans alone (the old
+//  cascade) missed nine-tenths of its debt.
+const IFRS_DEBT_TAGS = {
+  total: ["Borrowings"],
+  noncurrentParts: ["NoncurrentPortionOfNoncurrentBorrowings", "LongtermBorrowings",
+                    "NoncurrentPortionOfNoncurrentBondsIssued"],
+  currentTotal: ["CurrentBorrowingsAndCurrentPortionOfNoncurrentBorrowings"],
+  currentParts: ["CurrentPortionOfNoncurrentBorrowings", "CurrentPortionOfLongtermBorrowings",
+                 "ShorttermBorrowings", "CurrentBondsIssuedAndCurrentPortionOfNoncurrentBondsIssued"],
 };
 
 /* ---------------------------- lease liabilities ---------------------------- *
@@ -220,22 +296,37 @@ const LEASE_TAGS = {
 /**
  * The currency a filing actually reports in.
  *
- * Read off the revenue tags, which every operating company has. USD is
- * preferred when offered so that the USD ADR price stays comparable with the
- * financials; otherwise the filer's own currency is returned and the caller
- * must not attach a price denominated in anything else.
+ * Read off the revenue tags, which every operating company has: the currency
+ * whose ANNUAL revenue reaches the most recent fiscal year wins. USD breaks a
+ * tie, so a filer that gives a USD convenience translation of its latest year
+ * (Wipro, TSMC) stays comparable with its USD ADR price.
+ *
+ * "USD whenever offered" was the old rule, and it is wrong for a filer that
+ * translated into USD once and then stopped: SAP carried USD revenue only for
+ * FY2017, so every figure was pinned to 2017 — $28bn of eight-year-old
+ * revenue presented as current, beside a 2026 price.
  */
 function detectReportingCurrency(facts, revenueTags) {
-  const seen = [];
+  const latestByCcy = new Map();
   for (const tag of revenueTags) {
     const f = facts[tag];
     if (!f) continue;
-    for (const unit of Object.keys(f.units)) {
-      if (/^[A-Z]{3}$/.test(unit) && !seen.includes(unit)) seen.push(unit);
+    for (const [unit, rows] of Object.entries(f.units)) {
+      if (!/^[A-Z]{3}$/.test(unit)) continue;
+      for (const r of rows) {
+        if (typeof r.val !== "number" || !r.start || !r.end) continue;
+        const days = (Date.parse(r.end) - Date.parse(r.start)) / 86_400_000;
+        if (days < 340 || days > 400) continue;
+        if (!latestByCcy.has(unit) || r.end > latestByCcy.get(unit)) latestByCcy.set(unit, r.end);
+      }
+      if (!latestByCcy.has(unit)) latestByCcy.set(unit, "");   // quarterly-only: still a signal
     }
   }
-  if (!seen.length) return null;
-  return seen.includes("USD") ? "USD" : seen[0];
+  if (!latestByCcy.size) return null;
+  const newest = Math.max(...[...latestByCcy.values()].map((e) => (e ? Date.parse(e) : 0)));
+  const tied = [...latestByCcy.entries()]
+    .filter(([, e]) => (e ? Date.parse(e) : 0) === newest).map(([c]) => c);
+  return tied.includes("USD") ? "USD" : tied[0];
 }
 
 /**
@@ -250,7 +341,15 @@ function detectReportingCurrency(facts, revenueTags) {
  * Rows below `minRelative` of the series maximum are therefore not totals and
  * are skipped.
  */
-function pickInstant(facts, tags, prefer = null, minRelative = 0) {
+function pickInstant(facts, tags, prefer = null, minRelative = 0, freshest = true) {
+  //: Freshest tag wins, ties to cascade order — the same rule, and the same
+  //  reason, as pickAnnualSeries: filers abandon tags, and first-match
+  //  returned KO's March-2024 long-term debt beside its 2026 balance sheet.
+  //  `freshest = false` keeps the old first-match cascade for concepts whose
+  //  later tags are NOT substitutes: JPM tags shares ISSUED every quarter but
+  //  shares OUTSTANDING only yearly, and issued includes 1.4bn treasury
+  //  shares — freshest-wins read 4.10bn shares instead of 2.70bn.
+  let best = null;
   for (const tag of tags) {
     const f = facts[tag];
     if (!f) continue;
@@ -276,9 +375,195 @@ function pickInstant(facts, tags, prefer = null, minRelative = 0) {
     rows.sort((a, b) => (a.end < b.end ? -1 : a.end > b.end ? 1
                         : (a.filed || "") < (b.filed || "") ? -1 : 1));
     const last = rows[rows.length - 1];
-    return { value: last.val, end: last.end, tag, unit };
+    if (!freshest) return { value: last.val, end: last.end, tag, unit };
+    if (!best || last.end > best.end) best = { value: last.val, end: last.end, tag, unit };
+  }
+  return best;
+}
+
+/**
+ * The value a cascade of instant tags reports AT one exact date, or null.
+ *
+ * Balance-sheet lines must come from the same balance sheet: a component
+ * whose newest row predates `end` is a line the filer no longer uses, and
+ * adding it would mix a stale figure into a current total. When the pinned
+ * currency has no row but another currency does, the value is translated at
+ * `rates[ccy]` — the filer's OWN translation rate on that date (see
+ * translationRates) — because a convenience-translating filer such as TSMC
+ * gives USD for some lines (cash, long-term bonds) and not others (current
+ * bonds). Without a rate the line is left out rather than mislabelled.
+ */
+function valueAt(facts, tags, end, currency, rates = {}) {
+  for (const tag of tags) {
+    const f = facts[tag];
+    if (!f) continue;
+    const at = (unit) => {
+      const rows = (f.units[unit] || [])
+        .filter((r) => r.end === end && !r.start && typeof r.val === "number")
+        .sort((a, b) => ((a.filed || "") < (b.filed || "") ? -1 : 1));
+      return rows.length ? rows[rows.length - 1].val : null;
+    };
+    const own = currency ? at(currency) : null;
+    if (own !== null) return { value: own, tag, translatedFrom: null };
+    for (const [ccy, rate] of Object.entries(rates)) {
+      const v = at(ccy);
+      if (v !== null) return { value: v * rate, tag, translatedFrom: ccy };
+    }
   }
   return null;
+}
+
+//: The filer's own translation rate(s) into `currency` at `end`, from the cash
+//  line it reports in both currencies on that date: USD cash / TWD cash is
+//  exactly the rate TSMC used for its convenience translation. Only rates the
+//  filing itself implies are returned; nothing is looked up externally.
+function translationRates(facts, cashTags, end, currency) {
+  const rates = {};
+  if (!currency) return rates;
+  for (const tag of cashTags) {
+    const f = facts[tag];
+    if (!f) continue;
+    const valIn = (unit) => {
+      const r = (f.units[unit] || []).filter((x) => x.end === end && !x.start && typeof x.val === "number");
+      return r.length ? r[r.length - 1].val : null;
+    };
+    const base = valIn(currency);
+    if (!base) continue;
+    for (const unit of Object.keys(f.units)) {
+      if (unit === currency || !/^[A-Z]{3}$/.test(unit) || rates[unit]) continue;
+      const other = valIn(unit);
+      if (other) rates[unit] = base / other;
+    }
+  }
+  return rates;
+}
+
+/**
+ * Cash, short-term investments and total debt, all from ONE balance sheet.
+ *
+ * The anchor is the date of the freshest cash figure (every balance sheet has
+ * cash); with no cash tag at all, the freshest debt line. Every other line is
+ * read at exactly that date — see valueAt. Returns the components used so the
+ * handler can say which lines were summed and apply the lease double-count
+ * guard to the actual tags.
+ */
+//: Form type of the most recently filed row among the cover (dei) facts and
+//  the cash tags — enough to tell a 20-F filer from a 10-K filer when the
+//  revenue tags are absent.
+function latestFilingForm(sources) {
+  let best = null;
+  const cashTags = [...STOCK_TAGS.cash_and_equivalents, ...IFRS_STOCK_TAGS.cash_and_equivalents];
+  for (const src of sources) {
+    if (!src) continue;
+    const tags = Object.keys(src).filter((t) => t.startsWith("Entity") || cashTags.includes(t));
+    for (const t of tags) {
+      for (const rows of Object.values(src[t].units || {})) {
+        for (const r of rows) {
+          if (r.form && (!best || (r.filed || "") > (best.filed || ""))) best = r;
+        }
+      }
+    }
+  }
+  return best ? String(best.form) : "";
+}
+
+//: Newest ~365-day period end across a cascade of revenue tags, any unit.
+function latestAnnualEnd(facts, tags) {
+  let best = "";
+  for (const tag of tags) {
+    for (const rows of Object.values((facts[tag] && facts[tag].units) || {})) {
+      for (const r of rows) {
+        if (!r.start || !r.end) continue;
+        const days = (Date.parse(r.end) - Date.parse(r.start)) / 86_400_000;
+        if (days >= 340 && days <= 400 && r.end > best) best = r.end;
+      }
+    }
+  }
+  return best;
+}
+
+function pickCoverShares(dei) {
+  const rows = (dei && dei.EntityCommonStockSharesOutstanding
+    && dei.EntityCommonStockSharesOutstanding.units.shares) || [];
+  const valid = rows.filter((r) => typeof r.val === "number" && r.val > 0 && r.end);
+  if (!valid.length) return null;
+  const end = valid.map((r) => r.end).sort().pop();
+  const atEnd = valid.filter((r) => r.end === end);
+  const filed = atEnd.map((r) => r.filed || "").sort().pop();
+  const latest = atEnd.filter((r) => (r.filed || "") === filed);
+  if (new Set(latest.map((r) => r.val)).size !== 1) return null;   // multi-class
+  return { value: latest[0].val, end, tag: "dei:EntityCommonStockSharesOutstanding", unit: "shares" };
+}
+
+function pickBalanceSheet(facts, taxonomy, currency) {
+  const ifrs = taxonomy === "ifrs-full";
+  const stockTags = ifrs ? IFRS_STOCK_TAGS : STOCK_TAGS;
+  const debtTags = ifrs ? IFRS_DEBT_TAGS : DEBT_TAGS;
+  const cashPick = pickInstant(facts, stockTags.cash_and_equivalents, currency);
+  let anchor = cashPick ? cashPick.end : null;
+  if (!anchor) {
+    const allDebt = Object.values(debtTags).flat();
+    anchor = pickInstant(facts, allDebt, currency)?.end || null;
+  }
+  const out = { anchor, cash: null, sti: null, debt: null, debtParts: [], translated: [] };
+  if (!anchor) return out;
+  const rates = translationRates(facts, stockTags.cash_and_equivalents, anchor, currency);
+  const read = (tags) => valueAt(facts, tags, anchor, currency, rates);
+  const noteTranslation = (v) => {
+    if (v && v.translatedFrom) out.translated.push(`${v.tag} (${v.translatedFrom})`);
+  };
+  const cash = read(stockTags.cash_and_equivalents);
+  noteTranslation(cash);
+  out.cash = cash ? cash.value : null;
+  const sti = read(stockTags.short_term_investments);
+  noteTranslation(sti);
+  out.sti = sti ? sti.value : null;
+
+  const parts = [];
+  const use = (v) => {
+    if (v) { parts.push({ tag: v.tag, value: v.value }); noteTranslation(v); }
+    return v;
+  };
+  if (ifrs) {
+    const total = read(debtTags.total);
+    if (total) use(total);
+    else {
+      for (const tag of debtTags.noncurrentParts) use(read([tag]));
+      const curTotal = read(debtTags.currentTotal);
+      if (curTotal) use(curTotal);
+      else for (const tag of debtTags.currentParts) use(read([tag]));
+    }
+  } else {
+    const nc = read(debtTags.noncurrent);
+    const ltTotal = nc ? null : read(debtTags.longTermTotal);
+    const debtCurrent = read(debtTags.debtCurrent);
+    const curMat = read(debtTags.currentMaturities);
+    let shortTerm = read(debtTags.shortTermTotal);
+    const stParts = shortTerm ? [] : debtTags.shortTermParts.map((t) => read([t])).filter(Boolean);
+    if (nc) {
+      use(nc);
+      if (debtCurrent) use(debtCurrent);          // current maturities + short-term borrowings
+      else { use(curMat); use(shortTerm); stParts.forEach(use); }
+    } else if (ltTotal) {
+      use(ltTotal);                               // already includes current maturities
+      if (shortTerm || stParts.length) { use(shortTerm); stParts.forEach(use); }
+      else if (debtCurrent && curMat) {
+        use({ tag: "DebtCurrent−LongTermDebtCurrent", value: debtCurrent.value - curMat.value });
+      } else if (debtCurrent && !curMat) {
+        //: DebtCurrent may or may not overlap the total's current maturities;
+        //  leaving it out understates (flagged by the caller), adding it may
+        //  double-count, and a silent double-count is the worse error.
+        out.ambiguousCurrent = true;
+      }
+    } else {
+      use(debtCurrent || curMat); use(shortTerm); stParts.forEach(use);
+    }
+  }
+  out.debtParts = parts.filter((p) => typeof p.value === "number");
+  out.debt = out.debtParts.length ? out.debtParts.reduce((a, p) => a + p.value, 0) : null;
+  out.hasLongTerm = out.debtParts.some((p) => !/Current|Shortterm|ShortTerm|CommercialPaper/.test(p.tag)
+    || /IncludingCurrentMaturities/.test(p.tag));
+  return out;
 }
 
 /**
@@ -289,7 +574,7 @@ function pickInstant(facts, tags, prefer = null, minRelative = 0) {
  * start/end span instead: a ~365-day duration is an annual period. Filtering
  * on fy would double-count restatements and silently corrupt the FCF series.
  */
-function pickAnnualSeries(facts, tags, maxYears = 6, prefer = null) {
+function pickAnnualSeries(facts, tags, maxYears = 6, prefer = null, largestOnTie = false) {
   const candidates = [];
   for (let rank = 0; rank < tags.length; rank++) {
     const f = facts[tags[rank]];
@@ -345,9 +630,16 @@ function pickAnnualSeries(facts, tags, maxYears = 6, prefer = null) {
   //  Ties on fiscal year fall back to cascade order, so the preferred tag
   //  still wins when both are equally current and a single stray datapoint
   //  in a less-preferred tag can't hijack the result.
+  //: `largestOnTie` is for REVENUE only: two revenue tags for the same year
+  //  are a total and a component, never two totals, so the larger is the
+  //  total. Spotify tags EUR 17.2bn as Revenue and a EUR 0.67bn component as
+  //  RevenueFromContractsWithCustomers; cascade order picked the component,
+  //  a 26x understatement with a 330% "operating margin".
+  const lastVal = (c) => c.series[c.series.length - 1].val;
   candidates.sort((a, b) => {
     const ya = a.latest.slice(0, 4), yb = b.latest.slice(0, 4);
     if (ya !== yb) return ya < yb ? 1 : -1;
+    if (largestOnTie && lastVal(a) !== lastVal(b)) return lastVal(b) - lastVal(a);
     return a.rank - b.rank;
   });
   const best = candidates[0];
@@ -381,10 +673,8 @@ function pickLeaseLiability(facts, totalTags, currentTags, noncurrentTags, prefe
 //  LongTermDebtAndCapitalLeaseObligations) already folds finance-lease
 //  liabilities into total_debt. Reporting finance_lease_liabilities
 //  alongside it would double-count the same dollars under two field names —
-//  a wrong balance sheet that would look like a complete one. This cascade
-//  does not currently select such a tag, but the guard is cheap and the
-//  failure mode (silent double-count) is exactly the kind this file exists
-//  to prevent, so it stays live rather than only documented.
+//  a wrong balance sheet that would look like a complete one. XOM and KO
+//  both report debt this way (DEBT_TAGS.noncurrent), so the guard is live.
 function debtTagIncludesLeases(tag) {
   return typeof tag === "string" && /lease/i.test(tag);
 }
@@ -751,18 +1041,60 @@ async function computeBeta(symbol) {
 //: ADR ticker -> its home listing. Only entries whose ratio has actually been
 //  reconciled against live quotes belong here; a guess adds no coverage,
 //  because an unreconcilable entry is refused at request time anyway.
+//
+//  Everything past the Indian five was added after the 2026-09 audit found
+//  TSM's ordinary share count published beside its per-ADS price (market cap
+//  ~$11.6T, 5x). Each was reconciled live on 2026-09-24; the implied ratio is
+//  in the trailing comment. A Form 20-F filer NOT listed here (or in
+//  ADR_PINNED_RATIOS) has its share count withheld — see the handler.
 const ADR_LOCAL_LISTINGS = {
   INFY: "INFY.NS",        // Infosys
   WIT: "WIPRO.NS",        // Wipro
   HDB: "HDFCBANK.NS",     // HDFC Bank
   IBN: "ICICIBANK.NS",    // ICICI Bank
   RDY: "DRREDDY.NS",      // Dr Reddy's Laboratories
+  BABA: "9988.HK",  BIDU: "9888.HK",  JD: "9618.HK",   NTES: "9999.HK",   // 7.89, 8.14, 2.02, 4.93
+  TCOM: "9961.HK",  LI: "2015.HK",    NIO: "9866.HK",  XPEV: "9868.HK",   // 1.02, 1.97, 1.02, 2.01
+  TM: "7203.T",     SONY: "6758.T",   MUFG: "8306.T",  HMC: "7267.T",     // 10.14, 1.00, 1.01, 2.93
+  SAP: "SAP.DE",    ASML: "ASML.AS",  ING: "INGA.AS",  PHG: "PHIA.AS",    // 0.99, 1.01, 0.99, 0.99
+  NVO: "NOVO-B.CO", NVS: "NOVN.SW",   LOGI: "LOGN.SW", ABBNY: "ABBN.SW",  // 1.00, 1.00, 0.98, 1.00
+  SHEL: "SHEL.L",   AZN: "AZN.L",     BP: "BP.L",      UL: "ULVR.L",      // 2.01, 0.99, 6.02, 1.00
+  HSBC: "HSBA.L",   GSK: "GSK.L",     DEO: "DGE.L",    RIO: "RIO.L",      // 4.99, 1.99, 4.01, 1.00
+  BTI: "BATS.L",    RELX: "REL.L",    VOD: "VOD.L",    BCS: "BARC.L",     // 1.00, 1.00, 9.93, 3.98
+  LYG: "LLOY.L",    NGG: "NG.L",      BHP: "BHP.AX",   TTE: "TTE.PA",     // 3.96, 5.01, 1.98, 1.01
+  SNY: "SAN.PA",    SAN: "SAN.MC",    BBVA: "BBVA.MC", E: "ENI.MI",       // 0.50, 0.99, 0.99, 2.00
+  EQNR: "EQNR.OL",  STLA: "STLAM.MI", ERIC: "ERIC-B.ST", NOK: "NOKIA.HE", // 1.00, 0.98, 1.00, 1.02
+  ARGX: "ARGX.BR",  KB: "105560.KS",  SHG: "055550.KS", PKX: "005490.KS", // 0.99, 0.99, 1.00, 0.25
+  CHT: "2412.TW",   UMC: "2303.TW",   ASX: "3711.TW",                     // 10.13, 5.09, 2.00
 };
+
+//: Depositary ratios that are stated rather than derived, for two cases the
+//  live derivation cannot handle:
+//   - TSM trades at a persistent premium to its Taipei shares (implied 5.74
+//     against the contractual 5 on 2026-09-24), which the nearest-candidate
+//     snap would round to 6. The contractual ratio is used, and the live
+//     figure is still checked against it with a band wide enough for the
+//     premium but not for an increased ratio: a move to 6 at the same
+//     premium implies ~6.9, 38% off. (A cut to 4 would imply ~4.6 and pass;
+//     price alone cannot separate that from a smaller premium.)
+//   - Listings with no home market to price against. These are ordinary
+//     shares or 1:1 ADSs except PDD (1 ADS = 4 Class A ordinary shares), and
+//     are reported as stated, not verified.
+const ADR_PINNED_RATIOS = {
+  TSM: { ratio: 5, local: "2330.TW" },
+  SPOT: { ratio: 1, local: null },
+  ARM: { ratio: 1, local: null },
+  SE: { ratio: 1, local: null },
+  NU: { ratio: 1, local: null },
+  PDD: { ratio: 4, local: null },
+};
+const ADR_PINNED_BAND = 0.30;
 
 //: Conventional depositary ratios. A derived figure that matches none of
 //  these within tolerance is treated as unverified, not rounded to the
-//  closest anyway.
-const ADR_RATIO_CANDIDATES = [0.5, 1, 2, 3, 4, 5, 6, 10];
+//  closest anyway. 0.25 (POSCO) and 8 (Alibaba, Baidu) were added with the
+//  wider ADR map; the tightest gap between neighbours is still 20% (8 -> 10).
+const ADR_RATIO_CANDIDATES = [0.25, 0.5, 1, 2, 3, 4, 5, 6, 8, 10];
 
 //: Real-quote error was 0.1-3.1%; 8% leaves room for a volatile day and a
 //  stale FX print while still rejecting a ratio that is genuinely wrong (the
@@ -794,7 +1126,12 @@ async function usdTo(currency) {
  * reconciled with the price beside it.
  */
 async function deriveAdrRatio(adrSymbol, adrPrice) {
-  const local = ADR_LOCAL_LISTINGS[adrSymbol.toUpperCase()];
+  const sym = adrSymbol.toUpperCase();
+  const pinned = ADR_PINNED_RATIOS[sym];
+  if (pinned && !pinned.local) {
+    return { ratio: pinned.ratio, implied: null, error: null, localSymbol: null, stated: true };
+  }
+  const local = pinned ? pinned.local : ADR_LOCAL_LISTINGS[sym];
   if (!local || !adrPrice || adrPrice.currency !== "USD") return null;
 
   const localQuote = await fetchPrice(local);
@@ -804,6 +1141,13 @@ async function deriveAdrRatio(adrSymbol, adrPrice) {
 
   const implied = (adrPrice.price * fx) / localQuote.price;
   if (!Number.isFinite(implied) || implied <= 0) return null;
+
+  if (pinned) {
+    const error = Math.abs(implied - pinned.ratio) / pinned.ratio;
+    if (error > ADR_PINNED_BAND) return null;
+    return { ratio: pinned.ratio, implied, error, localSymbol: local, stated: true,
+             localPrice: localQuote.price, localCurrency: localQuote.currency, fx };
+  }
 
   const nearest = ADR_RATIO_CANDIDATES
     .reduce((a, b) => (Math.abs(b - implied) < Math.abs(a - implied) ? b : a));
@@ -891,6 +1235,11 @@ async function fetchRawSplits(symbol) {
 }
 
 /** Live share price — the one figure EDGAR structurally cannot provide. */
+const MINOR_UNIT_QUOTES = {
+  GBp: { ccy: "GBP", div: 100 }, GBX: { ccy: "GBP", div: 100 },
+  ZAc: { ccy: "ZAR", div: 100 }, ILA: { ccy: "ILS", div: 100 },
+};
+
 async function fetchPrice(ticker) {
   try {
     const r = await fetch(
@@ -907,8 +1256,13 @@ async function fetchPrice(ticker) {
     //  says when the price is actually as of.
     const asOf = typeof meta?.regularMarketTime === "number"
       ? new Date(meta.regularMarketTime * 1000).toISOString() : null;
-    return typeof px === "number" && px > 0
-      ? { price: px, currency: meta.currency || "USD", asOf } : null;
+    if (!(typeof px === "number" && px > 0)) return null;
+    //: London, Johannesburg and Tel Aviv quote in minor units (GBp, ZAc,
+    //  ILA). There is no FX rate for "GBp", so every UK home listing failed
+    //  the ADR check; normalise to the major unit here, once.
+    const minor = MINOR_UNIT_QUOTES[meta.currency];
+    return minor ? { price: px / minor.div, currency: minor.ccy, asOf }
+                 : { price: px, currency: meta.currency || "USD", asOf };
   } catch { return null; }
 }
 
@@ -1098,7 +1452,7 @@ module.exports = async (req, res) => {
     });
   }
 
-  let facts, entityName, taxonomy = "us-gaap";
+  let facts, entityName, taxonomy = "us-gaap", deiFacts = null, predecessorNote = null;
   try {
     const t0 = Date.now();
     let r = await secFetch(FACTS_URL(entry.cik)).catch((e) => e);
@@ -1116,9 +1470,33 @@ module.exports = async (req, res) => {
     if (!r.ok) throw new Error(`companyfacts ${r.status}`);
     const j = await r.json();
     entityName = j.entityName || entry.title;
-    facts = (j.facts && j.facts["us-gaap"]) || null;
-    if (!facts && j.facts && j.facts["ifrs-full"]) {
-      facts = j.facts["ifrs-full"];
+    //: A holding-company reorganisation gives the ticker a NEW registrant
+    //  with no annual history (ExxonMobil Holdings, CIK 2115436, July 2026:
+    //  10-Qs only, so XOM loaded no revenue or FCF at all). The predecessor's
+    //  facts are merged underneath; the successor's rows win on any shared
+    //  period because pickAnnualSeries/pickInstant keep the latest-filed row.
+    const predecessor = PREDECESSOR_CIKS[entry.cik];
+    if (predecessor) {
+      const pr = await secFetch(FACTS_URL(predecessor)).catch(() => null);
+      const pj = pr && pr.ok ? await pr.json().catch(() => null) : null;
+      if (pj && pj.facts) {
+        j.facts = mergeFacts(pj.facts, j.facts || {});
+        predecessorNote = `Annual history before the ${entityName} reorganisation comes from `
+          + `the predecessor registrant (CIK ${predecessor}); later filings from the current one.`;
+      }
+    }
+    deiFacts = (j.facts && j.facts.dei) || null;
+    //: A filer that moved from US GAAP to IFRS keeps both taxonomies in
+    //  companyfacts, and the stale one must not win by default: Toyota and
+    //  Sony switched in FY2021, so reading us-gaap first served their FY2020
+    //  and FY2021 figures as current. The taxonomy whose annual revenue
+    //  reaches the latest fiscal year is used; us-gaap wins a tie.
+    const gaap = (j.facts && j.facts["us-gaap"]) || null;
+    const ifrsFacts = (j.facts && j.facts["ifrs-full"]) || null;
+    facts = gaap;
+    if (ifrsFacts && (!gaap || latestAnnualEnd(ifrsFacts, IFRS_FLOW_TAGS.revenue)
+                              > latestAnnualEnd(gaap, FLOW_TAGS.revenue))) {
+      facts = ifrsFacts;
       taxonomy = "ifrs-full";
     }
     if (!facts) throw new Error("no us-gaap or ifrs-full facts");
@@ -1148,29 +1526,52 @@ module.exports = async (req, res) => {
   }
 
   const notes = [];
+  if (predecessorNote) notes.push(predecessorNote);
   const flows = {}, stocks = {};
   const flowTags = taxonomy === "ifrs-full" ? IFRS_FLOW_TAGS : FLOW_TAGS;
   const stockTags = taxonomy === "ifrs-full" ? IFRS_STOCK_TAGS : STOCK_TAGS;
 
   //: Establish the filing's reporting currency BEFORE reading any figure, and
-  //  hold every concept to it. USD wins when the filer offers it (the ADR
-  //  price is USD, so that keeps price and financials on one basis);
-  //  otherwise the filing's own currency stands and the price is dropped
-  //  below rather than silently mixed in.
+  //  hold every concept to it: the currency reaching the newest fiscal year,
+  //  USD on a tie (see detectReportingCurrency). A USD price beside non-USD
+  //  financials is converted below, never silently mixed in.
   const reportingCurrency = detectReportingCurrency(facts, flowTags.revenue);
   for (const [k, tags] of Object.entries(flowTags)) {
-    flows[k] = pickAnnualSeries(facts, tags, 6, reportingCurrency);
+    flows[k] = pickAnnualSeries(facts, tags, 6, reportingCurrency, k === "revenue");
   }
   for (const [k, tags] of Object.entries(stockTags)) {
     //: Share counts are unit-'shares' so the currency pin doesn't apply, and
     //  they get the fragment guard — see pickInstant's minRelative.
     stocks[k] = k === "shares_outstanding"
-      ? pickInstant(facts, tags, null, 0.01)
+      ? pickInstant(facts, tags, null, 0.01, false)
       : pickInstant(facts, tags, reportingCurrency);
   }
+  //: The cover-page count (dei:EntityCommonStockSharesOutstanding) is the
+  //  filer's own statement of shares outstanding at the filing date. Used when
+  //  the statements tag no count (SAP tags only shares ISSUED) or when it is
+  //  a year or more fresher (TSMC's 2025 20-F carries the cover count but no
+  //  statement facts). Skipped for multi-class filers — two values on one
+  //  date (Berkshire A and B) cannot be told apart without dimensions.
+  //: Only a CURRENT cover count: Berkshire stopped tagging a plain one in
+  //  2011 (its classes are now dimensioned), and that 941,481 figure beside a
+  //  2026 price read as a $0.5bn company. It must be no older than half a
+  //  year before the latest fiscal year end.
+  const latestRevEnd = flows.revenue?.series?.length
+    ? flows.revenue.series[flows.revenue.series.length - 1].end : null;
+  const coverCandidate = pickCoverShares(deiFacts);
+  const deiShares = coverCandidate && latestRevEnd
+    && (Date.parse(latestRevEnd) - Date.parse(coverCandidate.end)) / 86_400_000 <= 180
+    ? coverCandidate : null;
+  const statementShares = stocks.shares_outstanding;
+  if (deiShares && (!statementShares
+      || (Date.parse(deiShares.end) - Date.parse(statementShares.end)) / 86_400_000 > 180)) {
+    stocks.shares_outstanding = deiShares;
+    notes.push(`Share count is the ${deiShares.value.toLocaleString("en-US")} shares outstanding `
+      + `stated on the filing's cover page as of ${deiShares.end}`
+      + (statementShares ? `, fresher than the ${statementShares.end} balance-sheet count.` : "."));
+  }
   if (taxonomy === "ifrs-full") {
-    notes.push("Figures come from a Form 20-F filed under IFRS and denominated in USD, "
-      + "the same currency as the quoted price.");
+    notes.push(`Figures come from a Form 20-F filed under IFRS, denominated in ${reportingCurrency}.`);
   }
 
   const latestFlow = (k) => {
@@ -1221,9 +1622,23 @@ module.exports = async (req, res) => {
   // on WHICH shape a filer discloses (total tag vs. current+noncurrent split)
   // — see pickLeaseLiability(). IFRS 16 has no finance/operating split at
   // all, so IFRS filers get a single LeaseLiabilities lookup instead.
+  //: Cash, investments and debt all from ONE balance sheet — see
+  //  pickBalanceSheet and the DEBT_TAGS note for the four ways the old
+  //  independent picks went wrong.
+  const bs = pickBalanceSheet(facts, taxonomy, reportingCurrency);
   let financeLease, operatingLease;
   if (taxonomy === "ifrs-full") {
     financeLease = pickInstant(facts, ["LeaseLiabilities"], reportingCurrency);
+    //: TSMC gives its lease liability only in TWD; translate it at the
+    //  filer's own rate on the balance-sheet date, as pickBalanceSheet does.
+    if (!financeLease && bs.anchor) {
+      const rates = translationRates(facts, IFRS_STOCK_TAGS.cash_and_equivalents, bs.anchor, reportingCurrency);
+      const v = valueAt(facts, ["LeaseLiabilities"], bs.anchor, reportingCurrency, rates);
+      if (v) {
+        financeLease = { value: v.value, end: bs.anchor };
+        if (v.translatedFrom) bs.translated.push(`LeaseLiabilities (${v.translatedFrom})`);
+      }
+    }
     operatingLease = null;
     if (financeLease) {
       notes.push("This filer reports under IFRS 16, which has no operating/finance lease "
@@ -1248,8 +1663,23 @@ module.exports = async (req, res) => {
   //  "Lease" in its own name, finance leases are already inside total_debt
   //  and reporting them again as a separate field would double-count them.
   let financeLeaseValue = financeLease ? financeLease.value : null;
-  if (financeLeaseValue !== null
-      && (debtTagIncludesLeases(stocks.long_term_debt?.tag) || debtTagIncludesLeases(stocks.short_term_debt?.tag))) {
+  //: A lease figure is only disclosed annually by many filers (AAPL tags it
+  //  in the 10-K alone), so it may trail the quarterly anchor — but not by
+  //  more than a reporting cycle, or it describes a different company.
+  const staleLease = (l) => l && bs.anchor
+    && (Date.parse(bs.anchor) - Date.parse(l.end)) / 86_400_000 > 400;
+  if (staleLease(financeLease)) {
+    notes.push(`finance_lease_liabilities is reported null: the latest figure is as of `
+      + `${financeLease.end}, more than a year before the ${bs.anchor} balance sheet.`);
+    financeLeaseValue = null;
+  }
+  let operatingLeaseValue = operatingLease ? operatingLease.value : null;
+  if (staleLease(operatingLease)) {
+    notes.push(`operating_lease_liabilities is reported null: the latest figure is as of `
+      + `${operatingLease.end}, more than a year before the ${bs.anchor} balance sheet.`);
+    operatingLeaseValue = null;
+  }
+  if (financeLeaseValue !== null && bs.debtParts.some((p) => debtTagIncludesLeases(p.tag))) {
     notes.push("finance_lease_liabilities is reported null: the debt tag already used for "
       + "total_debt appears to include finance-lease liabilities, and reporting both would "
       + "double-count the same dollars.");
@@ -1257,15 +1687,27 @@ module.exports = async (req, res) => {
   }
 
   // --- debt and cash ------------------------------------------------------
-  const ltd = stocks.long_term_debt?.value ?? null;
-  const std = stocks.short_term_debt?.value ?? null;
-  const totalDebt = ltd === null && std === null ? null : (ltd || 0) + (std || 0);
-  if (totalDebt !== null && (ltd === null || std === null)) {
-    notes.push("Total debt combines only the debt components this company tags; a missing current- or non-current-debt tag means the figure may understate total borrowings.");
+  const totalDebt = bs.debt;
+  const cash = bs.cash;
+  const sti = bs.sti;
+  if (bs.anchor) {
+    const lines = bs.debtParts.map((p) => p.tag).join(" + ");
+    notes.push(`Cash and total debt are from the balance sheet dated ${bs.anchor}`
+      + (lines ? `; total debt = ${lines}.` : "."));
   }
-
-  const cash = stocks.cash_and_equivalents?.value ?? null;
-  const sti = stocks.short_term_investments?.value ?? null;
+  if (totalDebt === null) {
+    notes.push(`No debt line is tagged on the ${bs.anchor || "latest"} balance sheet in a form `
+      + `this reader recognises, so total debt is reported missing rather than as zero. `
+      + `Enter it manually if the company has borrowings.`);
+  } else if (!bs.hasLongTerm || bs.ambiguousCurrent) {
+    notes.push("Total debt may understate borrowings: no long-term debt line, or no separable "
+      + "short-term line, was tagged on this balance sheet date. Check it against the filing.");
+  }
+  if (bs.translated.length) {
+    notes.push(`Some balance-sheet lines were tagged only in the filer's home currency and were `
+      + `converted at the filer's own translation rate for ${bs.anchor} (implied by the cash `
+      + `balance it reports in both currencies): ${bs.translated.join(", ")}.`);
+  }
 
   // --- derived ratios -----------------------------------------------------
   const revenue = latestFlow("revenue");
@@ -1286,22 +1728,39 @@ module.exports = async (req, res) => {
     if (first > 0 && last > 0) revenueGrowth = Math.pow(last / first, 1 / yrs) - 1;
   }
 
-  //: Operating margin proxied from net income when no operating-income tag is
-  //  picked. Labelled in `notes` so it is never mistaken for a true operating
-  //  margin — the pipeline's own sector fallback may well be the better figure.
+  //: Operating (EBIT) margin from the tagged operating income for the SAME
+  //  fiscal year as revenue — the definition the pipeline's sector baselines
+  //  use. Only when a filer tags no operating income for that year (banks,
+  //  most insurers) is net income used instead, and the note says so. The
+  //  old code always used net income: MSFT read 40.3% against a true 46.8%.
   let operatingMargin = null;
-  if (revenue && netIncome != null && revenue > 0) {
+  const opSeries = flows.operating_income?.series || [];
+  const opLatest = opSeries.length ? opSeries[opSeries.length - 1] : null;
+  const revLatestEnd = revSeries.length ? revSeries[revSeries.length - 1].end : null;
+  if (revenue && revenue > 0 && opLatest && opLatest.end === revLatestEnd) {
+    operatingMargin = opLatest.val / revenue;
+  } else if (revenue && netIncome != null && revenue > 0) {
     operatingMargin = netIncome / revenue;
-    notes.push("Operating margin shown is a net-income margin derived from the income statement, not a tagged operating margin.");
+    notes.push("Operating margin shown is a net-income margin: this filer tags no operating income for its latest fiscal year.");
   }
 
-  const isKnownAdr = !!ADR_LOCAL_LISTINGS[entry.symbol.toUpperCase()];
+  const symUpper = entry.symbol.toUpperCase();
+  const pinnedAdr = ADR_PINNED_RATIOS[symUpper] || null;
+  const isKnownAdr = !!ADR_LOCAL_LISTINGS[symUpper] || !!pinnedAdr;
+  //: A Form 20-F filer is a foreign private issuer; its US line is almost
+  //  always a depositary receipt whose ratio EDGAR does not record.
+  //: Read off revenue when there is one, else off the latest filing of any
+  //  cover or cash fact — a bank such as SMFG tags no revenue, and its
+  //  ordinary share count went out beside its ADS price unchecked.
+  const latestRevForm = revSeries.length ? String(revSeries[revSeries.length - 1].form || "")
+                                         : latestFilingForm([deiFacts, facts]);
+  const filesForm20F = /^20-F/.test(latestRevForm);
   const sharesAsOf = stocks.shares_outstanding?.end || null;
   //: EDGAR reports the underlying company's own share count, so a corporate
   //  action on that count happens on ITS listing, not the ADR ticker traded
   //  in New York — checking splits on the ADR itself would miss every one.
-  const splitCheckSymbol = isKnownAdr ? ADR_LOCAL_LISTINGS[entry.symbol.toUpperCase()]
-                                       : entry.symbol;
+  const splitCheckSymbol = (pinnedAdr && pinnedAdr.local) || ADR_LOCAL_LISTINGS[symUpper]
+                           || entry.symbol;
 
   //: entry.symbol, not the raw input — Yahoo also spells share classes
   //  with a hyphen, so a user's "BRK.B" must become "BRK-B" here too.
@@ -1319,12 +1778,28 @@ module.exports = async (req, res) => {
   if (!priceInfo) {
     notes.push("Live share price unavailable; enter it manually or the models will use their documented fallback.");
   }
-  const priceUsable = !!priceInfo
-    && (!reportingCurrency || priceInfo.currency === reportingCurrency);
-  if (priceInfo && !priceUsable) {
+  //: The price must be on the filing's currency basis. A USD quote beside
+  //  EUR financials (SAP) or CAD ones (a TSX cross-listing) is converted at
+  //  the live rate, which preserves meaning — a share's value in EUR is its
+  //  USD value times EUR per USD. Any other mismatch is dropped, not mixed.
+  let currentPrice = null;
+  if (priceInfo) {
+    if (!reportingCurrency || priceInfo.currency === reportingCurrency) {
+      currentPrice = priceInfo.price;
+    } else if (priceInfo.currency === "USD") {
+      const fx = await usdTo(reportingCurrency);
+      if (fx) {
+        currentPrice = priceInfo.price * fx;
+        notes.push(`Share price converted to ${reportingCurrency}, the currency this company `
+          + `reports in: USD ${priceInfo.price.toFixed(2)} x ${fx.toFixed(4)} ${reportingCurrency}/USD `
+          + `(live rate) = ${reportingCurrency} ${currentPrice.toFixed(2)}.`);
+      }
+    }
+  }
+  if (priceInfo && currentPrice === null) {
     notes.push(`Share price omitted: the quote is in ${priceInfo.currency} but this company `
-      + `reports in ${reportingCurrency}. Mixing the two would corrupt every per-share and `
-      + `market-implied result, so enter the price manually on the filing's own basis.`);
+      + `reports in ${reportingCurrency}, and no exchange rate was available to convert it. `
+      + `Enter the price manually on the filing's own basis.`);
   }
   if (betaInfo) {
     notes.push(`Beta ${betaInfo.beta.toFixed(2)} is computed here by regressing `
@@ -1369,7 +1844,19 @@ module.exports = async (req, res) => {
    * ratio — 3x for HDFC Bank — and every per-share figure with it.          */
   let adsShares = ordinaryShares;
   if (isKnownAdr && ordinaryShares !== null) {
-    if (adr) {
+    if (adr && adr.stated) {
+      adsShares = ordinaryShares / adr.ratio;
+      notes.push(adr.implied === null
+        ? `Share count on the listing's basis: 1 ADS/listed share = ${adr.ratio} ordinary `
+          + `share${adr.ratio === 1 ? "" : "s"}. This listing has no home market to price against, `
+          + `so the ratio is the depositary's stated one rather than a live-verified figure.`
+        : `Share count converted to an ADS basis at the contractual 1 ADS = ${adr.ratio} ordinary `
+          + `shares. ${Math.round(ordinaryShares).toLocaleString("en-US")} ordinary shares become `
+          + `${Math.round(adsShares).toLocaleString("en-US")} ADS. The live prices imply `
+          + `${adr.implied.toFixed(2)} against ${adr.localSymbol}: this ADR trades at a `
+          + `${((adr.implied / adr.ratio - 1) * 100).toFixed(0)}% premium to the home shares, `
+          + `which is a price difference, not a different ratio.`);
+    } else if (adr) {
       adsShares = ordinaryShares / adr.ratio;
       notes.push(adr.ratio === 1
         ? `Depositary ratio verified as 1 ADS = 1 ordinary share (implied `
@@ -1390,6 +1877,16 @@ module.exports = async (req, res) => {
         + "rather than reported on a basis that may not match the quoted price. Enter it "
         + "manually on an ADS basis if you need per-share or market-cap output.");
     }
+  } else if (filesForm20F && ordinaryShares !== null) {
+    //: A foreign private issuer this reader has no depositary ratio for. Its
+    //  EDGAR count is ordinary shares; the quote is almost certainly per ADS.
+    //  TSM, before it was mapped, published ~$11.6T of market cap this way.
+    adsShares = null;
+    notes.push("This company files Form 20-F, so its US listing is most likely a depositary "
+      + "receipt, and this reader has no verified ADS-to-ordinary-share ratio for it. The "
+      + `filing's ${Math.round(ordinaryShares).toLocaleString("en-US")} ordinary shares are `
+      + "withheld rather than multiplied by a per-ADS price. Enter the share count manually on "
+      + "the listing's basis for per-share and market-cap output.");
   }
 
   //: The split check only catches a corporate action — it cannot see a
@@ -1451,6 +1948,24 @@ module.exports = async (req, res) => {
     }
   }
 
+  //: A filed per-share dividend is per ORDINARY share; the quote beside it is
+  //  per ADS. Put it on the listing's basis with the same ratio as the share
+  //  count, or withhold it when the count was withheld — Gordon Growth prices
+  //  the dividend directly, so HDB's (ratio 3) would otherwise read 3x low.
+  if (dividendPerShare !== null && (isKnownAdr || filesForm20F)) {
+    if (adsShares === null) {
+      dividendPerShare = null;
+      notes.push("Dividend per share withheld for the same reason as the share count: it is "
+        + "filed per ordinary share and the depositary ratio needed to restate it per ADS is "
+        + "unverified.");
+    } else if (adr && adr.ratio !== 1) {
+      const before = dividendPerShare;
+      dividendPerShare = dividendPerShare * adr.ratio;
+      notes.push(`Dividend per share restated per ADS: ${before.toFixed(4)} per ordinary share `
+        + `x ${adr.ratio} = ${dividendPerShare.toFixed(4)}, the same basis as the quoted price.`);
+    }
+  }
+
   const latestEnd = revSeries.length ? revSeries[revSeries.length - 1].end
                                      : (stocks.cash_and_equivalents?.end || null);
 
@@ -1463,6 +1978,13 @@ module.exports = async (req, res) => {
   const interestExpenseTag = flows.interest_expense?.tag;
   const interestExpenseValue = interestExpenseTag
     ? interestExpenseFromRow(latestFlow("interest_expense"), interestExpenseTag) : null;
+  const interestSeries = flows.interest_expense?.series || [];
+  const interestEnd = interestSeries.length ? interestSeries[interestSeries.length - 1].end : null;
+  if (interestExpenseValue !== null && interestEnd && revLatestEnd && interestEnd < revLatestEnd) {
+    notes.push(`Interest expense was last tagged for the year ended ${interestEnd}, before the `
+      + `latest fiscal year (${revLatestEnd}); the free-cash-flow interest add-back carries that `
+      + `figure forward for the later years.`);
+  }
   if (interestExpenseValue === null && NET_INTEREST_TAGS.includes(interestExpenseTag)
       && latestFlow("interest_expense") != null) {
     notes.push("interest_expense is reported missing: the only available tag "
@@ -1502,10 +2024,9 @@ module.exports = async (req, res) => {
     cash_and_equivalents: cash === null && sti === null ? null : (cash || 0) + (sti || 0),
     //: On the SAME basis as the price beside it — see adsShares below.
     shares_outstanding: adsShares,
-    //: Only when the quote and the filing are in the same currency. A USD ADR
-    //  price beside INR financials would silently corrupt every per-share and
-    //  market-implied result; reporting it missing is the honest outcome.
-    current_price: priceUsable ? priceInfo.price : null,
+    //: On the filing's currency basis — converted from USD at the live rate
+    //  when the two differ, missing when no rate was available.
+    current_price: currentPrice,
     depreciation_amortization: latestFlow("depreciation_amortization"),
     rd_expense: latestFlow("rd_expense"),
     capital_expenditures: (() => {
@@ -1522,7 +2043,7 @@ module.exports = async (req, res) => {
       return v == null ? null : Math.abs(v);
     })(),
     finance_lease_liabilities: financeLeaseValue,
-    operating_lease_liabilities: operatingLease ? operatingLease.value : null,
+    operating_lease_liabilities: operatingLeaseValue,
     //: The quote's OWN as-of time (Yahoo's regularMarketTime), not the
     //  request time — a quote can be a prior close, and nothing else here
     //  says so. Reported whenever a price was fetched, independent of the
@@ -1587,8 +2108,10 @@ module.exports = async (req, res) => {
     missing,
     notes,
     beta: betaInfo || null,
-    adr: adr ? { ratio: adr.ratio, implied: Number(adr.implied.toFixed(4)),
-                 localSymbol: adr.localSymbol } : null,
+    //: `implied` is null for a stated ratio with no home market (SPOT, ARM).
+    adr: adr ? { ratio: adr.ratio,
+                 implied: typeof adr.implied === "number" ? Number(adr.implied.toFixed(4)) : null,
+                 localSymbol: adr.localSymbol, stated: !!adr.stated } : null,
     sources: [
       { name: "SEC EDGAR XBRL companyfacts", url: `https://data.sec.gov/api/xbrl/companyfacts/CIK${entry.cik}.json` },
       ...(priceInfo ? [{ name: "Share price", url: "Yahoo Finance chart API" }] : []),
@@ -1606,6 +2129,9 @@ module.exports = async (req, res) => {
 //  dedup, period alignment) and impossible to check by eyeballing a live
 //  response, so they are tested directly rather than only through the handler.
 module.exports._internals = { isTransient, resolveTicker, detectReportingCurrency, deriveAdrRatio,
+                              pickBalanceSheet, valueAt, translationRates, pickCoverShares, mergeFacts, latestAnnualEnd, latestFilingForm,
+                              PREDECESSOR_CIKS, DEBT_TAGS, IFRS_DEBT_TAGS, ADR_PINNED_RATIOS, ADR_PINNED_BAND,
+                              MINOR_UNIT_QUOTES,
                               ADR_LOCAL_LISTINGS, ADR_RATIO_CANDIDATES, ADR_RATIO_TOLERANCE, pickInstant, pickAnnualSeries, FLOW_TAGS, STOCK_TAGS,
                               IFRS_FLOW_TAGS, IFRS_STOCK_TAGS, LEASE_TAGS,
                               benchmarkFor, monthlyReturns, monthKey, BENCHMARKS, MIN_BETA_OBSERVATIONS,
