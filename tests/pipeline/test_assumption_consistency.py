@@ -392,3 +392,40 @@ def test_non_commodity_companies_keep_their_own_growth(kw):
     fcfs = a.kwargs_by_model[DCF]["free_cash_flows"]
     assert fcfs[1] / fcfs[0] - 1 == pytest.approx(0.10 + (0.025 - 0.10) / 9)
     assert a.kwargs_by_model[RDCF]["base_fcf"] == pytest.approx((120 + 90 + 150) / 3)
+
+
+def _regressed(beta, corr, n=58, **kw):
+    return _us(beta=beta, market_correlation=corr, return_observations=n,
+               return_benchmark="^GSPC", backends_used=["sec-edgar-xbrl", "market-data"], **kw)
+
+
+def test_insignificant_regressed_beta_falls_back_to_the_market():
+    """Shell: β 0.10 with ρ 0.07 over 58 months (t ≈ 0.5) is noise, so it
+    is not Blume-adjusted into 0.40; the market's 1.0 is used and said."""
+    a = AutoAssumer().build(_regressed(0.102, 0.0725))
+    assert a.market_context["beta"] == pytest.approx(1.0)
+    assert a.market_context["beta_raw"] == pytest.approx(0.102)
+    note = a.rationale[("CAPM", "beta")]
+    assert "not used" in note and "t = 0.5" in note
+
+
+def test_insignificant_beta_uses_the_sector_median_when_known():
+    a = AutoAssumer().build(_regressed(0.2, 0.05, sector="Steel"))
+    assert a.market_context["beta"] == pytest.approx(1.06)
+    assert "Steel sector median" in a.rationale[("CAPM", "beta")]
+
+
+@pytest.mark.parametrize("beta,corr,expected", [
+    (0.491, 0.2667, 0.67 * 0.491 + 0.33),    # CVX: t ≈ 2.07, kept
+    (1.087, 0.6803, 0.67 * 1.087 + 0.33),    # AAPL
+    (0.3, None, 0.67 * 0.3 + 0.33),          # no correlation reported: unchanged
+])
+def test_significant_or_untestable_betas_keep_the_blume_adjustment(beta, corr, expected):
+    a = AutoAssumer().build(_regressed(beta, corr))
+    assert a.market_context["beta"] == pytest.approx(expected)
+    assert "Blume" in a.rationale[("CAPM", "beta")]
+
+
+def test_manual_beta_is_never_replaced():
+    a = AutoAssumer().build(_regressed(0.1, 0.05), ManualOverrides(beta=0.4))
+    assert a.market_context["beta"] == pytest.approx(0.4)

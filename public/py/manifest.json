@@ -1,5 +1,5 @@
 {
-  "synced_at_utc": "2026-09-24T14:53:13+00:00",
+  "synced_at_utc": "2026-09-24T15:03:30+00:00",
   "files": [
     {
       "path": "src/__init__.py",
@@ -51,7 +51,7 @@
     },
     {
       "path": "src/pipeline/assumptions.py",
-      "sha256": "a897607891c3347c030950a44083a6c93a6a7cf3f59fb0f22a5e41d1d39c31bc"
+      "sha256": "a39fc44a025a5f4ada2597b6b4fabe576a6fbfe62c638be6462231400c7b9e96"
     },
     {
       "path": "src/pipeline/exporters.py",

@@ -239,6 +239,16 @@ _CYCLE_BASE_YEARS = 10
 #: a disclosed, sector-table or manual one.
 _BLUME_WEIGHT = 0.67
 
+#: Smallest t-statistic at which a regressed beta is used (about 95%
+#: confidence that it differs from zero). Below it, the regression explains
+#: next to none of the stock's movement, and its slope is noise that no
+#: shrinkage fixes: Shell's 0.10 against the S&P 500 (R² 0.5%, t 0.5) gave a
+#: 5.6% WACC and a DCF of 4.7x its market value. Such betas are also the
+#: least stable across windows. Against the same index over 2015-2020, XOM
+#: measured 1.31 and Shell 1.00 (Yahoo monthly closes). Over 2021-2026 they
+#: measured 0.18 and 0.10, so one five-year slope is no guide to the next.
+_BETA_MIN_T = 2.0
+
 #: Minimum gap between the cost of equity and dividend growth before the
 #: Gordon model will run. As r approaches g the value 1/(r-g) explodes; the
 #: old max(wacc, g+0.5%) floor silently valued a stock at ~200x its dividend.
@@ -375,6 +385,18 @@ class AutoAssumer:
         return "Scraped from PDF."
 
     @staticmethod
+    def _beta_t_stat(data: ExtractedFinancials) -> float | None:
+        """t-statistic of the regressed beta's slope, or ``None`` when the
+        regression's correlation or sample size is unknown.
+
+        For a one-factor OLS, t = ρ·√(n−2)/√(1−ρ²), which depends only on
+        the correlation and the number of observations."""
+        rho, n = data.market_correlation, data.return_observations
+        if rho is None or n is None or n <= 2 or abs(rho) >= 1:
+            return None
+        return abs(rho) * ((n - 2) ** 0.5) / ((1 - rho * rho) ** 0.5)
+
+    @staticmethod
     def _disclosed_source(data: ExtractedFinancials) -> str:
         """How to describe a figure that came from the company itself.
 
@@ -491,6 +513,14 @@ class AutoAssumer:
         beta_raw = beta
         beta_regressed = (o.beta is None and data.beta is not None
                           and "regression" in self._beta_source(data).lower())
+        # A regressed beta that is not statistically different from zero is
+        # treated as no measurement at all, falling back exactly as a failed
+        # regression does (sector median, else the market's 1.0).
+        beta_t = self._beta_t_stat(data) if beta_regressed else None
+        beta_insignificant = beta_t is not None and beta_t < _BETA_MIN_T
+        if beta_insignificant:
+            beta_regressed = False
+            beta = sector_baseline["beta"] if sector_baseline else self.default_beta
         if beta_regressed:
             beta = _BLUME_WEIGHT * beta_raw + (1 - _BLUME_WEIGHT)
         erm = o.expected_market_return if o.expected_market_return is not None \
@@ -875,6 +905,18 @@ class AutoAssumer:
         # authoritative-sounding false citation for their own input.
         if o.beta is not None:
             rationale[("CAPM", "beta")] = f"Manually overridden = {beta}."
+        elif beta_insignificant:
+            rationale[("CAPM", "beta")] = (
+                f"The five-year regression against {data.return_benchmark or 'the market index'} "
+                f"measured {beta_raw:.2f}, but it explains only "
+                f"{data.market_correlation ** 2:.0%} of the stock's monthly moves (t = {beta_t:.1f}, "
+                f"below the {_BETA_MIN_T:.0f} needed to tell it apart from zero), so it is not "
+                f"used. "
+                + (f"{data.sector} sector median (Damodaran, Jan 2026) = {beta:.2f} instead."
+                   if sector_baseline else
+                   f"The market's own beta of {beta:.2f} is used instead, as when no "
+                   f"regression is possible.")
+            )
         elif data.beta is not None and beta_regressed:
             rationale[("CAPM", "beta")] = (
                 f"{self._beta_source(data)} Raw {beta_raw:.2f}, Blume-adjusted "
