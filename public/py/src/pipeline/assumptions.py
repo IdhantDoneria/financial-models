@@ -796,6 +796,10 @@ class AutoAssumer:
                 f"Base free cash flow to the firm {base_fcf:,.0f} — {base_note} "
                 f"({src[:1].lower()}{src[1:].rstrip('.')}; reported history is the "
                 f"base, never used as the forecast itself); {fade}."
+                + (" Capex is not tagged in this filing, so each year's FCF is "
+                   "operating cash flow minus depreciation & amortisation (D&A "
+                   "standing in for maintenance capex)."
+                   if data.fcf_basis == "ocf_minus_da" else "")
             )
         elif data.revenue is None:
             rationale[("DCF", "free_cash_flows")] = (
@@ -908,6 +912,13 @@ class AutoAssumer:
                     "borrowings as zero; the equity value is overstated by the "
                     "company's debt. Enter total debt to complete it.")
                 partly_assessed.add(name)
+        if data.free_cash_flows and data.fcf_basis == "ocf_minus_da":
+            msg = ("Capital expenditure is not tagged in this filing, so free cash "
+                   "flow is operating cash flow minus depreciation & amortisation. "
+                   "Actual capex can differ from D&A; enter FCF for an exact value.")
+            partial["Discounted Cash Flow"] = (
+                partial["Discounted Cash Flow"] + " " + msg if "Discounted Cash Flow" in partial else msg)
+            partly_assessed.add("Discounted Cash Flow")
         if not data.free_cash_flows:
             msg = ("No cash-flow statement figures: free cash flow is estimated as "
                    "revenue × margin, which is not a cash flow. For a bank or insurer "

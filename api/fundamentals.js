@@ -197,14 +197,21 @@ const IFRS_FLOW_TAGS = {
   //  still capital expenditure, and without it SAP had no FCF at all.
   capital_expenditures: ["PurchaseOfPropertyPlantAndEquipmentClassifiedAsInvestingActivities",
                          "PurchaseOfPropertyPlantAndEquipment",
-                         "PurchaseOfPropertyPlantAndEquipmentIntangibleAssetsOtherThanGoodwillInvestmentPropertyAndOtherNoncurrentAssets"],
+                         "PurchaseOfPropertyPlantAndEquipmentIntangibleAssetsOtherThanGoodwillInvestmentPropertyAndOtherNoncurrentAssets",
+                         //: Shell's "Capital expenditure" line ($19.0bn FY2025).
+                         "PurchaseOfOtherLongtermAssetsClassifiedAsInvestingActivities"],
   depreciation_amortization: ["DepreciationAndAmortisationExpense",
                               "DepreciationAmortisationAndImpairmentLossReversalOfImpairmentLossRecognisedInProfitOrLoss"],
   rd_expense: ["ResearchAndDevelopmentExpense"],
   interest_expense: ["InterestExpense", "FinanceCosts"],
   income_tax_expense: ["IncomeTaxExpenseContinuingOperations"],
-  dividends_per_share: ["DividendsPaidOrdinarySharePerShare", "DividendsRecognisedAsDistributionsToOwnersOfParentPerShare",
-                        "DividendsRecognisedAsDistributionsToOwnersPerShare"],
+  //: The plural "Paid…Shares" tag is last: it is cash paid IN the year, and
+  //  Sony's holds only a ¥10 interim beside a ¥95 recognised total. Shell
+  //  and others tag nothing else, which is the only time it should be read.
+  dividends_per_share: ["DividendsPaidOrdinarySharePerShare",
+                        "DividendsRecognisedAsDistributionsToOwnersOfParentPerShare",
+                        "DividendsRecognisedAsDistributionsToOwnersPerShare",
+                        "DividendsPaidOrdinarySharesPerShare"],
   pretax_income: ["ProfitLossBeforeTax"],
   operating_income: ["ProfitLossFromOperatingActivities"],
   stock_based_compensation: ["AdjustmentsForSharebasedPayments"],
@@ -256,6 +263,44 @@ const DEBT_TAGS = {
   shortTermTotal: ["ShortTermBorrowings"],
   shortTermParts: ["CommercialPaper", "OtherShortTermBorrowings"],
 };
+
+//: Face-line components some filers use INSTEAD of any role tag above
+//  (Alibaba: bank loans, senior notes and convertibles as separate lines,
+//  no LongTermDebt at all). Read only when no role tag exists on the date,
+//  and only one tag per slot, so a filer tagging both a total and these
+//  footnote-level parts is never summed twice.
+const DEBT_COMPONENT_SLOTS = [
+  ["LongTermLoansFromBank", "LongTermLoansPayable"],
+  ["SeniorLongTermNotes", "LongTermNotesPayable"],
+  ["ConvertibleDebtNoncurrent"],
+  ["ShortTermBankLoansAndNotesPayable", "LoansPayableCurrent"],
+  ["SeniorNotesCurrent", "NotesPayableCurrent"],
+  ["ConvertibleDebtCurrent"],
+];
+
+//: A tag name that denotes the company's OWN borrowing (not debt securities
+//  it holds as assets). Used only to decide whether a filer has ever
+//  borrowed — see hasEverBorrowed.
+const BORROWING_NAME = /Debt|Borrowing|NotesPayable|LoansPayable|SeniorNotes|SeniorLongTermNotes|CommercialPaper|BondsIssued|LoansFromBank|ConvertibleNotes/;
+const NOT_OWN_BORROWING = /Securities|Receivable|Investment|Asset|HeldToMaturity|AvailableForSale|Trading|Lessor/;
+
+//: True when any borrowing-like tag in the filer's whole XBRL history has
+//  carried a non-zero value. Infosys has never tagged one (its only match is
+//  a liquidity table stating bank borrowings of 0), so it is genuinely
+//  debt-free; a filer whose debt lives only in custom tags (Berkshire) still
+//  tags a standard maturity schedule and so is NOT mistaken for debt-free.
+function hasEverBorrowed(facts) {
+  for (const [tag, body] of Object.entries(facts)) {
+    if (!BORROWING_NAME.test(tag) || NOT_OWN_BORROWING.test(tag)) continue;
+    //: Money units only — Infosys's IFRS 16 transition tag
+    //  WeightedAverageLesseesIncrementalBorrowingRate… is a 4.5% RATE.
+    for (const [unit, rows] of Object.entries(body.units || {})) {
+      if (!/^[A-Z]{3}$/.test(unit)) continue;
+      if (rows.some((r) => typeof r.val === "number" && r.val !== 0)) return true;
+    }
+  }
+  return false;
+}
 
 //: IFRS: `Borrowings` is the total when tagged. Otherwise sum the noncurrent
 //  loans and bonds with the current side. TSMC reports its NT$927bn of bonds
@@ -482,6 +527,20 @@ function latestAnnualEnd(facts, tags) {
   return best;
 }
 
+//: Latest basic weighted-average share count; at a shared end date the
+//  shortest period (the quarter, not year-to-date) is the most current.
+function pickWeightedAverageShares(facts, taxonomy) {
+  const tag = taxonomy === "ifrs-full" ? "WeightedAverageShares" : "WeightedAverageNumberOfSharesOutstandingBasic";
+  const rows = ((facts[tag] && facts[tag].units.shares) || [])
+    .filter((r) => typeof r.val === "number" && r.val > 0 && r.start && r.end);
+  if (!rows.length) return null;
+  const end = rows.map((r) => r.end).sort().pop();
+  const days = (r) => Date.parse(r.end) - Date.parse(r.start);
+  const best = rows.filter((r) => r.end === end)
+    .sort((a, b) => days(a) - days(b) || ((b.filed || "") > (a.filed || "") ? 1 : -1))[0];
+  return { value: best.val, end: best.end, start: best.start, tag, unit: "shares" };
+}
+
 function pickCoverShares(dei) {
   const rows = (dei && dei.EntityCommonStockSharesOutstanding
     && dei.EntityCommonStockSharesOutstanding.units.shares) || [];
@@ -559,9 +618,17 @@ function pickBalanceSheet(facts, taxonomy, currency) {
       use(debtCurrent || curMat); use(shortTerm); stParts.forEach(use);
     }
   }
+  if (!ifrs && !parts.length) {
+    for (const slot of DEBT_COMPONENT_SLOTS) use(read(slot));
+    if (parts.length) out.fromComponents = true;
+  }
   out.debtParts = parts.filter((p) => typeof p.value === "number");
   out.debt = out.debtParts.length ? out.debtParts.reduce((a, p) => a + p.value, 0) : null;
-  out.hasLongTerm = out.debtParts.some((p) => !/Current|Shortterm|ShortTerm|CommercialPaper/.test(p.tag)
+  if (out.debt === null && !hasEverBorrowed(facts)) {
+    out.debt = 0;
+    out.neverBorrowed = true;
+  }
+  out.hasLongTerm = out.neverBorrowed || out.debtParts.some((p) => !/Current|Shortterm|ShortTerm|CommercialPaper/.test(p.tag)
     || /IncludingCurrentMaturities/.test(p.tag));
   return out;
 }
@@ -594,7 +661,9 @@ function pickAnnualSeries(facts, tags, maxYears = 6, prefer = null, largestOnTie
       //  currency exactly and nothing else silently dropped every dividend.
       //  Both forms are accepted, and only for the pinned currency: INR/shares
       //  is still rejected when USD is pinned, which is the point.
-      unit = [prefer, `${prefer}/shares`].find((u) => f.units[u]);
+      //: Per-share first when both exist: Novo tags dividends under a bare
+      //  "DKK" unit (monthly rows, 4.55) as well as "DKK/shares" (11.70).
+      unit = [`${prefer}/shares`, prefer].find((u) => f.units[u]);
       if (!unit) continue;
     } else {
       unit = Object.keys(f.units).find((u) => u === "USD")
@@ -1570,6 +1639,23 @@ module.exports = async (req, res) => {
       + `stated on the filing's cover page as of ${deiShares.end}`
       + (statementShares ? `, fresher than the ${statementShares.end} balance-sheet count.` : "."));
   }
+  //: Last resort: the EPS denominator. META tags no point-in-time count at
+  //  all (two classes, cover page refused) and AstraZeneca tags neither a
+  //  count nor a cover page — both left market cap blank. Basic weighted-
+  //  average shares for the latest period is the filer's own figure for the
+  //  shares one EPS is spread across, across every class; it lags a point-
+  //  in-time count only by the period's buybacks or issuance.
+  const wavg = pickWeightedAverageShares(facts, taxonomy);
+  const current = stocks.shares_outstanding;
+  if (wavg && latestRevEnd
+      && (Date.parse(latestRevEnd) - Date.parse(wavg.end)) / 86_400_000 <= 180
+      && (!current || (Date.parse(wavg.end) - Date.parse(current.end)) / 86_400_000 > 365)) {
+    stocks.shares_outstanding = wavg;
+    notes.push(`Share count is the ${Math.round(wavg.value).toLocaleString("en-US")} basic `
+      + `weighted-average shares for the period ${wavg.start} to ${wavg.end} (the EPS denominator), `
+      + `because the filing tags no current point-in-time count. It differs from today's count `
+      + `only by buybacks or issuance since then.`);
+  }
   if (taxonomy === "ifrs-full") {
     notes.push(`Figures come from a Form 20-F filed under IFRS, denominated in ${reportingCurrency}.`);
   }
@@ -1608,6 +1694,35 @@ module.exports = async (req, res) => {
       freeCashFlows = [];
       fcfPeriodEnds = [];
       notes.push("No capital-expenditure tag found, so free cash flow could not be derived from operating cash flow.");
+    }
+  }
+
+  //: When capex is not tagged for enough years to build the 3-year base
+  //  (Toyota, Infosys, PDD tag no PP&E purchase line), use depreciation &
+  //  amortisation as the capex stand-in: OCF − D&A is the standard
+  //  maintenance-capex approximation, built from the filer's own cash flows,
+  //  and far closer than the revenue × margin stand-in the pipeline would
+  //  otherwise use. Flagged as `fcf_basis` so the DCF reports PARTIAL.
+  let fcfBasis = freeCashFlows.length ? "reported" : null;
+  //: Not for deposit-taking banks: their operating cash flow is loan and
+  //  deposit flows (JPM's was −$148bn), so OCF − D&A means nothing there.
+  const isBank = ["Deposits", "DepositsFromCustomers", "InterestBearingDepositLiabilities",
+                  "DepositsFromBanks", "BalancesOnDemandDepositsFromCustomers",
+                  "InterestIncomeOnLoansAndAdvancesToCustomers"].some((t) => facts[t]);
+  if (!isBank && freeCashFlows.length < 3 && flows.operating_cash_flow && flows.depreciation_amortization) {
+    const daByEnd = new Map(flows.depreciation_amortization.series.map((r) => [r.end, r.val]));
+    const proxyRows = flows.operating_cash_flow.series
+      .filter((r) => daByEnd.has(r.end))
+      .map((r) => ({ end: r.end, val: r.val - Math.abs(daByEnd.get(r.end)) }));
+    if (proxyRows.length >= 3) {
+      freeCashFlows = proxyRows.map((r) => r.val);
+      fcfPeriodEnds = proxyRows.map((r) => r.end);
+      fcfBasis = "ocf_minus_da";
+      const idx = notes.findIndex((n) => n.startsWith("No capital-expenditure tag found"));
+      if (idx >= 0) notes.splice(idx, 1);
+      notes.push(`Free cash flow is operating cash flow minus depreciation & amortisation for `
+        + `${proxyRows.length} years: this filer tags no capital-expenditure line for enough years, `
+        + `so D&A stands in for maintenance capex. Actual capex may differ; the DCF is marked PARTIAL.`);
     }
   }
 
@@ -1694,6 +1809,13 @@ module.exports = async (req, res) => {
     const lines = bs.debtParts.map((p) => p.tag).join(" + ");
     notes.push(`Cash and total debt are from the balance sheet dated ${bs.anchor}`
       + (lines ? `; total debt = ${lines}.` : "."));
+  }
+  if (bs.neverBorrowed) {
+    notes.push("Total debt is 0: this company has never tagged a borrowing of any kind in its "
+      + "XBRL filings (no debt, notes, loans or maturity schedule), so it is treated as debt-free.");
+  } else if (bs.fromComponents) {
+    notes.push("Total debt is summed from the separate borrowing lines this filer uses (bank "
+      + "loans, senior notes, convertibles) because it tags no total-debt line.");
   }
   if (totalDebt === null) {
     notes.push(`No debt line is tagged on the ${bs.anchor || "latest"} balance sheet in a form `
@@ -2037,6 +2159,7 @@ module.exports = async (req, res) => {
     interest_expense_series: interestExpenseSeries,
     sbc_series: sbcSeries,
     fcf_period_ends: fcfPeriodEnds,
+    fcf_basis: fcfBasis,
     interest_paid_classification: interestPaidClassification,
     stock_based_compensation: (() => {
       const v = latestFlow("stock_based_compensation");
@@ -2129,7 +2252,7 @@ module.exports = async (req, res) => {
 //  dedup, period alignment) and impossible to check by eyeballing a live
 //  response, so they are tested directly rather than only through the handler.
 module.exports._internals = { isTransient, resolveTicker, detectReportingCurrency, deriveAdrRatio,
-                              pickBalanceSheet, valueAt, translationRates, pickCoverShares, mergeFacts, latestAnnualEnd, latestFilingForm,
+                              pickBalanceSheet, valueAt, translationRates, pickCoverShares, mergeFacts, latestAnnualEnd, latestFilingForm, hasEverBorrowed, DEBT_COMPONENT_SLOTS, pickWeightedAverageShares,
                               PREDECESSOR_CIKS, DEBT_TAGS, IFRS_DEBT_TAGS, ADR_PINNED_RATIOS, ADR_PINNED_BAND,
                               MINOR_UNIT_QUOTES,
                               ADR_LOCAL_LISTINGS, ADR_RATIO_CANDIDATES, ADR_RATIO_TOLERANCE, pickInstant, pickAnnualSeries, FLOW_TAGS, STOCK_TAGS,
