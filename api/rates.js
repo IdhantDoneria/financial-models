@@ -21,9 +21,12 @@
 
 const MARKETS = {
   US: { ccy: "USD" },                                  // FiscalData (keyless)
-  CN: { ccy: "CNY", fred: "IRLTLT01CNM156N" },
+  CN: { ccy: "CNY" },                                  // no OECD series — baseline
   JP: { ccy: "JPY", fred: "IRLTLT01JPM156N" },
-  IN: { ccy: "INR", fred: "IRLTLT01INM156N" },
+  //: FRED retired IRLTLT01INM156N (the page 404s); India's OECD 10Y yield
+  //  now lives at INDIRLTLT01STM (6.78% for Jul 2026, checked 2026-09-24).
+  //  China never had an OECD series — the old CN id 404'd the same way.
+  IN: { ccy: "INR", fred: "INDIRLTLT01STM" },
   HK: { ccy: "HKD" },                                  // no OECD series — baseline
   FR: { ccy: "EUR", fred: "IRLTLT01FRM156N" },
   GB: { ccy: "GBP", fred: "IRLTLT01GBM156N" },
@@ -166,4 +169,4 @@ module.exports = async (req, res) => {
 
 //: Pure helper exported for scripts/test_*.js — tested against an inline CSV
 //  fixture rather than a live fetch.
-module.exports._internals = { parseTenYearParYield };
+module.exports._internals = { parseTenYearParYield, MARKETS };

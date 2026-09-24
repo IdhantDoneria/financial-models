@@ -569,7 +569,13 @@ class AutoAssumer:
         # either way. Left None when not disclosed; gated as `unavailable`
         # below rather than run on a fabricated number in either case.
         dividend = data.dividend_per_share
-        g_div = o.dividend_growth if o.dividend_growth is not None else 0.03
+        # Perpetual dividend growth is held to the same ceiling as the DCF's
+        # terminal growth: min(rf, the market's long-run nominal growth). A
+        # dividend stream growing forever faster than its economy is the same
+        # impossibility a terminal value growing faster would be. The flat 3%
+        # this replaces sat above the US cap (2.5%) and far above Japan's and
+        # Switzerland's (1%), inflating every Gordon value outside the US.
+        g_div = o.dividend_growth if o.dividend_growth is not None else g_terminal
         shares = data.shares_outstanding or 1_000_000.0
         net_debt = data.net_debt if data.net_debt is not None else 0.0
         # Same margin fallback _synth_fcfs uses (including its sector-baseline
@@ -754,7 +760,15 @@ class AutoAssumer:
                  f"{self.terminal_growth_cap:.2%}) = {g_terminal:.2%} — a perpetuity "
                  f"can't outgrow the currency's risk-free rate or its economy."
         )
-        if lease_debt:
+        if data.total_debt is None:
+            rationale[("DCF", "net_debt")] = (
+                "No total debt was found in this filing, so borrowings count as "
+                "zero in net debt"
+                + (f" (only {lease_debt:,.0f} of lease liabilities is included)" if lease_debt else "")
+                + " — equity value is overstated by whatever the company owes. "
+                  "Enter total debt to complete the valuation."
+            )
+        elif lease_debt:
             rationale[("DCF", "net_debt")] = (
                 (f"Reported net debt plus {lease_debt:,.0f} of IFRS 16 lease "
                  f"liabilities. IFRS 16 puts every lease on the balance sheet and "
@@ -885,6 +899,22 @@ class AutoAssumer:
 
         partial: dict[str, str] = {}
         partly_assessed: set[str] = set()
+        # A valuation that ran on an input the filing didn't supply is not
+        # "OK": say which part is missing, but keep the number (PARTIAL).
+        if data.total_debt is None:
+            for name in ("Discounted Cash Flow", "Reverse DCF / Market-Implied Expectations"):
+                partial[name] = (
+                    "Total debt was not found in this filing, so net debt counts "
+                    "borrowings as zero; the equity value is overstated by the "
+                    "company's debt. Enter total debt to complete it.")
+                partly_assessed.add(name)
+        if not data.free_cash_flows:
+            msg = ("No cash-flow statement figures: free cash flow is estimated as "
+                   "revenue × margin, which is not a cash flow. For a bank or insurer "
+                   "that estimate has no real meaning; treat the value as indicative.")
+            partial["Discounted Cash Flow"] = (
+                partial["Discounted Cash Flow"] + " " + msg if "Discounted Cash Flow" in partial else msg)
+            partly_assessed.add("Discounted Cash Flow")
         # A $0 hidden-debt adjustment reads identically whether the model
         # found genuinely nothing to adjust, or was simply never given any
         # lease/reverse-factoring/contingent-liability figures to look at —
@@ -1008,6 +1038,16 @@ class AutoAssumer:
             rationale[("RDCF", "current_price / shares_outstanding")] = \
                 unavailable["Reverse DCF / Market-Implied Expectations"]
 
+        if data.dividend_per_share is not None:
+            rationale[("Gordon Growth", "growth")] = (
+                f"Manually overridden = {g_div:.2%}." if o.dividend_growth is not None
+                else f"{g_div:.2%} = the DCF's terminal growth (manually set) — a "
+                     f"perpetual dividend is held to the same ceiling."
+                if o.terminal_growth is not None
+                else f"{g_div:.2%} = the DCF's terminal growth, min(risk-free {rf:.2%}, "
+                     f"market long-run nominal growth {self.terminal_growth_cap:.2%}) — "
+                     f"a perpetual dividend can't outgrow its currency or economy."
+            )
         if data.dividend_per_share is not None and cost_of_equity - g_div < _GORDON_MIN_SPREAD:
             unavailable["Gordon Growth Model"] = (
                 f"Cost of equity {cost_of_equity:.2%} is within "

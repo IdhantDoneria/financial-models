@@ -117,5 +117,16 @@ console.log("\n· An empty or header-only file (early January) yields null, not 
     "a CSV missing the 10 Yr column entirely yields null rather than guessing a column");
 }
 
+console.log("\n· FRED series ids — a dead id silently drops a market to its baseline");
+{
+  const { MARKETS } = _internals;
+  //: Both dead ids were found by the 2026-09 audit: FRED 404s on them, the
+  //  endpoint returned rf null, and India/China quietly used fixed baselines.
+  ok(MARKETS.IN.fred === "INDIRLTLT01STM", "India uses FRED's live OECD series id");
+  ok(!MARKETS.CN.fred, "China has no OECD series, so it claims none");
+  ok(Object.values(MARKETS).every((m) => !m.fred || /^[A-Z0-9]+$/.test(m.fred)),
+    "every configured id is a bare FRED series id");
+}
+
 console.log(`\n${passed} passed · ${failed} failed`);
 process.exit(failed ? 1 : 0);

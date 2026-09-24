@@ -1207,6 +1207,9 @@ function fmtValue(key, v) {
   // (company_name, ticker) — genuinely attacker-controlled via a crafted
   // upload, unlike the model-computed values also passed through here.
   if (typeof v === "string") return esc(v.toUpperCase());
+  //: A year is a label, not a quantity — the generic number path printed
+  //  FY2025 as "2,025.00".
+  if (key === "fiscal_year" && Number.isInteger(v)) return String(v);
   if (Array.isArray(v)) {
     if (v.length <= 6 && v.every((x) => typeof x === "number"))
       return v.map((x) => +x.toFixed(3)).join("  ");
@@ -1572,7 +1575,8 @@ function buildIBForm() {
     body.insertAdjacentHTML("beforeend",
       `<div class="ibhint">IB BOT: CAPM WACC (Blume-adjusted β, lease liabilities as debt), FCF to the firm
        (3-year average, interest added back, stock comp deducted) projected 10 years with growth fading
-       to terminal g = min(r_f, ${(c.ltg * 100).toFixed(1)}% long-run growth). Anchored to
+       to terminal g = min(r_f, ${(c.ltg * 100).toFixed(1)}% long-run growth); Gordon Growth's perpetual
+       dividend growth uses the same g. Anchored to
        <b>${c.flag} ${c.name.toUpperCase()}</b>: ERP ${(c.erp * 100).toFixed(1)}% (Damodaran country rating),
        risk-free from the live 10Y sovereign yield (US Treasury par yield curve / FRED-OECD), baseline
        fallback offline.
@@ -2341,6 +2345,13 @@ function applyCountryDefaults(c) {
   if (erpOv) erpOv.def = Math.min(erpOv.max, Math.max(erpOv.min, c.rf + c.erp));
   const rfOv = IB_OVERRIDES.find((o) => o.id === "risk_free_rate");
   if (rfOv) rfOv.def = Math.min(rfOv.max, Math.max(rfOv.min, c.rf));
+  //: The auto engine sets both perpetual growth rates to min(rf, ltg); the
+  //  manual sliders start there too, so an untouched slider shows what the
+  //  bot actually used (DIV GROWTH used to show a flat 4%).
+  for (const id of ["terminal_growth", "dividend_growth"]) {
+    const ov = IB_OVERRIDES.find((o) => o.id === id);
+    if (ov) ov.def = Math.min(ov.max, Math.max(ov.min, Math.min(c.rf, c.ltg)));
+  }
 }
 
 function initCountry() {
