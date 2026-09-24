@@ -367,3 +367,28 @@ def test_ocf_minus_da_fcf_reports_dcf_partial():
     a = AutoAssumer().build(data)
     assert DCF in a.partly_assessed and "depreciation" in a.partial[DCF]
     assert "D&A" in a.rationale[("DCF", "free_cash_flows")]
+
+
+@pytest.mark.parametrize("kw", [dict(sic_code=1311), dict(sic_code=2911), dict(sic_code=3312),
+                                dict(sector="Oil/Gas (Integrated)")])
+def test_commodity_producer_grows_at_terminal_rate_on_a_full_cycle_base(kw):
+    """Shell (SIC 1311) / XOM (2911): the trailing revenue CAGR measures the
+    oil-price cycle, so the forecast grows at terminal g from a base averaged
+    over every reported year, not the filing's 10% from the latest three."""
+    a = AutoAssumer().build(_us(**kw))
+    fcfs = a.kwargs_by_model[DCF]["free_cash_flows"]
+    assert all(fcfs[i + 1] / fcfs[i] - 1 == pytest.approx(0.025) for i in range(9))
+    assert a.kwargs_by_model[RDCF]["base_fcf"] == pytest.approx((100 + 120 + 90 + 150) / 4)
+    note = a.rationale[("DCF", "free_cash_flows")]
+    assert "commodity producer" in note and "10.00% a year" in note and "full reported cycle" in note
+
+
+@pytest.mark.parametrize("kw", [dict(sic_code=3711), dict(sic_code=4512), dict(sic_code=3674),
+                                dict(sic_code=2834), dict(sector="Oil/Gas (Integrated)", sic_code=7372)])
+def test_non_commodity_companies_keep_their_own_growth(kw):
+    """Autos, airlines, chips and pharma keep the filing's rate; an SIC code
+    outranks the PDF text classifier when both exist."""
+    a = AutoAssumer().build(_us(**kw))
+    fcfs = a.kwargs_by_model[DCF]["free_cash_flows"]
+    assert fcfs[1] / fcfs[0] - 1 == pytest.approx(0.10 + (0.025 - 0.10) / 9)
+    assert a.kwargs_by_model[RDCF]["base_fcf"] == pytest.approx((120 + 90 + 150) / 3)

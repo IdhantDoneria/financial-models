@@ -41,6 +41,22 @@ const SEC_UA = process.env.SEC_USER_AGENT
   || "FINMODELS Terminal finmodels10@gmail.com";
 const TICKERS_URL = "https://www.sec.gov/files/company_tickers.json";
 const FACTS_URL = (cik) => `https://data.sec.gov/api/xbrl/companyfacts/CIK${cik}.json`;
+const SUBMISSIONS_URL = (cik) => `https://data.sec.gov/submissions/CIK${cik}.json`;
+
+//: The registrant's SIC code from EDGAR submissions, or null. The pipeline
+//  uses it to recognise commodity producers (assumptions.py
+//  _COMMODITY_SIC_RANGES); a failed lookup only loses that refinement, so
+//  it never fails the request.
+async function fetchSicCode(cik) {
+  try {
+    const r = await secFetch(SUBMISSIONS_URL(cik));
+    if (!r.ok) return null;
+    const sic = parseInt((await r.json()).sic, 10);
+    return Number.isFinite(sic) && sic > 0 ? sic : null;
+  } catch {
+    return null;
+  }
+}
 
 //: Successor registrant CIK -> predecessor CIK, for reorganisations that move
 //  a ticker to a new filer with no annual XBRL history. EDGAR's JSON APIs do
@@ -1522,6 +1538,8 @@ module.exports = async (req, res) => {
   }
 
   let facts, entityName, taxonomy = "us-gaap", deiFacts = null, predecessorNote = null;
+  //: Started alongside companyfacts so it adds no latency.
+  const sicPromise = fetchSicCode(entry.cik);
   try {
     const t0 = Date.now();
     let r = await secFetch(FACTS_URL(entry.cik)).catch((e) => e);
@@ -2199,6 +2217,7 @@ module.exports = async (req, res) => {
     //  us-gaap tried first, ifrs-full on a 20-F filer) — see the comment
     //  above `facts = (j.facts && j.facts["us-gaap"])`.
     accounting_standard: taxonomy,
+    sic_code: await sicPromise,
     currency: reportingCurrency || (priceInfo ? priceInfo.currency : "USD"),
     statement_basis: "annual",
     //: Provenance. assumptions.py reads this to decide whether a figure may be
@@ -2212,7 +2231,9 @@ module.exports = async (req, res) => {
   }
 
   const missing = Object.entries(fields)
-    .filter(([k, v]) => v === null || (Array.isArray(v) && v.length === 0))
+    //: sic_code is classification metadata, not a financial figure the
+    //  extraction-confidence count should penalise.
+    .filter(([k, v]) => k !== "sic_code" && (v === null || (Array.isArray(v) && v.length === 0)))
     .map(([k]) => k);
 
   if (fields.current_price == null || fields.beta == null) {
