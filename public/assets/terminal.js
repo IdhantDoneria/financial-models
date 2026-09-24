@@ -1480,7 +1480,11 @@ function syncIBMarket(c) {
 async function applyCountryToIB(c) {
   const seq = (state.ib.rateSeq = (state.ib.rateSeq || 0) + 1);
   state.ib.liveRf = c.rf;
-  state.ib.rfSource = `${c.name.toUpperCase()} 10Y SOVEREIGN BASELINE (DAMODARAN)`;
+  //: Replaced by the live figure when /api/rates returns one. China, Hong
+  //  Kong, Taiwan and Saudi Arabia have no free live 10Y series, so for them
+  //  this stays, and must not read as a live yield.
+  state.ib.rfSource = `${c.name.toUpperCase()} 10Y · STATIC BASELINE (DAMODARAN), NOT A LIVE YIELD`;
+  state.ib.rfLive = false;
   state.ib.fx = null; state.ib.fxDate = null;
   syncIBMarket(c);
   renderIBContext();
@@ -1492,6 +1496,7 @@ async function applyCountryToIB(c) {
     if (typeof j.rf === "number" && j.rf > 0 && j.rf < 0.5) {
       state.ib.liveRf = j.rf;
       state.ib.rfSource = j.rfSource || state.ib.rfSource;
+      state.ib.rfLive = !!j.rfSource;
       //: live yield also re-anchors the manual sliders' defaults
       applyCountryDefaults({ ...c, rf: j.rf });
       syncIBMarket(c);
@@ -2110,7 +2115,7 @@ function renderIBContext() {
   const rf = state.ib.liveRf;
   ctx.innerHTML = `<td class="k">RISK-FREE (${c.code})</td><td class="v">${
     rf !== null && rf !== undefined ? (rf * 100).toFixed(3) + "%" : "—"
-  } <span class="badge live">${esc(state.ib.rfSource || "FETCHING…")}</span></td>`;
+  } <span class="badge ${state.ib.rfLive === false ? "assumed" : "live"}">${esc(state.ib.rfSource || "FETCHING…")}</span></td>`;
   grid.appendChild(ctx);
 
   let mkt = $("#ibmkt");
@@ -2181,7 +2186,9 @@ async function runIBReport() {
     setTab("chart");
     if (isPhone()) setMobileView("viz");   // the report renders in ANALYTICS
     const nErr = Object.keys(out.errors).length;
-    ibStatus(`REPORT READY · ${out.summary.length} MODELS${nErr ? ` · ${nErr} FAILED` : ""}`);
+    // A model that declines to run on made-up inputs is a refusal, not a failure.
+    ibStatus(`REPORT READY · ${out.summary.length - nErr} OF ${out.summary.length} MODELS RAN`
+      + `${nErr ? ` · ${nErr} NOT RUN (SEE REASON)` : ""}`);
     $("#ostat").className = "meta";
   } catch (err) {
     ibStatus("RUN FAILED: " + String(err).slice(0, 160), true);
@@ -2241,7 +2248,8 @@ function renderIBReport() {
     renderIBDoc();
     return;
   }
-  const company = state.ib.extracted?.fields?.company_name || "UPLOADED COMPANY";
+  const company = state.ib.extracted?.fields?.company_name
+    || state.ib.extracted?.fields?.ticker || "UPLOADED COMPANY";
   let html = `<h2>REPORT — ${esc(company.toUpperCase())} · ${out.mode.toUpperCase()} MODE</h2>`;
   html += confidenceBannerHTML();
   html += `<table><tr><th>MODEL</th><th>HEADLINE RESULT</th><th>STATUS</th></tr>`;
@@ -2279,6 +2287,10 @@ function renderIBReport() {
     html += `<tr class="${isError ? "err" : ""}"><td>${esc(row.Model)}</td>
       <td class="num">${esc(String(row["Headline result"]))}</td>
       <td class="${statClass}"><span class="badge ${badgeClass}">${esc(status)}</span></td></tr>`;
+    // A PARTIAL / UNASSESSED badge without its reason is a warning nobody
+    // can act on. The assumption layer writes the reason; show it under the row.
+    const why = out.status_reasons ? out.status_reasons[row.Model] : null;
+    if (why) html += `<tr class="why"><td colspan="3">${esc(String(why))}</td></tr>`;
   });
   html += "</table><h2>ASSUMPTIONS (MARKET CONTEXT)</h2><table>";
   Object.entries(out.market_context).forEach(([key, value]) => {

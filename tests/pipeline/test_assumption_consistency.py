@@ -429,3 +429,252 @@ def test_significant_or_untestable_betas_keep_the_blume_adjustment(beta, corr, e
 def test_manual_beta_is_never_replaced():
     a = AutoAssumer().build(_regressed(0.1, 0.05), ManualOverrides(beta=0.4))
     assert a.market_context["beta"] == pytest.approx(0.4)
+
+
+# --------------------------------------------------------------------------- #
+# Audit round 2 (2026-09-24): a 71-ticker live sweep
+# --------------------------------------------------------------------------- #
+def _market_only(**kw) -> ExtractedFinancials:
+    """What SPY, BTC-USD or RELIANCE.NS produce: a price and a beta, and no
+    filing at all."""
+    return ExtractedFinancials(
+        current_price=764.17, beta=1.0, backends_used=["market-data"], **kw)
+
+
+def test_dcf_refuses_when_there_is_neither_cash_flow_nor_revenue():
+    """SPY produced "DCF $1,726.79 PARTIAL" from a made-up company (revenue
+    100). Gordon Growth and Reverse DCF already refused; the DCF must too."""
+    a = AutoAssumer().build(_market_only())
+    assert "made-up placeholder" in a.unavailable[DCF]
+    assert RDCF in a.unavailable          # already refused: no real share count
+    # With a real share count but still no cash flow or revenue, Reverse DCF
+    # would invert a placeholder base, so it refuses for that reason.
+    b = AutoAssumer().build(_market_only(shares_outstanding=1e9))
+    assert "made-up placeholder" in b.unavailable[DCF]
+    assert "made-up placeholder" in b.unavailable[RDCF]
+
+
+def test_dcf_still_runs_with_only_a_revenue_or_only_a_cash_flow():
+    rev_only = AutoAssumer().build(_market_only(revenue=50e9))
+    assert DCF not in rev_only.unavailable and DCF in rev_only.partly_assessed
+    fcf_only = AutoAssumer().build(_market_only(free_cash_flows=[5e9, 6e9, 7e9],
+                                                 fcf_history_order="oldest_first"))
+    assert DCF not in fcf_only.unavailable
+
+
+def _grower(sbc: float, fcfs=(0.5e9, 0.8e9, 1.1e9)) -> ExtractedFinancials:
+    """Snowflake's shape: positive reported FCF, stock comp larger than it."""
+    return _ticker(free_cash_flows=list(fcfs), fcf_history_order="oldest_first",
+                   stock_based_compensation=sbc, sbc_series=[sbc] * len(fcfs),
+                   revenue=4e9, revenue_growth=0.3, total_debt=2e9)
+
+
+def test_positive_reported_fcf_is_valued_before_stock_comp_not_refused():
+    """Snowflake, Arm and Reddit report positive free cash flow that turns
+    negative only once stock comp is deducted. They were refused; they now
+    run on the pre-stock-comp base, flagged PARTIAL with the reason."""
+    a = AutoAssumer().build(_grower(sbc=1.5e9))
+    assert DCF not in a.unavailable and RDCF not in a.unavailable
+    assert a.kwargs_by_model[RDCF]["base_fcf"] > 0
+    assert "BEFORE stock-based compensation" in a.partial[DCF]
+    assert "BEFORE stock-based compensation" in a.partial[RDCF]
+    assert "NOT deducted" in a.rationale[("DCF", "free_cash_flows")]
+
+
+def test_stock_comp_fallback_needs_positive_REPORTED_cash_flow():
+    """Oracle: reported FCF averages negative; only the interest add-back
+    lifts the pre-stock-comp base above zero. Saying its reported cash flow
+    is positive would be false, so the DCF is refused as before."""
+    data = _grower(sbc=0.5e9, fcfs=(-1.0e9, -1.2e9, -0.8e9))
+    # after-tax interest 1.125bn: base −1.0 + 1.125 − 0.5 < 0 with stock comp,
+    # > 0 without it, while the REPORTED average (−1.0bn) is negative.
+    data.interest_expense, data.interest_expense_series = 1.5e9, [1.5e9, 1.5e9, 1.5e9]
+    data.tax_rate = 0.25
+    a = AutoAssumer().build(data)
+    assert "discloses is negative" in a.unavailable[DCF]
+    assert "BEFORE stock-based compensation" not in a.partial.get(DCF, "")
+
+
+def test_genuinely_negative_reported_fcf_keeps_the_original_wording():
+    a = AutoAssumer().build(_grower(sbc=0.1e9, fcfs=(-3e9, -2e9, -1e9)))
+    assert "discloses is negative" in a.unavailable[DCF]
+    assert "reports is positive" not in a.unavailable[DCF]
+
+
+@pytest.mark.parametrize("kw", [dict(sic_code=6021), dict(sic_code=6211), dict(sic_code=6311),
+                                dict(sic_code=6199), dict(sector="Bank (Money Center)")])
+def test_lenders_get_a_dcf_caveat_not_a_clean_ok(kw):
+    """JPM/GS/WFC/HDB showed a DCF value with no hint that free cash flow and
+    net debt mean something else for a bank or insurer."""
+    a = AutoAssumer().build(_ticker(**kw))
+    assert DCF in a.partly_assessed and RDCF in a.partly_assessed
+    assert "bank, broker or insurer" in a.partial[DCF]
+
+
+@pytest.mark.parametrize("kw", [dict(sic_code=7372), dict(sic_code=6798), dict(sic_code=3711),
+                                dict(sic_code=6512), dict()])
+def test_non_lenders_are_not_caveated(kw):
+    """REITs (6798) and real-estate operators have real cash flows; software,
+    autos and unclassified companies are untouched."""
+    a = AutoAssumer().build(_ticker(**kw))
+    assert "bank, broker or insurer" not in a.partial.get(DCF, "")
+
+
+def test_health_insurers_are_not_treated_as_lenders():
+    """UnitedHealth/Elevance/Cigna (SIC 6324) have ordinary operating cash
+    flow; the lender caveat would over-claim for them."""
+    a = AutoAssumer().build(_ticker(sic_code=6324))
+    assert "bank, broker or insurer" not in a.partial.get(DCF, "")
+
+
+# ---- divergence between the DCF and the market -----------------------------
+def _report(price=100.0, shares=10.0, equity=1000.0):
+    from src.pipeline.runner import AnalysisReport
+    company = _ticker(current_price=price, shares_outstanding=shares)
+    r = AnalysisReport(company=company, assumptions=AutoAssumer().build(company))
+    r.results[DCF] = {"equity_value": equity}
+    return r
+
+
+@pytest.mark.parametrize("equity,expect", [(7260.0, "7.26x the market capitalisation"),
+                                           (50.0, "0.05x the market capitalisation"),
+                                           (-330.0, "negative equity value")])
+def test_a_dcf_far_from_the_market_says_so(equity, expect):
+    """GM read 7.26x its market cap (a captive finance arm's debt pulls WACC
+    down), DUK a negative equity value, LLY 0.08x, each under a plain "OK"."""
+    note = _report(equity=equity).divergence_note()
+    assert note and expect in note and "not a price target" in note
+
+
+@pytest.mark.parametrize("equity", [400.0, 1000.0, 2500.0])
+def test_a_dcf_near_the_market_is_left_alone(equity):
+    assert _report(equity=equity).divergence_note() is None
+
+
+def test_no_divergence_note_without_a_real_price_and_share_count():
+    from src.pipeline.runner import AnalysisReport
+    company = _ticker(current_price=None, shares_outstanding=None)
+    r = AnalysisReport(company=company, assumptions=AutoAssumer().build(company))
+    r.results[DCF] = {"equity_value": 1e12}
+    assert r.divergence_note() is None
+
+
+# --------------------------------------------------------------------------- #
+# Audit round 3 (2026-09-24): the "flagged, not fixed" table
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("sic,expected", [(2834, 0.98), (3711, 1.46), (4813, 0.63), (7374, 1.69)])
+def test_insignificant_beta_falls_back_to_the_sector_from_the_sic_code(sic, expected):
+    """Ticker loads carry an SIC code but no sector, so an insignificant beta
+    always fell to 1.0 (13 of 71 tickers). Pfizer/Lilly/AZN (2834) now get the
+    pharma median, Lucid (3711) autos, AT&T/Verizon (4813) telecom."""
+    a = AutoAssumer().build(_regressed(0.3, 0.05, sic_code=sic))
+    assert a.market_context["beta"] == pytest.approx(expected)
+    assert f"SEC code {sic}" in a.rationale[("CAPM", "beta")]
+
+
+@pytest.mark.parametrize("sic", [1311, 2911, 3760, 7389, 6324])
+def test_unmapped_or_excluded_sic_codes_keep_the_market_beta(sic):
+    """Oil and gas are excluded on purpose (their sector betas would undo the
+    Shell fix); aerospace, 'business services NEC' and health plans have no
+    matching industry in the table."""
+    a = AutoAssumer().build(_regressed(0.1, 0.05, sic_code=sic))
+    assert a.market_context["beta"] == pytest.approx(1.0)
+
+
+def test_sector_text_outranks_the_sic_mapping():
+    a = AutoAssumer().build(_regressed(0.2, 0.05, sector="Steel", sic_code=2834))
+    assert a.market_context["beta"] == pytest.approx(1.06)
+
+
+def test_base_is_average_margin_times_latest_revenue_for_a_grower():
+    """A 20%-a-year grower: margins 10%, 12%, 11% on revenue 100, 120, 144.
+    The plain average (13.3) sat about a year behind; the base is now the
+    average margin (11%) on the latest revenue (144) = 15.84."""
+    data = _us(free_cash_flows=[10.0, 14.4, 15.84], revenue_series=[100.0, 120.0, 144.0])
+    a = AutoAssumer().build(data)
+    assert a.kwargs_by_model[RDCF]["base_fcf"] == pytest.approx((0.10 + 0.12 + 0.11) / 3 * 144)
+    assert "average FCF margin" in a.rationale[("DCF", "free_cash_flows")]
+
+
+@pytest.mark.parametrize("kw", [dict(revenue_series=[]), dict(revenue_series=[100.0, None, 144.0]),
+                                dict(revenue_series=[100.0, 120.0, 144.0], sic_code=2911)])
+def test_plain_average_without_a_full_revenue_series_or_for_commodity_producers(kw):
+    fcfs = [10.0, 14.4, 15.84]
+    a = AutoAssumer().build(_us(free_cash_flows=fcfs, **kw))
+    assert a.kwargs_by_model[RDCF]["base_fcf"] == pytest.approx(sum(fcfs) / 3)
+
+
+def _burner(**kw) -> ExtractedFinancials:
+    """Rivian's shape: real revenue, negative free cash flow."""
+    base = dict(free_cash_flows=[-5.9e9, -2.9e9, -2.5e9], fcf_history_order="oldest_first",
+                revenue=5.8e9, current_price=15.0, shares_outstanding=1.2e9,
+                total_debt=5e9, cash_and_equivalents=7e9, currency="USD",
+                backends_used=["sec-edgar-xbrl"])
+    base.update(kw)
+    return ExtractedFinancials(**base)
+
+
+def test_cash_burner_gets_a_revenue_growth_reverse_dcf():
+    a = AutoAssumer().build(_burner(sic_code=3711))
+    kw = a.kwargs_by_model[RDCF]
+    assert RDCF not in a.unavailable and kw["growth_profile"] == "revenue"
+    assert kw["target_fcf_margin"] == pytest.approx(0.0316 * (1 - 0.25))   # Auto & Truck, after tax
+    assert "REVENUE growth" in a.partial[RDCF] and "Auto & Truck" in a.partial[RDCF]
+    res = ReverseDCFModel(**kw).calculate()
+    assert res["implied_revenue_cagr"] is not None or res["solver_note"]
+    assert DCF in a.unavailable                     # the forward DCF still refuses a cash burn
+
+
+def test_manual_target_margin_is_used_and_lenders_get_no_revenue_mode():
+    a = AutoAssumer().build(_burner(), ManualOverrides(target_fcf_margin=0.12))
+    assert a.kwargs_by_model[RDCF]["target_fcf_margin"] == pytest.approx(0.12)
+    bank = AutoAssumer().build(_burner(sic_code=6021))
+    assert RDCF in bank.unavailable
+
+
+def test_captive_finance_debt_is_left_out_of_the_industrial_valuation():
+    """GM: 114.0bn of 130.3bn debt is GM Financial's. Net debt, the WACC
+    weight and the interest add-back use the industrial 16.2bn only."""
+    data = _ticker(total_debt=130.3e9, finance_arm_debt=114.0e9, cash_and_equivalents=27.7e9,
+                   interest_expense=4.1e9, interest_expense_series=[4e9, 4e9, 4.1e9], sic_code=3711)
+    a = AutoAssumer().build(data)
+    assert a.kwargs_by_model[DCF]["net_debt"] == pytest.approx(16.3e9 - 27.7e9, rel=1e-6)
+    plain = AutoAssumer().build(_ticker(total_debt=130.3e9, cash_and_equivalents=27.7e9,
+                                        interest_expense=4.1e9, sic_code=3711))
+    assert a.market_context["wacc"] > plain.market_context["wacc"]
+    assert "captive finance arm" in a.partial[DCF]
+    assert "finance arm" in a.rationale[("DCF", "net_debt")]
+
+
+def test_utilities_and_ffo_only_reits_are_caveated_and_reits_grow_organically():
+    util = AutoAssumer().build(_ticker(sic_code=4911))
+    assert "regulated utility" in util.partial[DCF]
+    reit = AutoAssumer().build(_ticker(sic_code=6798, fcf_basis="ocf_reit", revenue_growth=0.25))
+    assert "no maintenance deduction" in reit.partial[DCF]
+    fcfs = reit.kwargs_by_model[DCF]["free_cash_flows"]
+    assert all(fcfs[i + 1] / fcfs[i] - 1 == pytest.approx(0.025) for i in range(len(fcfs) - 1))
+    assert "organic growth only" in reit.rationale[("DCF", "free_cash_flows")]
+
+
+@pytest.mark.parametrize("kind", ["ETF", "CRYPTOCURRENCY", "MUTUALFUND"])
+def test_non_equity_listings_refuse_the_company_models(kind):
+    a = AutoAssumer().build(_market_only(instrument_type=kind, shares_outstanding=1e9, revenue=1e9))
+    for name in (DCF, "Gordon Growth Model", RDCF, "Ind AS 116 Hidden-Debt Normalizer"):
+        assert "not a company" in a.unavailable[name]
+    assert "Capital Asset Pricing Model" not in a.unavailable
+
+
+def test_equity_and_unknown_instrument_types_are_unaffected():
+    for kind in ("EQUITY", None):
+        a = AutoAssumer().build(_ticker(instrument_type=kind))
+        assert DCF not in a.unavailable
+
+
+def test_dcf_headline_is_value_per_share_beside_the_price():
+    from src.pipeline.runner import AnalysisReport
+    r = AnalysisReport._headline(DCF, {"price_per_share": 256.01, "enterprise_value": 5e11}, "$", price=364.89)
+    assert r == "$256.01 / share · price $364.89"
+    assert AnalysisReport._headline(DCF, {"price_per_share": None, "enterprise_value": 5.67e10}, "₹") \
+        == "₹56,700,000,000 enterprise value"
+    assert AnalysisReport._headline(RDCF, {"growth_profile": "revenue", "implied_revenue_cagr": 0.2879}) \
+        == "28.79% revenue growth"

@@ -43,20 +43,250 @@ const TICKERS_URL = "https://www.sec.gov/files/company_tickers.json";
 const FACTS_URL = (cik) => `https://data.sec.gov/api/xbrl/companyfacts/CIK${cik}.json`;
 const SUBMISSIONS_URL = (cik) => `https://data.sec.gov/submissions/CIK${cik}.json`;
 
-//: The registrant's SIC code from EDGAR submissions, or null. The pipeline
-//  uses it to recognise commodity producers (assumptions.py
-//  _COMMODITY_SIC_RANGES); a failed lookup only loses that refinement, so
-//  it never fails the request.
-async function fetchSicCode(cik) {
+//: The registrant's SIC code and newest annual report from EDGAR
+//  submissions. The pipeline uses the SIC code to recognise commodity
+//  producers and lenders (assumptions.py); the annual-report date lets the
+//  handler say when the structured data trails the latest filing. A failed
+//  lookup only loses those refinements, so it never fails the request.
+async function fetchFilerInfo(cik) {
+  const none = { sic: null, latestAnnual: null, latestReport: null };
   try {
     const r = await secFetch(SUBMISSIONS_URL(cik));
+    if (!r.ok) return none;
+    const j = await r.json();
+    const sic = parseInt(j.sic, 10);
+    //: The newest annual report on file (10-K, 20-F or 40-F, not an
+    //  amendment). companyfacts can lag it by months for foreign filers, so
+    //  the handler compares its period to the data it actually found.
+    const rec = (j.filings && j.filings.recent) || {};
+    const forms = rec.form || [];
+    let latestAnnual = null, latestReport = null;
+    for (let i = 0; i < forms.length; i++) {
+      if (!rec.reportDate?.[i]) continue;
+      if (/^(10-K|20-F|40-F)$/.test(forms[i])
+          && (!latestAnnual || rec.reportDate[i] > latestAnnual.reportDate)) {
+        latestAnnual = { form: forms[i], reportDate: rec.reportDate[i], filed: rec.filingDate?.[i] || null };
+      }
+      //: The newest periodic report's own document, read as inline XBRL when
+      //  companyfacts cannot answer (see readInlineXbrl).
+      if (/^(10-K|10-Q)$/.test(forms[i]) && rec.accessionNumber?.[i] && rec.primaryDocument?.[i]
+          && (!latestReport || rec.reportDate[i] > latestReport.reportDate)) {
+        latestReport = {
+          form: forms[i], reportDate: rec.reportDate[i],
+          url: `https://www.sec.gov/Archives/edgar/data/${parseInt(cik, 10)}/`
+             + `${rec.accessionNumber[i].replace(/-/g, "")}/${rec.primaryDocument[i]}`,
+        };
+      }
+    }
+    return { sic: Number.isFinite(sic) && sic > 0 ? sic : null, latestAnnual, latestReport };
+  } catch {
+    return none;
+  }
+}
+
+/* ------------------------- inline XBRL (filing document) ----------------- *
+ * companyfacts drops every DIMENSIONED fact. That loses exactly two things
+ * this endpoint needs: per-class figures (Visa and Berkshire tag their share
+ * counts and EPS only by share class, so companyfacts has no share count at
+ * all) and per-segment figures (GM, Ford and Caterpillar split their debt
+ * between the industrial business and the finance arm only by segment). The
+ * filing's own HTML carries both as inline XBRL, so it is read directly —
+ * only when one of those two gaps applies, since the document is 2-7 MB. */
+
+//: Contexts and numeric facts from an inline XBRL document. Each fact is
+//  { name, value, dims: [[axis, member]], instant, start, end }.
+function parseInlineXbrl(html) {
+  const ctx = new Map();
+  const ctxRe = /<(?:xbrli:)?context\b[^>]*\bid="([^"]+)"[^>]*>([\s\S]*?)<\/(?:xbrli:)?context>/g;
+  for (let m; (m = ctxRe.exec(html)); ) {
+    const body = m[2];
+    const dims = [...body.matchAll(/<xbrldi:explicitMember[^>]*dimension="([^"]+)"[^>]*>\s*([^<\s]+)\s*<\/xbrldi:explicitMember>/g)]
+      .map((d) => [d[1], d[2]]);
+    const pick = (tag) => (body.match(new RegExp(`<(?:xbrli:)?${tag}>\\s*([^<\\s]+)`)) || [])[1] || null;
+    ctx.set(m[1], { dims, instant: pick("instant"), start: pick("startDate"), end: pick("endDate") });
+  }
+  const facts = [];
+  const factRe = /<ix:nonFraction\b([^>]*)>([\s\S]*?)<\/ix:nonFraction>/g;
+  for (let m; (m = factRe.exec(html)); ) {
+    const attrs = m[1];
+    const name = (attrs.match(/\bname="([^"]+)"/) || [])[1];
+    const c = ctx.get((attrs.match(/\bcontextRef="([^"]+)"/) || [])[1]);
+    if (!name || !c) continue;
+    const text = m[2].replace(/<[^>]+>/g, "").trim().replace(/,/g, "");
+    let value = Number(text);
+    if (!Number.isFinite(value) || text === "") {
+      if (/format="[^"]*zero/.test(attrs)) value = 0; else continue;
+    }
+    const scale = Number((attrs.match(/\bscale="(-?\d+)"/) || [])[1] || 0);
+    value *= 10 ** scale;
+    if (/\bsign="-"/.test(attrs)) value = -value;
+    facts.push({ name, value, ...c });
+  }
+  return facts;
+}
+
+async function readInlineXbrl(url) {
+  try {
+    const r = await secFetch(url);
     if (!r.ok) return null;
-    const sic = parseInt((await r.json()).sic, 10);
-    return Number.isFinite(sic) && sic > 0 ? sic : null;
+    return parseInlineXbrl(await r.text());
   } catch {
     return null;
   }
 }
+
+const localName = (qname) => String(qname).split(":").pop();
+const humanMember = (qname) => localName(qname).replace(/Member$/, "")
+  .replace(/([a-z])([A-Z])/g, "$1 $2");
+
+//: Shares for a multi-class company, in units of the LISTED class: net income
+//  divided by that class's basic EPS, for the most recent period the filing
+//  reports both. Visa's Class A EPS is computed on an as-converted basis
+//  (Class B and C convert into A), and Berkshire's Class B EPS on B-equivalent
+//  shares, so the quotient is the count the listed price applies to:
+//  Q2 2026, Visa 5,628m / 2.97 = 1,895m; Berkshire 25,667m / 11.91 = 2,155m.
+//  EPS under 1.00 is refused: cent rounding would move the count too much.
+function impliedSharesFromEps(ixFacts, classLetter) {
+  const classRe = new RegExp(`Class${classLetter}Member$`);
+  const eps = ixFacts.filter((f) => f.name === "us-gaap:EarningsPerShareBasic" && f.start && f.end
+    && f.dims.length === 1 && /StatementClassOfStockAxis$/.test(f.dims[0][0]) && classRe.test(f.dims[0][1]));
+  const days = (f) => Date.parse(f.end) - Date.parse(f.start);
+  eps.sort((a, b) => (a.end < b.end ? 1 : a.end > b.end ? -1 : days(a) - days(b)));
+  for (const e of eps) {
+    if (Math.abs(e.value) < 1) continue;
+    const ni = ixFacts.find((f) => f.name === "us-gaap:NetIncomeLoss" && !f.dims.length
+      && f.start === e.start && f.end === e.end);
+    if (!ni || ni.value / e.value <= 0) continue;
+    return { value: ni.value / e.value, start: e.start, end: e.end, eps: e.value,
+             netIncome: ni.value, member: e.dims[0][1] };
+  }
+  return null;
+}
+
+//: Presence of this cash-flow line marks a company that lends to its own
+//  customers (GM Financial, Ford Credit, Cat Financial, John Deere Financial).
+//  Apple, Coca-Cola, Tesla and Boeing do not tag it.
+const CAPTIVE_FINANCE_SIGNAL = "ProceedsFromCollectionOfFinanceReceivables";
+const SEGMENT_DEBT = {
+  total: ["us-gaap:DebtAndCapitalLeaseObligations"],
+  current: ["us-gaap:DebtCurrent"],
+  currentParts: [["us-gaap:ShortTermBorrowings"],
+                 ["us-gaap:LongTermDebtAndCapitalLeaseObligationsCurrent", "us-gaap:LongTermDebtCurrent"]],
+  noncurrent: ["us-gaap:LongTermDebtAndCapitalLeaseObligations", "us-gaap:LongTermDebtNoncurrent"],
+};
+const isFinanceMember = (m) => /Financial|Credit|Capital/i.test(localName(m)) && !/Excluding/i.test(localName(m));
+//: Business-line axes only. Debt-type axes carry members such as Deere's
+//  "ProductFinancingArrangement", which is a kind of debt, not a lending arm.
+const SEGMENT_AXIS = /Segment|BusinessGroup|ProductOrService/;
+
+//: Debt by business line, from the segment columns of the balance sheet.
+//  `preferDate` is the companyfacts balance-sheet date; the filing's
+//  comparative column is used when it matches, so cash and debt stay on one
+//  date. `finance` is the lending arm's part (GM Financial, Ford Credit, Cat
+//  Financial Products), 0 when no member is one. Berkshire tags debt only
+//  this way (Insurance & Other 43.3bn + Railroad, Utilities & Energy 85.3bn).
+function segmentDebt(ixFacts, preferDate) {
+  const all = [...SEGMENT_DEBT.total, ...SEGMENT_DEBT.current, ...SEGMENT_DEBT.currentParts.flat(),
+               ...SEGMENT_DEBT.noncurrent];
+  const rows = ixFacts.filter((f) => f.instant && f.dims.length === 1 && all.includes(f.name)
+    && SEGMENT_AXIS.test(localName(f.dims[0][0])));
+  if (!rows.length) return null;
+  const dates = [...new Set(rows.map((f) => f.instant))].sort();
+  const date = dates.includes(preferDate) ? preferDate : dates[dates.length - 1];
+  const byAxis = new Map();
+  for (const f of rows.filter((r) => r.instant === date)) {
+    const [axis, member] = f.dims[0];
+    if (!byAxis.has(axis)) byAxis.set(axis, new Map());
+    const members = byAxis.get(axis);
+    if (!members.has(member)) members.set(member, new Map());
+    members.get(member).set(f.name, f.value);
+  }
+  for (const [axis, members] of byAxis) {
+    if (members.size < 2) continue;
+    const total = (vals) => {
+      const first = (tags) => { for (const t of tags) if (vals.has(t)) return vals.get(t); return 0; };
+      if (vals.has(SEGMENT_DEBT.total[0])) return vals.get(SEGMENT_DEBT.total[0]);
+      const current = vals.has(SEGMENT_DEBT.current[0]) ? vals.get(SEGMENT_DEBT.current[0])
+        : SEGMENT_DEBT.currentParts.reduce((a, tags) => a + first(tags), 0);
+      return current + first(SEGMENT_DEBT.noncurrent);
+    };
+    let finance = 0, industrial = 0;
+    const financeNames = [];
+    for (const [member, vals] of members) {
+      if (isFinanceMember(member)) { finance += total(vals); financeNames.push(humanMember(member)); }
+      else industrial += total(vals);
+    }
+    if (finance + industrial > 0) return { date, axis, finance, industrial, financeNames };
+  }
+  return null;
+}
+
+//: Annual per-share dividend summed from four quarterly declarations, for a
+//  filer that tags no annual-length figure (Citigroup: 0.56 + 0.56 + 0.60 +
+//  0.60 = 2.32 for FY2025). Exactly four distinct ~quarter periods inside the
+//  fiscal year ending `fyEnd` are required; anything else returns null.
+function sumQuarterlyPerShare(facts, tags, fyEnd, currency) {
+  const fyStart = Date.parse(fyEnd) - 372 * 86_400_000;
+  for (const tag of tags) {
+    const rows = facts[tag]?.units?.[`${currency}/shares`] || [];
+    const byEnd = new Map();
+    for (const r of rows) {
+      if (typeof r.val !== "number" || !r.start || !r.end) continue;
+      const len = (Date.parse(r.end) - Date.parse(r.start)) / 86_400_000;
+      if (len < 80 || len > 100 || Date.parse(r.start) < fyStart || r.end > fyEnd) continue;
+      const prev = byEnd.get(r.end);
+      if (!prev || (r.filed || "") > (prev.filed || "")) byEnd.set(r.end, r);
+    }
+    const quarters = [...byEnd.values()].sort((a, b) => (a.end < b.end ? -1 : 1));
+    if (quarters.length !== 4) continue;
+    const overlaps = quarters.some((q, i) => i && Date.parse(q.start) <= Date.parse(quarters[i - 1].end));
+    if (overlaps) continue;
+    const val = Math.round(quarters.reduce((a, q) => a + q.val, 0) * 1e6) / 1e6;
+    return { series: [{ start: quarters[0].start, end: fyEnd, val, form: "10-K" }], tag, unit: `${currency}/shares`,
+             quarters: quarters.map((q) => q.val) };
+  }
+  return null;
+}
+
+//: An "annual" per-share dividend that is really one quarter's. Visa tags
+//  FY2025 (a 364-day period) as 0.59, the same value as each of its quarterly
+//  rows, where the year's dividends were 4 x 0.59 = 2.36. A true annual figure
+//  can never equal each of its own quarters, so when at least three quarterly
+//  rows inside the year all equal it, the year is rebuilt from them: the known
+//  quarters plus the annual row's value for each quarter not tagged.
+function correctQuarterTaggedAsAnnual(facts, pick) {
+  const last = pick?.series?.[pick.series.length - 1];
+  if (!last || !last.start || !(last.val > 0)) return null;
+  const rows = facts[pick.tag]?.units?.[pick.unit] || [];
+  const byEnd = new Map();
+  for (const r of rows) {
+    if (typeof r.val !== "number" || !r.start || !r.end || r.start < last.start || r.end > last.end) continue;
+    const len = (Date.parse(r.end) - Date.parse(r.start)) / 86_400_000;
+    if (len < 80 || len > 100) continue;
+    const prev = byEnd.get(r.end);
+    if (!prev || (r.filed || "") > (prev.filed || "")) byEnd.set(r.end, r);
+  }
+  const quarters = [...byEnd.values()];
+  if (quarters.length < 3 || quarters.length > 4) return null;
+  if (!quarters.every((q) => Math.abs(q.val - last.val) <= 0.01 * last.val)) return null;
+  const annual = Math.round((quarters.reduce((a, q) => a + q.val, 0) + (4 - quarters.length) * last.val) * 1e6) / 1e6;
+  return { annual, perQuarter: last.val, taggedQuarters: quarters.length };
+}
+
+//: Tickers that stopped trading or changed. `now` is the current ticker when
+//  there is one. Consulted only when a symbol is not an SEC registrant: a
+//  retired ticker that has since been REUSED (FB is now a ProShares ETF) keeps
+//  resolving to what trades under it today, with a note about the old company.
+const RETIRED_TICKERS = {
+  SQ: { now: "XYZ", note: "Block, Inc. changed its ticker from SQ to XYZ in January 2025." },
+  FB: { now: "META", note: "FB was Meta Platforms' ticker until June 2022; Meta now trades as META." },
+  ANTM: { now: "ELV", note: "Anthem renamed itself Elevance Health and changed its ticker from ANTM to ELV in June 2022." },
+  "RDS-A": { now: "SHEL", note: "Royal Dutch Shell's A and B shares were combined into one line, SHEL, in January 2022." },
+  "RDS-B": { now: "SHEL", note: "Royal Dutch Shell's A and B shares were combined into one line, SHEL, in January 2022." },
+  TWTR: { now: null, note: "Twitter was taken private in October 2022 and no longer trades." },
+  ATVI: { now: null, note: "Activision Blizzard was acquired by Microsoft in October 2023 and no longer trades." },
+  PXD: { now: null, note: "Pioneer Natural Resources was acquired by ExxonMobil in May 2024 and no longer trades." },
+};
 
 //: Successor registrant CIK -> predecessor CIK, for reorganisations that move
 //  a ticker to a new filer with no annual XBRL history. EDGAR's JSON APIs do
@@ -159,15 +389,30 @@ function resolveTicker(map, raw) {
 
 //: Duration (flow) concepts — income statement and cash flow.
 const FLOW_TAGS = {
+  //: RevenuesNetOfInterestExpense is how Morgan Stanley, Wells Fargo and
+  //  Goldman Sachs report total net revenue. None of them uses `Revenues`
+  //  any more (MS stopped in 2014, WFC in 2019), so without this tag the
+  //  freshest-tag rule picked the abandoned one and showed MS as FY2014.
   revenue: ["RevenueFromContractWithCustomerExcludingAssessedTax",
             "RevenueFromContractWithCustomerIncludingAssessedTax",
-            "Revenues", "SalesRevenueNet", "SalesRevenueGoodsNet"],
+            "Revenues", "SalesRevenueNet", "SalesRevenueGoodsNet",
+            "RevenuesNetOfInterestExpense"],
   net_income: ["NetIncomeLoss", "ProfitLoss",
                "NetIncomeLossAvailableToCommonStockholdersBasic"],
   operating_cash_flow: ["NetCashProvidedByUsedInOperatingActivities",
                         "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations"],
+  //: The two "Other" tags are the capex line for Eli Lilly
+  //  (PaymentsToAcquireOtherPropertyPlantAndEquipment, $7.8bn FY2025) and
+  //  Verizon (PaymentsToAcquireOtherProductiveAssets, $17.0bn). Without them
+  //  both fell back to OCF minus D&A, overstating Lilly's FCF by ~60%.
+  //  They rank last, so a filer tagging the main line too still uses it.
+  //: A REIT's recurring (maintenance) capex. Realty Income tags it; its
+  //  property acquisitions are growth investment, not capex.
+  recurring_capex: ["PaymentsForCapitalImprovements"],
   capital_expenditures: ["PaymentsToAcquirePropertyPlantAndEquipment",
-                         "PaymentsToAcquireProductiveAssets"],
+                         "PaymentsToAcquireProductiveAssets",
+                         "PaymentsToAcquireOtherPropertyPlantAndEquipment",
+                         "PaymentsToAcquireOtherProductiveAssets"],
   depreciation_amortization: ["DepreciationDepletionAndAmortization",
                               "DepreciationAmortizationAndAccretionNet",
                               "DepreciationAndAmortization", "Depreciation"],
@@ -273,7 +518,10 @@ const STOCK_TAGS = {
  * are only summed when the filer tags no ShortTermBorrowings total. */
 const DEBT_TAGS = {
   noncurrent: ["LongTermDebtNoncurrent", "LongTermDebtAndCapitalLeaseObligations"],
-  longTermTotal: ["LongTermDebt", "LongTermDebtAndCapitalLeaseObligationsIncludingCurrentMaturities"],
+  //: NotesPayable last: Realty Income tags its $25.1bn of bonds only this way
+  //  (all maturities), and without it total debt read as $1.4bn of CP.
+  longTermTotal: ["LongTermDebt", "LongTermDebtAndCapitalLeaseObligationsIncludingCurrentMaturities",
+                  "NotesPayable"],
   currentMaturities: ["LongTermDebtCurrent", "LongTermDebtAndCapitalLeaseObligationsCurrent"],
   debtCurrent: ["DebtCurrent"],
   shortTermTotal: ["ShortTermBorrowings"],
@@ -570,12 +818,12 @@ function pickCoverShares(dei) {
   return { value: latest[0].val, end, tag: "dei:EntityCommonStockSharesOutstanding", unit: "shares" };
 }
 
-function pickBalanceSheet(facts, taxonomy, currency) {
+function pickBalanceSheet(facts, taxonomy, currency, anchorOverride = null) {
   const ifrs = taxonomy === "ifrs-full";
   const stockTags = ifrs ? IFRS_STOCK_TAGS : STOCK_TAGS;
   const debtTags = ifrs ? IFRS_DEBT_TAGS : DEBT_TAGS;
-  const cashPick = pickInstant(facts, stockTags.cash_and_equivalents, currency);
-  let anchor = cashPick ? cashPick.end : null;
+  const cashPick = anchorOverride ? null : pickInstant(facts, stockTags.cash_and_equivalents, currency);
+  let anchor = anchorOverride || (cashPick ? cashPick.end : null);
   if (!anchor) {
     const allDebt = Object.values(debtTags).flat();
     anchor = pickInstant(facts, allDebt, currency)?.end || null;
@@ -634,6 +882,10 @@ function pickBalanceSheet(facts, taxonomy, currency) {
       use(debtCurrent || curMat); use(shortTerm); stParts.forEach(use);
     }
   }
+  //: Last resort before summing components: a filer-stated combined total.
+  //  Goldman Sachs tags no role line at all, only this ($437.9bn, 2026-06-30).
+  //  Read only when nothing above matched, so it can never be added to them.
+  if (!ifrs && !parts.length) use(read(["DebtLongtermAndShorttermCombinedAmount"]));
   if (!ifrs && !parts.length) {
     for (const slot of DEBT_COMPONENT_SLOTS) use(read(slot));
     if (parts.length) out.fromComponents = true;
@@ -645,8 +897,38 @@ function pickBalanceSheet(facts, taxonomy, currency) {
     out.neverBorrowed = true;
   }
   out.hasLongTerm = out.neverBorrowed || out.debtParts.some((p) => !/Current|Shortterm|ShortTerm|CommercialPaper/.test(p.tag)
-    || /IncludingCurrentMaturities/.test(p.tag));
+    || /IncludingCurrentMaturities|CombinedAmount/.test(p.tag));
   return out;
+}
+
+//: pickBalanceSheet at the freshest cash date, falling back to an earlier
+//  date when that balance sheet tags no debt at all. GM's 10-Q (2026-06-30)
+//  carries no debt lines while its 10-K (2025-12-31) tags $131.6bn, so total
+//  debt came back missing and equity was overstated by the whole amount.
+//  Cash and debt are still read from ONE date (the earlier one), never mixed;
+//  only a date with genuine long-term debt qualifies, and no more than a year
+//  back, so a stale balance sheet never stands in silently (the handler notes it).
+function pickBalanceSheetWithFallback(facts, taxonomy, currency) {
+  const bs = pickBalanceSheet(facts, taxonomy, currency);
+  if (bs.debt !== null || !bs.anchor) return bs;
+  const cashTags = (taxonomy === "ifrs-full" ? IFRS_STOCK_TAGS : STOCK_TAGS).cash_and_equivalents;
+  const ends = new Set();
+  for (const tag of cashTags) {
+    for (const rows of Object.values((facts[tag] && facts[tag].units) || {})) {
+      for (const r of rows) {
+        if (r.start || !r.end || r.end >= bs.anchor) continue;
+        if ((Date.parse(bs.anchor) - Date.parse(r.end)) / 86_400_000 <= 400) ends.add(r.end);
+      }
+    }
+  }
+  for (const end of [...ends].sort().reverse()) {
+    const alt = pickBalanceSheet(facts, taxonomy, currency, end);
+    if (alt.debt !== null && alt.hasLongTerm && !alt.neverBorrowed) {
+      alt.fellBackFrom = bs.anchor;
+      return alt;
+    }
+  }
+  return bs;
 }
 
 /**
@@ -1346,8 +1628,12 @@ async function fetchPrice(ticker) {
     //  ILA). There is no FX rate for "GBp", so every UK home listing failed
     //  the ADR check; normalise to the major unit here, once.
     const minor = MINOR_UNIT_QUOTES[meta.currency];
-    return minor ? { price: px / minor.div, currency: minor.ccy, asOf }
-                 : { price: px, currency: meta.currency || "USD", asOf };
+    //: EQUITY, ETF, MUTUALFUND, CRYPTOCURRENCY, INDEX...: the company models
+    //  only mean something for an EQUITY, so the pipeline reads this.
+    const kind = { instrumentType: meta.instrumentType ? String(meta.instrumentType).toUpperCase() : null,
+                   name: meta.longName || meta.shortName || null };
+    return minor ? { price: px / minor.div, currency: minor.ccy, asOf, ...kind }
+                 : { price: px, currency: meta.currency || "USD", asOf, ...kind };
   } catch { return null; }
 }
 
@@ -1392,16 +1678,26 @@ async function marketOnly(ticker) {
         + `the pipeline's fixed 25%/18%/0.6 guesses that the options, Heston, VaR and MPT models `
         + `would otherwise fall back to.`);
     }
+    if (price.instrumentType && price.instrumentType !== "EQUITY") {
+      notes.unshift(`${symbol} is ${price.instrumentType === "ETF" ? "an ETF" : price.instrumentType === "CRYPTOCURRENCY"
+        ? "a cryptocurrency" : `a ${price.instrumentType.toLowerCase()}`}${price.name ? ` (${price.name})` : ""}, not a `
+        + "company: the valuation models (DCF, Gordon Growth, Reverse DCF, hidden debt) do not apply to it. "
+        + "The market models (CAPM, VaR, options, MPT, Fama-French) run on its price history.");
+    }
     return {
       ok: true,
       partial: true,                 // the UI must not present this as a full extraction
       ticker: symbol,
-      company_name: null,
+      company_name: price.name,
       fiscal_year: null,
       currency: price.currency,
       period_end: null,
       fields: {
         ticker: symbol,
+        //: The listing's name from the quote, so the report is headed by what
+        //  was loaded rather than "UPLOADED COMPANY".
+        company_name: price.name,
+        instrument_type: price.instrumentType,
         current_price: price.price,
         beta: betaInfo ? Number(betaInfo.beta.toFixed(3)) : null,
         realized_volatility: betaInfo && betaInfo.stockVol !== null ? Number(betaInfo.stockVol.toFixed(4)) : null,
@@ -1502,9 +1798,10 @@ module.exports = async (req, res) => {
     return res.status(429).json({ ok: false, error: "rate limited" });
   }
 
-  let entry;
+  let entry, map, retiredNote = null;
   try {
-    entry = resolveTicker(await loadTickerMap(), ticker);
+    map = await loadTickerMap();
+    entry = resolveTicker(map, ticker);
   } catch (err) {
     return res.status(502).json({ ok: false, error: "SEC ticker directory unreachable — try again, or upload the filing." });
   }
@@ -1523,13 +1820,23 @@ module.exports = async (req, res) => {
     //  launch-day outage with someone else's terms attached. The PDF route
     //  already handles these markets properly — the extractor understands
     //  lakh/crore scaling and Ind AS filings — so that is where this points.
+    const retired = RETIRED_TICKERS[ticker.replace(/\./g, "-")];
     const market = await marketOnly(ticker);
     if (market) {
+      if (retired) market.notes.unshift(`${retired.note} This is the security trading as ${ticker} today.`);
       if (market.fields.current_price == null || market.fields.beta == null) {
         res.setHeader("Cache-Control", CACHE_SHORT);
       }
       return res.status(200).json(market);
     }
+    if (retired && retired.now) {
+      entry = resolveTicker(map, retired.now);
+      if (entry) retiredNote = `${retired.note} Showing ${retired.now}.`;
+    } else if (retired) {
+      return res.status(404).json({ ok: false, notFound: true, error: retired.note });
+    }
+  }
+  if (!entry) {
     return res.status(404).json({
       ok: false, notFound: true,
       error: `"${ticker}" was not found as an SEC registrant or as a listed security. `
@@ -1539,7 +1846,7 @@ module.exports = async (req, res) => {
 
   let facts, entityName, taxonomy = "us-gaap", deiFacts = null, predecessorNote = null;
   //: Started alongside companyfacts so it adds no latency.
-  const sicPromise = fetchSicCode(entry.cik);
+  const filerInfoPromise = fetchFilerInfo(entry.cik);
   try {
     const t0 = Date.now();
     let r = await secFetch(FACTS_URL(entry.cik)).catch((e) => e);
@@ -1614,6 +1921,7 @@ module.exports = async (req, res) => {
 
   const notes = [];
   if (predecessorNote) notes.push(predecessorNote);
+  if (retiredNote) notes.unshift(retiredNote);
   const flows = {}, stocks = {};
   const flowTags = taxonomy === "ifrs-full" ? IFRS_FLOW_TAGS : FLOW_TAGS;
   const stockTags = taxonomy === "ifrs-full" ? IFRS_STOCK_TAGS : STOCK_TAGS;
@@ -1626,6 +1934,33 @@ module.exports = async (req, res) => {
   for (const [k, tags] of Object.entries(flowTags)) {
     flows[k] = pickAnnualSeries(facts, tags, 6, reportingCurrency, k === "revenue");
   }
+  //: Every income and cash-flow concept must describe the same fiscal year
+  //  as revenue. A revenue tag the filer abandoned years ago (Morgan Stanley's
+  //  `Revenues` ended FY2014, Wells Fargo's FY2019) is still the freshest
+  //  candidate when nothing newer is in the cascade, and it paired 2014
+  //  revenue with 2025 net income into a 49% "margin". Revenue more than a
+  //  year behind the company's own net income or operating cash flow is
+  //  stale, not current: drop it (it is reported missing) rather than show it.
+  let staleRevenueDropped = false;
+  {
+    const lastEnd = (k) => flows[k]?.series?.length ? flows[k].series[flows[k].series.length - 1].end : null;
+    const freshest = [lastEnd("net_income"), lastEnd("operating_cash_flow")].filter(Boolean).sort().pop();
+    const revEnd = lastEnd("revenue");
+    if (freshest && revEnd && (Date.parse(freshest) - Date.parse(revEnd)) / 86_400_000 > 400) {
+      notes.push(`Revenue is not shown: the only revenue tag this filer still carries ends at ${revEnd}, `
+        + `while its net income runs to ${freshest}, so showing it would mix fiscal years.`);
+      flows.revenue = null;
+      staleRevenueDropped = true;
+    }
+  }
+  //: SIC code and newest filing: needed from here on (REIT cash flow, share
+  //  classes, captive finance). Started beside companyfacts, so normally ready.
+  const filerInfo = await filerInfoPromise;
+  const sic = filerInfo.sic;
+  const isLenderSic = sic !== null && sic >= 6000 && sic <= 6799;
+  let inlinePromise = null;
+  const inlineFacts = () => (inlinePromise ||= filerInfo.latestReport
+    ? readInlineXbrl(filerInfo.latestReport.url) : Promise.resolve(null));
   for (const [k, tags] of Object.entries(stockTags)) {
     //: Share counts are unit-'shares' so the currency pin doesn't apply, and
     //  they get the fragment guard — see pickInstant's minRelative.
@@ -1643,8 +1978,14 @@ module.exports = async (req, res) => {
   //  2011 (its classes are now dimensioned), and that 941,481 figure beside a
   //  2026 price read as a $0.5bn company. It must be no older than half a
   //  year before the latest fiscal year end.
+  //: When the stale-revenue guard above dropped the series, net income's
+  //  year stands in so the cover-count and weighted-average share fallbacks
+  //  still have a date. A filer that never tagged revenue keeps today's
+  //  behaviour (no date, so no fallback).
   const latestRevEnd = flows.revenue?.series?.length
-    ? flows.revenue.series[flows.revenue.series.length - 1].end : null;
+    ? flows.revenue.series[flows.revenue.series.length - 1].end
+    : (staleRevenueDropped && flows.net_income?.series?.length
+        ? flows.net_income.series[flows.net_income.series.length - 1].end : null);
   const coverCandidate = pickCoverShares(deiFacts);
   const deiShares = coverCandidate && latestRevEnd
     && (Date.parse(latestRevEnd) - Date.parse(coverCandidate.end)) / 86_400_000 <= 180
@@ -1673,6 +2014,24 @@ module.exports = async (req, res) => {
       + `weighted-average shares for the period ${wavg.start} to ${wavg.end} (the EPS denominator), `
       + `because the filing tags no current point-in-time count. It differs from today's count `
       + `only by buybacks or issuance since then.`);
+  }
+  //: Still no count: a multi-class filer whose counts and EPS are tagged
+  //  only per class (Visa, Berkshire). Read them from the filing itself.
+  if (!stocks.shares_outstanding && filerInfo.latestReport) {
+    const ix = await inlineFacts();
+    const classLetter = (entry.symbol.match(/[-.]([A-Z])$/) || [])[1] || "A";
+    const implied = ix && impliedSharesFromEps(ix, classLetter);
+    if (implied) {
+      stocks.shares_outstanding = { value: implied.value, end: implied.end,
+        tag: "NetIncomeLoss / EarningsPerShareBasic", unit: "shares" };
+      notes.push(`Share count is ${Math.round(implied.value).toLocaleString("en-US")} `
+        + `${humanMember(implied.member)}-equivalent shares: net income of `
+        + `${(implied.netIncome / 1e6).toLocaleString("en-US", { maximumFractionDigits: 0 })}m for `
+        + `${implied.start} to ${implied.end} divided by that class's basic EPS of ${implied.eps}, `
+        + `from the ${filerInfo.latestReport.form}'s own inline XBRL. This company has several share `
+        + `classes and tags its counts only per class, so this is the count the ${entry.symbol} price `
+        + `applies to (weighted over that period, on the filer's as-converted basis).`);
+    }
   }
   if (taxonomy === "ifrs-full") {
     notes.push(`Figures come from a Form 20-F filed under IFRS, denominated in ${reportingCurrency}.`);
@@ -1722,6 +2081,29 @@ module.exports = async (req, res) => {
   //  and far closer than the revenue × margin stand-in the pipeline would
   //  otherwise use. Flagged as `fcf_basis` so the DCF reports PARTIAL.
   let fcfBasis = freeCashFlows.length ? "reported" : null;
+  //: A REIT's depreciation is on buildings it rarely replaces, so OCF − D&A
+  //  (the proxy below) understated Realty Income's cash flow roughly five-
+  //  fold. Its maintenance spend is the recurring-capex line when tagged;
+  //  property acquisitions are growth investment and stay out.
+  if (sic === 6798 && freeCashFlows.length < 3 && flows.operating_cash_flow) {
+    const rc = new Map((flows.recurring_capex?.series || []).map((r) => [r.end, Math.abs(r.val)]));
+    const ocf = flows.operating_cash_flow.series;
+    const withRc = ocf.filter((r) => rc.has(r.end));
+    const rows = withRc.length >= 3 ? withRc.map((r) => ({ end: r.end, val: r.val - rc.get(r.end) }))
+                                    : ocf.map((r) => ({ end: r.end, val: r.val }));
+    if (rows.length >= 3) {
+      freeCashFlows = rows.map((r) => r.val);
+      fcfPeriodEnds = rows.map((r) => r.end);
+      fcfBasis = withRc.length >= 3 ? "ocf_minus_recurring_capex" : "ocf_reit";
+      const idx = notes.findIndex((n) => n.startsWith("No capital-expenditure tag found"));
+      if (idx >= 0) notes.splice(idx, 1);
+      notes.push(fcfBasis === "ocf_minus_recurring_capex"
+        ? "This is a REIT: free cash flow is operating cash flow minus recurring capital improvements "
+          + "(an AFFO-style measure). Property acquisitions are growth investment and are not deducted."
+        : "This is a REIT that tags no recurring-capex line: free cash flow is operating cash flow "
+          + "(FFO-like), with no maintenance deduction, so it is somewhat overstated. The DCF is marked PARTIAL.");
+    }
+  }
   //: Not for deposit-taking banks: their operating cash flow is loan and
   //  deposit flows (JPM's was −$148bn), so OCF − D&A means nothing there.
   const isBank = ["Deposits", "DepositsFromCustomers", "InterestBearingDepositLiabilities",
@@ -1749,6 +2131,9 @@ module.exports = async (req, res) => {
     interestExpenseFromRow);
   const sbcSeries = seriesAlignedTo(flows.stock_based_compensation, fcfPeriodEnds,
     (v) => (v == null ? null : Math.abs(v)));
+  //: Revenue for each FCF year, so the pipeline can normalise the FCF margin
+  //  and apply it to the latest revenue (a grower's plain 3-year average lags).
+  const revenueSeries = seriesAlignedTo(flows.revenue, fcfPeriodEnds);
 
   // --- lease liabilities ---------------------------------------------------
   // Kept out of STOCK_TAGS's simple cascade because the right figure depends
@@ -1758,7 +2143,7 @@ module.exports = async (req, res) => {
   //: Cash, investments and debt all from ONE balance sheet — see
   //  pickBalanceSheet and the DEBT_TAGS note for the four ways the old
   //  independent picks went wrong.
-  const bs = pickBalanceSheet(facts, taxonomy, reportingCurrency);
+  const bs = pickBalanceSheetWithFallback(facts, taxonomy, reportingCurrency);
   let financeLease, operatingLease;
   if (taxonomy === "ifrs-full") {
     financeLease = pickInstant(facts, ["LeaseLiabilities"], reportingCurrency);
@@ -1820,13 +2205,48 @@ module.exports = async (req, res) => {
   }
 
   // --- debt and cash ------------------------------------------------------
-  const totalDebt = bs.debt;
+  let totalDebt = bs.debt;
   const cash = bs.cash;
   const sti = bs.sti;
+  //: A manufacturer with a lending arm (GM Financial, Ford Credit, Cat
+  //  Financial) carries the arm's borrowings on its consolidated balance
+  //  sheet: $111.7bn of GM's $127.7bn. That debt funds customer loans, not
+  //  the factories, and read as ordinary debt it dragged GM's WACC to 5.9%
+  //  (DCF 7.3x the market cap). The balance sheet's own segment columns say
+  //  which part is which, so the pipeline can value the industrial business.
+  let financeArmDebt = null, captive = null, segTotal = null;
+  const wantsCaptive = facts[CAPTIVE_FINANCE_SIGNAL] && !isLenderSic;
+  if ((wantsCaptive || totalDebt === null) && filerInfo.latestReport) {
+    const seg = segmentDebt((await inlineFacts()) || [], bs.anchor);
+    if (seg && wantsCaptive && seg.finance > 0) {
+      captive = seg;
+      totalDebt = seg.finance + seg.industrial;
+      financeArmDebt = seg.finance;
+    } else if (seg && totalDebt === null) {
+      segTotal = seg;
+      totalDebt = seg.finance + seg.industrial;
+      notes.push(`Total debt is ${(totalDebt / 1e9).toFixed(1)}bn, summed from the balance sheet's `
+        + `business-segment columns dated ${seg.date} in the ${filerInfo.latestReport.form}: this filer `
+        + `tags its borrowings only per segment, so SEC's structured data has no total.`);
+    }
+  }
   if (bs.anchor) {
     const lines = bs.debtParts.map((p) => p.tag).join(" + ");
-    notes.push(`Cash and total debt are from the balance sheet dated ${bs.anchor}`
+    notes.push(captive
+      ? `Cash is from the balance sheet dated ${bs.anchor}. Total debt is `
+        + `${(totalDebt / 1e9).toFixed(1)}bn from the ${filerInfo.latestReport.form}'s segment columns `
+        + `dated ${captive.date}, of which ${(captive.finance / 1e9).toFixed(1)}bn belongs to the finance arm `
+        + `(${captive.financeNames.join(", ")}) and ${(captive.industrial / 1e9).toFixed(1)}bn to the rest of `
+        + `the business. The DCF values the industrial business: see its rationale.`
+        + (captive.date !== bs.anchor ? ` The two dates differ because SEC's structured data holds no `
+          + `debt figure for ${captive.date}.` : "")
+      : segTotal ? `Cash is from the balance sheet dated ${bs.anchor}.`
+      : `Cash and total debt are from the balance sheet dated ${bs.anchor}`
       + (lines ? `; total debt = ${lines}.` : "."));
+    if (bs.fellBackFrom && (!captive || captive.date === bs.anchor)) {
+      notes.push(`The newer balance sheet dated ${bs.fellBackFrom} tags no borrowings, so cash and `
+        + `total debt are both taken from the ${bs.anchor} balance sheet instead.`);
+    }
   }
   if (bs.neverBorrowed) {
     notes.push("Total debt is 0: this company has never tagged a borrowing of any kind in its "
@@ -1839,7 +2259,7 @@ module.exports = async (req, res) => {
     notes.push(`No debt line is tagged on the ${bs.anchor || "latest"} balance sheet in a form `
       + `this reader recognises, so total debt is reported missing rather than as zero. `
       + `Enter it manually if the company has borrowings.`);
-  } else if (!bs.hasLongTerm || bs.ambiguousCurrent) {
+  } else if (!captive && !segTotal && (!bs.hasLongTerm || bs.ambiguousCurrent)) {
     notes.push("Total debt may understate borrowings: no long-term debt line, or no separable "
       + "short-term line, was tagged on this balance sheet date. Check it against the filing.");
   }
@@ -2065,6 +2485,33 @@ module.exports = async (req, res) => {
   //  Checked against the dividend's OWN period end, not the share count's —
   //  a filing's income statement and balance sheet don't always carry the
   //  same as-of date, so the two can need different corrections.
+  //: No annual-length dividend for the latest fiscal year (Citigroup tags
+  //  only its four quarterly declarations): sum those four instead of
+  //  reporting a real payer as paying nothing.
+  {
+    const niSeries = flows.net_income?.series || [];
+    const fyEnd = niSeries.length ? niSeries[niSeries.length - 1].end : null;
+    const divSeries = flows.dividends_per_share?.series || [];
+    const divEnd = divSeries.length ? divSeries[divSeries.length - 1].end : null;
+    if (fyEnd && (!divEnd || (Date.parse(fyEnd) - Date.parse(divEnd)) / 86_400_000 > 300)) {
+      const summed = sumQuarterlyPerShare(facts, flowTags.dividends_per_share || [], fyEnd, reportingCurrency);
+      if (summed) {
+        flows.dividends_per_share = summed;
+        notes.push(`Dividend per share is the sum of the four quarterly dividends declared in the `
+          + `fiscal year ended ${fyEnd} (${summed.quarters.join(" + ")}); the filing tags no annual figure.`);
+      }
+    }
+  }
+  {
+    const fix = correctQuarterTaggedAsAnnual(facts, flows.dividends_per_share);
+    if (fix) {
+      const ds = flows.dividends_per_share.series;
+      ds[ds.length - 1] = { ...ds[ds.length - 1], val: fix.annual };
+      notes.push(`Dividend per share is ${fix.annual} for the year: the filing tags the year as `
+        + `${fix.perQuarter}, the same as each of its ${fix.taggedQuarters} tagged quarters, so that `
+        + `figure is one quarter's dividend, not the year's.`);
+    }
+  }
   let dividendPerShare = latestFlow("dividends_per_share");
   const dividendPeriodEnd = flows.dividends_per_share?.series?.length
     ? flows.dividends_per_share.series[flows.dividends_per_share.series.length - 1].end
@@ -2107,7 +2554,24 @@ module.exports = async (req, res) => {
   }
 
   const latestEnd = revSeries.length ? revSeries[revSeries.length - 1].end
-                                     : (stocks.cash_and_equivalents?.end || null);
+                                     : (staleRevenueDropped && flows.net_income?.series?.length
+                                         ? flows.net_income.series[flows.net_income.series.length - 1].end
+                                         : (stocks.cash_and_equivalents?.end || null));
+
+  //: EDGAR's structured data can trail a filing by months: Toyota, Sony,
+  //  Infosys, HDFC Bank and TSMC had 2026 20-Fs on file while companyfacts
+  //  still held only the year before. Nothing in the figures shows that, so
+  //  say it whenever the newest annual report ends ten months or more past
+  //  the year the data covers.
+  const newest = filerInfo.latestAnnual;
+  const dataEnd = flows.net_income?.series?.length
+    ? flows.net_income.series[flows.net_income.series.length - 1].end : latestEnd;
+  if (newest && dataEnd && (Date.parse(newest.reportDate) - Date.parse(dataEnd)) / 86_400_000 > 300) {
+    notes.push(`A newer annual report is on file with the SEC (${newest.form} for the year ending `
+      + `${newest.reportDate}, filed ${newest.filed || "recently"}), but SEC's structured data does not `
+      + `include its statements yet, so the financials here are for the year ending ${dataEnd}. `
+      + `Upload the newer annual report as a PDF for the latest figures.`);
+  }
 
   //: Interest expense from InterestIncomeExpenseNet, applied through the
   //  sign rule in interestExpenseFromRow(): a positive net value is net
@@ -2217,7 +2681,12 @@ module.exports = async (req, res) => {
     //  us-gaap tried first, ifrs-full on a 20-F filer) — see the comment
     //  above `facts = (j.facts && j.facts["us-gaap"])`.
     accounting_standard: taxonomy,
-    sic_code: await sicPromise,
+    sic_code: filerInfo.sic,
+    //: Aligned element-for-element with free_cash_flows — see revenueSeries.
+    revenue_series: revenueSeries,
+    //: The finance arm's share of total_debt (captive finance only).
+    finance_arm_debt: financeArmDebt,
+    instrument_type: priceInfo ? priceInfo.instrumentType : null,
     currency: reportingCurrency || (priceInfo ? priceInfo.currency : "USD"),
     statement_basis: "annual",
     //: Provenance. assumptions.py reads this to decide whether a figure may be
@@ -2230,10 +2699,11 @@ module.exports = async (req, res) => {
     notes.push("Cash includes short-term investments, consistent with how net debt is normally computed.");
   }
 
+  //: Classification metadata and optional refinements, not financial figures
+  //  the extraction-confidence count should penalise.
+  const NOT_FIGURES = new Set(["sic_code", "revenue_series", "finance_arm_debt", "instrument_type"]);
   const missing = Object.entries(fields)
-    //: sic_code is classification metadata, not a financial figure the
-    //  extraction-confidence count should penalise.
-    .filter(([k, v]) => k !== "sic_code" && (v === null || (Array.isArray(v) && v.length === 0)))
+    .filter(([k, v]) => !NOT_FIGURES.has(k) && (v === null || (Array.isArray(v) && v.length === 0)))
     .map(([k]) => k);
 
   if (fields.current_price == null || fields.beta == null) {
@@ -2272,7 +2742,8 @@ module.exports = async (req, res) => {
 //  parts that are easy to get subtly wrong (share-class spelling, restatement
 //  dedup, period alignment) and impossible to check by eyeballing a live
 //  response, so they are tested directly rather than only through the handler.
-module.exports._internals = { isTransient, resolveTicker, detectReportingCurrency, deriveAdrRatio,
+module.exports._internals = { correctQuarterTaggedAsAnnual, parseInlineXbrl, impliedSharesFromEps, segmentDebt, sumQuarterlyPerShare,
+                               RETIRED_TICKERS, isTransient, resolveTicker, detectReportingCurrency, deriveAdrRatio,
                               pickBalanceSheet, valueAt, translationRates, pickCoverShares, mergeFacts, latestAnnualEnd, latestFilingForm, hasEverBorrowed, DEBT_COMPONENT_SLOTS, pickWeightedAverageShares,
                               PREDECESSOR_CIKS, DEBT_TAGS, IFRS_DEBT_TAGS, ADR_PINNED_RATIOS, ADR_PINNED_BAND,
                               MINOR_UNIT_QUOTES,

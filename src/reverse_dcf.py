@@ -88,6 +88,7 @@ class ReverseDCFModel(BaseFinancialModel):
         discount_rate: float,
         terminal_growth: float,
         growth_profile: str = "constant",
+        target_fcf_margin: float | None = None,
         logger: Any = None,
     ) -> None:
         """Initialise and validate every input to the reverse solve.
@@ -125,7 +126,14 @@ class ReverseDCFModel(BaseFinancialModel):
                 same question. A constant-growth solve against a fading
                 forward DCF overstated the "required" growth: five years at
                 one rate, then an overnight drop to terminal growth, forces
-                the rate itself to carry all of the value.
+                the rate itself to carry all of the value. ``"revenue"``
+                solves for REVENUE growth instead, with the FCF margin moving
+                in a straight line from today's (``base_fcf/base_revenue``,
+                which may be negative) to ``target_fcf_margin`` by year N —
+                the only way to read a price for a company that burns cash
+                today, which a growing-FCF path cannot represent.
+            target_fcf_margin: Steady-state FCF margin, in ``(0, 1)``;
+                required for ``"revenue"``, ignored otherwise.
             logger: Optional logger forwarded to the base class.
 
         Raises:
@@ -138,7 +146,10 @@ class ReverseDCFModel(BaseFinancialModel):
         self.shares_outstanding = self._require_positive(
             shares_outstanding, "shares_outstanding")
         self.net_debt = self._as_finite_float(net_debt, "net_debt")
-        self.base_fcf = self._require_positive(base_fcf, "base_fcf")
+        # A cash-burning base is valid only in revenue mode, where the margin
+        # path (not a growth rate applied to FCF) carries it to positive.
+        self.base_fcf = (self._as_finite_float(base_fcf, "base_fcf") if growth_profile == "revenue"
+                         else self._require_positive(base_fcf, "base_fcf"))
         self.base_revenue = self._require_positive(base_revenue, "base_revenue")
         self.total_addressable_market = (
             None if total_addressable_market is None
@@ -146,11 +157,19 @@ class ReverseDCFModel(BaseFinancialModel):
         self.years = int(self._require_positive(years, "years"))
         self.discount_rate = self._require_positive(discount_rate, "discount_rate")
         self.terminal_growth = self._as_finite_float(terminal_growth, "terminal_growth")
-        if growth_profile not in ("constant", "fade"):
+        if growth_profile not in ("constant", "fade", "revenue"):
             raise ValidationError(
-                f"'growth_profile' must be 'constant' or 'fade', got {growth_profile!r}.")
-        # A one-year horizon has no path to fade along.
-        self.growth_profile = growth_profile if self.years > 1 else "constant"
+                f"'growth_profile' must be 'constant', 'fade' or 'revenue', got {growth_profile!r}.")
+        self.target_fcf_margin = None
+        if growth_profile == "revenue":
+            if target_fcf_margin is None or not 0 < target_fcf_margin < 1:
+                raise ValidationError(
+                    f"'target_fcf_margin' must be in (0, 1) for the revenue profile, got {target_fcf_margin!r}.")
+            self.target_fcf_margin = float(target_fcf_margin)
+            self.growth_profile = "revenue"
+        else:
+            # A one-year horizon has no path to fade along.
+            self.growth_profile = growth_profile if self.years > 1 else "constant"
 
         # Same convergence requirement as the forward DCF — checked here too
         # so the reverse solve fails fast with a clear message instead of
@@ -180,6 +199,12 @@ class ReverseDCFModel(BaseFinancialModel):
         return [g + (self.terminal_growth - g) * t / (n - 1) for t in range(n)]
 
     def _fcf_path(self, g: float) -> list[float]:
+        if self.growth_profile == "revenue":
+            # Revenue compounds at g; the FCF margin closes the gap from
+            # today's to the target in equal steps, reaching it in year N.
+            m0, n = self.base_fcf / self.base_revenue, self.years
+            return [self.base_revenue * (1.0 + g) ** t * (m0 + (self.target_fcf_margin - m0) * t / n)
+                    for t in range(1, n + 1)]
         path, value = [], self.base_fcf
         for rate in self._growth_path(g):
             value *= 1.0 + rate
@@ -211,6 +236,8 @@ class ReverseDCFModel(BaseFinancialModel):
             breached in that case, or is empty on a normal solve.
         """
         target = self._implied_ev()
+        if self.growth_profile == "revenue":
+            return self._solve_revenue(target)
         f_lo = self._ev_at_growth(_CAGR_LO) - target
         f_hi = self._ev_at_growth(_CAGR_HI) - target
         if f_lo > 0:
@@ -230,6 +257,27 @@ class ReverseDCFModel(BaseFinancialModel):
                        _CAGR_LO, _CAGR_HI, xtol=1e-12, rtol=1e-12)
         return cagr, ""
 
+    def _solve_revenue(self, target: float) -> tuple[float | None, str]:
+        """Lowest revenue growth whose path justifies ``target``.
+
+        With a negative starting margin, faster growth also deepens the early
+        losses, so EV(g) need not be monotonic. The bracket is scanned on a
+        grid and the FIRST crossing is solved: the least growth that works.
+        """
+        f = lambda g: self._ev_at_growth(g) - target
+        grid = [_CAGR_LO + (_CAGR_HI - _CAGR_LO) * i / 250 for i in range(251)]
+        prev_g = grid[0]
+        if f(prev_g) >= 0:
+            return None, (f"Price implies revenue growth below {_CAGR_LO:.0%}/yr — even a "
+                          "shrinking business reaching the target margin over-justifies it.")
+        for g in grid[1:]:
+            if f(g) >= 0:
+                return brentq(f, prev_g, g, xtol=1e-12, rtol=1e-12), ""
+            prev_g = g
+        return None, (f"Price implies revenue growth above {_CAGR_HI:.0%}/yr at a "
+                      f"{self.target_fcf_margin:.0%} target FCF margin — no plausible growth "
+                      "rate in range justifies it.")
+
     def calculate(self, **kwargs: Any) -> dict[str, Any]:
         """Solve for the implied CAGR and translate it into implied TAM capture.
 
@@ -247,6 +295,22 @@ class ReverseDCFModel(BaseFinancialModel):
         implied_revenue_year_n = None
         implied_tam_capture = None
         implied_initial_growth = None
+        if self.growth_profile == "revenue":
+            if cagr is not None:
+                implied_revenue_year_n = self.base_revenue * (1.0 + cagr) ** self.years
+                if self.total_addressable_market is not None:
+                    implied_tam_capture = implied_revenue_year_n / self.total_addressable_market
+            return {
+                "implied_ev": implied_ev,
+                "implied_fcf_cagr": None,
+                "implied_revenue_cagr": cagr,
+                "implied_initial_growth": None,
+                "growth_profile": "revenue",
+                "target_fcf_margin": self.target_fcf_margin,
+                "solver_note": note,
+                "implied_revenue_year_n": implied_revenue_year_n,
+                "implied_tam_capture": implied_tam_capture,
+            }
         if cagr is not None and self.growth_profile == "fade":
             # The solve variable is the year-1 rate; the headline is the
             # equivalent average annual growth over the whole horizon, so a
@@ -288,7 +352,14 @@ class ReverseDCFModel(BaseFinancialModel):
             "(the same shape the forward DCF projects with); the CAGR below is its "
             "equivalent average.\n\n"
             if res.get("implied_initial_growth") is not None else "")
-        if res["implied_fcf_cagr"] is None:
+        if self.growth_profile == "revenue":
+            solved = (
+                f"**Implied {self.years}-year revenue CAGR = {res['implied_revenue_cagr']:.2%}/yr**, "
+                f"with the FCF margin moving from {self.base_fcf / self.base_revenue:.1%} today to "
+                f"{self.target_fcf_margin:.1%} by year {self.years}"
+                if res["implied_revenue_cagr"] is not None
+                else f"**Not solvable within [{_CAGR_LO:.0%}, {_CAGR_HI:.0%}]/yr** — {res['solver_note']}")
+        elif res["implied_fcf_cagr"] is None:
             solved = f"**Not solvable within [{_CAGR_LO:.0%}, {_CAGR_HI:.0%}]/yr** — {res['solver_note']}"
         elif res["implied_tam_capture"] is None:
             solved = (

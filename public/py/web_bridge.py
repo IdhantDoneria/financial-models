@@ -574,6 +574,18 @@ def load_fundamentals(fields_json: str) -> str:
     })
 
 
+def _status_reasons(assumptions, report) -> dict:
+    """Per-model text shown under the report row: why it is PARTIAL or
+    UNASSESSED, plus a warning when the DCF is far from the market cap."""
+    out = {name: reason for name, reason in assumptions.partial.items()
+           if name in report.results}
+    note = report.divergence_note()
+    if note:
+        dcf = "Discounted Cash Flow"
+        out[dcf] = f"{out[dcf]} {note}" if dcf in out else note
+    return out
+
+
 def run_report(params_json: str) -> str:
     """Build assumptions (auto or manual) and run the selected models.
 
@@ -635,6 +647,9 @@ def run_report(params_json: str) -> str:
         "results": _clean(report.results), "errors": report.errors,
         "market_context": _clean(market_context),
         "rationale": rationale,
+        # Why a model is PARTIAL or UNASSESSED — already written by the
+        # assumption layer, previously never shown next to the badge.
+        "status_reasons": _status_reasons(assumptions, report),
         "currency_symbol": p.get("currency_symbol") or "$",
         "rf_source": p.get("rf_source") or "default (Damodaran base case 4.25%)",
     })

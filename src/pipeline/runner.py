@@ -72,7 +72,8 @@ class AnalysisReport:
         rows = []
         for name, res in self.results.items():
             is_partial = name in self.assumptions.partial
-            headline = self._headline(name, res, currency_symbol, partial=is_partial)
+            headline = self._headline(name, res, currency_symbol, partial=is_partial,
+                                      price=self.company.current_price)
             status = ("OK" if not is_partial
                       else "PARTIAL" if name in self.assumptions.partly_assessed
                       else "UNASSESSED")
@@ -81,6 +82,43 @@ class AnalysisReport:
         for name, err in self.errors.items():
             rows.append({"Model": name, "Headline result": "-", "Status": err})
         return pd.DataFrame(rows)
+
+    #: DCF equity value / market cap outside this band draws a plain-language
+    #: warning. It is deliberately wide: it flags a model that is far from the
+    #: market, not one that merely disagrees with it.
+    _DIVERGENCE_BAND = (0.4, 2.5)
+
+    def divergence_note(self) -> str | None:
+        """Say so when the DCF equity value is far from the market cap.
+
+        A valuation 7x the market cap reads as a bargain, and 0.05x as a
+        disaster, when the cause is usually the model's inputs (a base year
+        that isn't representative, a growth rate the market doesn't share, or a
+        capital structure that drags WACC down, as a captive finance arm's
+        debt does). The number computes cleanly either way, so this states the
+        gap instead of leaving the user to work it out."""
+        dcf = self.results.get("Discounted Cash Flow")
+        price, shares = self.company.current_price, self.company.shares_outstanding
+        if not dcf or not price or not shares:
+            return None
+        equity = dcf.get("equity_value")
+        if not isinstance(equity, (int, float, np.floating)):
+            return None
+        ratio = equity / (price * shares)
+        lo, hi = self._DIVERGENCE_BAND
+        if lo <= ratio <= hi:
+            return None
+        if ratio <= 0:
+            gap = ("a negative equity value: the DCF's enterprise value is smaller than "
+                   "the company's net debt")
+        else:
+            gap = f"{ratio:.2f}x the market capitalisation"
+        return (f"The DCF equity value is {gap}. A gap this wide usually means the "
+                "model's inputs differ from the market's: growth expectations (the "
+                "Reverse DCF shows what the market is pricing in), a base year that "
+                "isn't representative, or a capital structure the model reads badly "
+                "(a captive finance arm's debt pulls WACC down). Treat the DCF as one "
+                "input, not a price target.")
 
     #: Models whose headline unit switches from "$" to "%" when
     #: AssumptionSet.partial flags them — VaR/CVaR's dollar figure only
@@ -92,6 +130,7 @@ class AnalysisReport:
     @staticmethod
     def _headline(
         name: str, res: dict[str, Any], currency_symbol: str = "$", partial: bool = False,
+        price: float | None = None,
     ) -> str:
         """Pick the single most-useful number per model for the summary row.
 
@@ -117,6 +156,20 @@ class AnalysisReport:
             "Ind AS 116 Hidden-Debt Normalizer": ("adjusted_net_debt", "$"),
             "Reverse DCF / Market-Implied Expectations": ("implied_fcf_cagr", "%"),
         }
+        # The DCF answers "what is a share worth?", so with a share count its
+        # headline is value per share beside the price the user can compare it
+        # to. A bare enterprise value ("$56,731,867,744.10") answered nothing
+        # a reader could act on. Without shares, the enterprise value, labelled.
+        if name == "Discounted Cash Flow":
+            pps, ev = res.get("price_per_share"), res.get("enterprise_value")
+            if isinstance(pps, (int, float, np.floating)):
+                return (f"{currency_symbol}{pps:,.2f} / share"
+                        + (f" · price {currency_symbol}{price:,.2f}" if price else ""))
+            if isinstance(ev, (int, float, np.floating)):
+                return f"{currency_symbol}{ev:,.0f} enterprise value"
+        if name == "Reverse DCF / Market-Implied Expectations" and res.get("growth_profile") == "revenue":
+            g = res.get("implied_revenue_cagr")
+            return f"{g * 100:.2f}% revenue growth" if isinstance(g, (int, float)) else "-"
         key, unit = picks.get(name, (None, ""))
         if partial and name in AnalysisReport._PERCENT_WHEN_PARTIAL:
             unit = "%"
