@@ -210,11 +210,44 @@ _FORECAST_YEARS = 10
 #: projected year. Fewer are used when the history is shorter.
 _BASE_YEARS = 3
 
+#: Commodity producers: SEC SIC ranges (ticker path) and SECTOR_BASELINES
+#: categories (PDF path) whose revenue moves with a commodity price rather
+#: than with volume. Their trailing revenue CAGR measures where the price
+#: cycle started and ended, not a rate the business can compound at: Shell's
+#: 8.1% runs from the 2020 oil-price trough, XOM's 12.9% likewise. For these
+#: companies the explicit forecast grows at the terminal rate, and the base
+#: is averaged over every reported year (a full cycle, up to
+#: :data:`_CYCLE_BASE_YEARS`) instead of the latest three, so neither a peak
+#: nor a trough sets the level of every projected year.
+#:   1000-1499  metal mining, coal, oil & gas extraction and services
+#:   2610-2631  pulp, paper and paperboard mills
+#:   2810-2829  industrial inorganic chemicals, plastics and synthetic fibres
+#:   2860-2879  industrial organic chemicals, fertilisers, agrochemicals
+#:   2900-2999  petroleum refining
+#:   3300-3399  primary metals (steel, aluminium, copper smelting)
+#: Autos, airlines and semiconductors are cyclical too, but their revenue
+#: follows volume and product cycles, so their own growth is kept.
+_COMMODITY_SIC_RANGES = ((1000, 1499), (2610, 2631), (2810, 2829),
+                         (2860, 2879), (2900, 2999), (3300, 3399))
+_COMMODITY_SECTORS = frozenset({"Oil/Gas (Integrated)", "Oil/Gas Production and Exploration",
+                                "Metals & Mining", "Steel"})
+_CYCLE_BASE_YEARS = 10
+
 #: Blume (1971) adjustment toward the market beta of 1.0 — the convention
 #: behind Bloomberg's default "adjusted beta". Raw regression betas are
 #: noisy and mean-revert; applied only to betas this app REGRESSES, never to
 #: a disclosed, sector-table or manual one.
 _BLUME_WEIGHT = 0.67
+
+#: Smallest t-statistic at which a regressed beta is used (about 95%
+#: confidence that it differs from zero). Below it, the regression explains
+#: next to none of the stock's movement, and its slope is noise that no
+#: shrinkage fixes: Shell's 0.10 against the S&P 500 (R² 0.5%, t 0.5) gave a
+#: 5.6% WACC and a DCF of 4.7x its market value. Such betas are also the
+#: least stable across windows. Against the same index over 2015-2020, XOM
+#: measured 1.31 and Shell 1.00 (Yahoo monthly closes). Over 2021-2026 they
+#: measured 0.18 and 0.10, so one five-year slope is no guide to the next.
+_BETA_MIN_T = 2.0
 
 #: Minimum gap between the cost of equity and dividend growth before the
 #: Gordon model will run. As r approaches g the value 1/(r-g) explodes; the
@@ -352,6 +385,18 @@ class AutoAssumer:
         return "Scraped from PDF."
 
     @staticmethod
+    def _beta_t_stat(data: ExtractedFinancials) -> float | None:
+        """t-statistic of the regressed beta's slope, or ``None`` when the
+        regression's correlation or sample size is unknown.
+
+        For a one-factor OLS, t = ρ·√(n−2)/√(1−ρ²), which depends only on
+        the correlation and the number of observations."""
+        rho, n = data.market_correlation, data.return_observations
+        if rho is None or n is None or n <= 2 or abs(rho) >= 1:
+            return None
+        return abs(rho) * ((n - 2) ** 0.5) / ((1 - rho * rho) ** 0.5)
+
+    @staticmethod
     def _disclosed_source(data: ExtractedFinancials) -> str:
         """How to describe a figure that came from the company itself.
 
@@ -380,6 +425,33 @@ class AutoAssumer:
         if sector_baseline is None:
             return None
         return min(sector_baseline["revenue_growth"], _MAX_SECTOR_GROWTH)
+
+    @staticmethod
+    def _is_commodity_producer(data: ExtractedFinancials) -> bool:
+        """Whether revenue tracks a commodity price — see
+        :data:`_COMMODITY_SIC_RANGES`."""
+        if data.sic_code is not None:
+            return any(lo <= data.sic_code <= hi for lo, hi in _COMMODITY_SIC_RANGES)
+        return data.sector in _COMMODITY_SECTORS
+
+    def _starting_growth(self, data: ExtractedFinancials,
+                         g_terminal: float) -> tuple[float, str]:
+        """Year-1 FCF growth for the forecast fade, and where it came from.
+
+        The filing's own rate, then the sector's (capped), then 5% — except
+        for a commodity producer, whose explicit period grows at the terminal
+        rate (see :data:`_COMMODITY_SIC_RANGES`)."""
+        if self._is_commodity_producer(data):
+            return g_terminal, "commodity producer"
+        sector_baseline = self._sector_baseline(data)
+        if data.revenue_growth:
+            return data.revenue_growth, "filing"
+        g_sector = self._sector_growth(sector_baseline)
+        if g_sector is not None:
+            capped = (" (capped — see SECTOR_BASELINES)"
+                      if sector_baseline["revenue_growth"] > _MAX_SECTOR_GROWTH else "")
+            return g_sector, f"{data.sector} sector{capped}"
+        return 0.05, "generic 5%"
 
     def _wacc(
         self, beta: float, tax: float | None = None,
@@ -441,6 +513,14 @@ class AutoAssumer:
         beta_raw = beta
         beta_regressed = (o.beta is None and data.beta is not None
                           and "regression" in self._beta_source(data).lower())
+        # A regressed beta that is not statistically different from zero is
+        # treated as no measurement at all, falling back exactly as a failed
+        # regression does (sector median, else the market's 1.0).
+        beta_t = self._beta_t_stat(data) if beta_regressed else None
+        beta_insignificant = beta_t is not None and beta_t < _BETA_MIN_T
+        if beta_insignificant:
+            beta_regressed = False
+            beta = sector_baseline["beta"] if sector_baseline else self.default_beta
         if beta_regressed:
             beta = _BLUME_WEIGHT * beta_raw + (1 - _BLUME_WEIGHT)
         erm = o.expected_market_return if o.expected_market_return is not None \
@@ -782,14 +862,16 @@ class AutoAssumer:
                  f"owed like debt; the interest inside operating-lease payments is "
                  f"added back to FCF so it isn't counted twice.")
             )
-        capped_note = (" (capped — see SECTOR_BASELINES)"
-                       if sector_baseline and sector_baseline["revenue_growth"] > _MAX_SECTOR_GROWTH
-                       else "")
-        growth_src = ("filing" if data.revenue_growth else
-                      f"{data.sector} sector{capped_note}" if sector_baseline else "generic 5%")
-        g_used = data.revenue_growth or self._sector_growth(sector_baseline) or 0.05
-        fade = (f"projected {_FORECAST_YEARS} years, growth fading linearly from "
-                f"{g_used:.2%} ({growth_src}) to the {g_terminal:.2%} terminal rate")
+        g_used, growth_src = self._starting_growth(data, g_terminal)
+        if growth_src == "commodity producer":
+            fade = (f"projected {_FORECAST_YEARS} years at the {g_terminal:.2%} terminal rate — "
+                    f"a commodity producer's revenue follows the commodity price, so its "
+                    f"trailing growth"
+                    + (f" ({data.revenue_growth:.2%} a year)" if data.revenue_growth else "")
+                    + " reflects the price cycle, not a rate it can compound at")
+        else:
+            fade = (f"projected {_FORECAST_YEARS} years, growth fading linearly from "
+                    f"{g_used:.2%} ({growth_src}) to the {g_terminal:.2%} terminal rate")
         if data.free_cash_flows:
             src = self._disclosed_source(data)
             rationale[("DCF", "free_cash_flows")] = (
@@ -823,6 +905,18 @@ class AutoAssumer:
         # authoritative-sounding false citation for their own input.
         if o.beta is not None:
             rationale[("CAPM", "beta")] = f"Manually overridden = {beta}."
+        elif beta_insignificant:
+            rationale[("CAPM", "beta")] = (
+                f"The five-year regression against {data.return_benchmark or 'the market index'} "
+                f"measured {beta_raw:.2f}, but it explains only "
+                f"{data.market_correlation ** 2:.0%} of the stock's monthly moves (t = {beta_t:.1f}, "
+                f"below the {_BETA_MIN_T:.0f} needed to tell it apart from zero), so it is not "
+                f"used. "
+                + (f"{data.sector} sector median (Damodaran, Jan 2026) = {beta:.2f} instead."
+                   if sector_baseline else
+                   f"The market's own beta of {beta:.2f} is used instead, as when no "
+                   f"regression is possible.")
+            )
         elif data.beta is not None and beta_regressed:
             rationale[("CAPM", "beta")] = (
                 f"{self._beta_source(data)} Raw {beta_raw:.2f}, Blume-adjusted "
@@ -1149,10 +1243,10 @@ class AutoAssumer:
         The starting rate prefers, in order: the filing's own disclosed/
         derived rate, then its sector's real 5-year historical CAGR
         (SECTOR_BASELINES — see :meth:`_sector_growth` for the one figure
-        that's capped), then the flat 5% default.
+        that's capped), then the flat 5% default. A commodity producer
+        starts at ``g_terminal`` — see :meth:`_starting_growth`.
         """
-        sector_baseline = self._sector_baseline(data)
-        g0 = data.revenue_growth or self._sector_growth(sector_baseline) or 0.05
+        g0, _ = self._starting_growth(data, g_terminal)
         n = _FORECAST_YEARS
         path, value = [], base
         for t in range(n):
@@ -1241,7 +1335,8 @@ class AutoAssumer:
         idx = list(range(len(history)))
         if not newest_first:
             idx.reverse()
-        idx = idx[:_BASE_YEARS]
+        cycle = self._is_commodity_producer(data)
+        idx = idx[:_CYCLE_BASE_YEARS if cycle else _BASE_YEARS]
 
         def aligned(series: list, i: int, fallback: float | None) -> float | None:
             if series and len(series) == len(history) and series[i] is not None:
@@ -1266,7 +1361,9 @@ class AutoAssumer:
         base = sum(adjusted) / len(adjusted)
 
         parts = [f"average of the latest {len(adjusted)} reported year"
-                 f"{'s' if len(adjusted) > 1 else ''}"]
+                 f"{'s' if len(adjusted) > 1 else ''}"
+                 + (" (the full reported cycle, as this is a commodity producer)"
+                    if cycle and len(adjusted) > _BASE_YEARS else "")]
         parts.append(f"+ after-tax interest ({n_int} of {len(adjusted)} years)" if n_int
                      else ("interest not added back (interest paid is classified as financing, "
                            "so operating cash flow never deducted it)"

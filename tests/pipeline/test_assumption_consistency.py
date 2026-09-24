@@ -367,3 +367,65 @@ def test_ocf_minus_da_fcf_reports_dcf_partial():
     a = AutoAssumer().build(data)
     assert DCF in a.partly_assessed and "depreciation" in a.partial[DCF]
     assert "D&A" in a.rationale[("DCF", "free_cash_flows")]
+
+
+@pytest.mark.parametrize("kw", [dict(sic_code=1311), dict(sic_code=2911), dict(sic_code=3312),
+                                dict(sector="Oil/Gas (Integrated)")])
+def test_commodity_producer_grows_at_terminal_rate_on_a_full_cycle_base(kw):
+    """Shell (SIC 1311) / XOM (2911): the trailing revenue CAGR measures the
+    oil-price cycle, so the forecast grows at terminal g from a base averaged
+    over every reported year, not the filing's 10% from the latest three."""
+    a = AutoAssumer().build(_us(**kw))
+    fcfs = a.kwargs_by_model[DCF]["free_cash_flows"]
+    assert all(fcfs[i + 1] / fcfs[i] - 1 == pytest.approx(0.025) for i in range(9))
+    assert a.kwargs_by_model[RDCF]["base_fcf"] == pytest.approx((100 + 120 + 90 + 150) / 4)
+    note = a.rationale[("DCF", "free_cash_flows")]
+    assert "commodity producer" in note and "10.00% a year" in note and "full reported cycle" in note
+
+
+@pytest.mark.parametrize("kw", [dict(sic_code=3711), dict(sic_code=4512), dict(sic_code=3674),
+                                dict(sic_code=2834), dict(sector="Oil/Gas (Integrated)", sic_code=7372)])
+def test_non_commodity_companies_keep_their_own_growth(kw):
+    """Autos, airlines, chips and pharma keep the filing's rate; an SIC code
+    outranks the PDF text classifier when both exist."""
+    a = AutoAssumer().build(_us(**kw))
+    fcfs = a.kwargs_by_model[DCF]["free_cash_flows"]
+    assert fcfs[1] / fcfs[0] - 1 == pytest.approx(0.10 + (0.025 - 0.10) / 9)
+    assert a.kwargs_by_model[RDCF]["base_fcf"] == pytest.approx((120 + 90 + 150) / 3)
+
+
+def _regressed(beta, corr, n=58, **kw):
+    return _us(beta=beta, market_correlation=corr, return_observations=n,
+               return_benchmark="^GSPC", backends_used=["sec-edgar-xbrl", "market-data"], **kw)
+
+
+def test_insignificant_regressed_beta_falls_back_to_the_market():
+    """Shell: β 0.10 with ρ 0.07 over 58 months (t ≈ 0.5) is noise, so it
+    is not Blume-adjusted into 0.40; the market's 1.0 is used and said."""
+    a = AutoAssumer().build(_regressed(0.102, 0.0725))
+    assert a.market_context["beta"] == pytest.approx(1.0)
+    assert a.market_context["beta_raw"] == pytest.approx(0.102)
+    note = a.rationale[("CAPM", "beta")]
+    assert "not used" in note and "t = 0.5" in note
+
+
+def test_insignificant_beta_uses_the_sector_median_when_known():
+    a = AutoAssumer().build(_regressed(0.2, 0.05, sector="Steel"))
+    assert a.market_context["beta"] == pytest.approx(1.06)
+    assert "Steel sector median" in a.rationale[("CAPM", "beta")]
+
+
+@pytest.mark.parametrize("beta,corr,expected", [
+    (0.491, 0.2667, 0.67 * 0.491 + 0.33),    # CVX: t ≈ 2.07, kept
+    (1.087, 0.6803, 0.67 * 1.087 + 0.33),    # AAPL
+    (0.3, None, 0.67 * 0.3 + 0.33),          # no correlation reported: unchanged
+])
+def test_significant_or_untestable_betas_keep_the_blume_adjustment(beta, corr, expected):
+    a = AutoAssumer().build(_regressed(beta, corr))
+    assert a.market_context["beta"] == pytest.approx(expected)
+    assert "Blume" in a.rationale[("CAPM", "beta")]
+
+
+def test_manual_beta_is_never_replaced():
+    a = AutoAssumer().build(_regressed(0.1, 0.05), ManualOverrides(beta=0.4))
+    assert a.market_context["beta"] == pytest.approx(0.4)

@@ -1,5 +1,5 @@
 {
-  "synced_at_utc": "2026-09-24T14:42:46+00:00",
+  "synced_at_utc": "2026-09-24T15:03:30+00:00",
   "files": [
     {
       "path": "src/__init__.py",
@@ -51,7 +51,7 @@
     },
     {
       "path": "src/pipeline/assumptions.py",
-      "sha256": "1af33a8a6e830cb585095a65272c39d8020492bfccd132977719d79f9010fdfc"
+      "sha256": "a39fc44a025a5f4ada2597b6b4fabe576a6fbfe62c638be6462231400c7b9e96"
     },
     {
       "path": "src/pipeline/exporters.py",
@@ -59,7 +59,7 @@
     },
     {
       "path": "src/pipeline/pdf_extractor.py",
-      "sha256": "7c41616d6a73e781c688f76e0d291a65d982fbf02cae89d74423edd7b596e6ab"
+      "sha256": "54ceb7db690fb127ab573aa37d9366390eba3aaba456d34df24b296f85176806"
     },
     {
       "path": "src/pipeline/runner.py",

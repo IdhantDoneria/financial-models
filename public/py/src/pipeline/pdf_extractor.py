@@ -191,6 +191,10 @@ class ExtractedFinancials:
     #: nothing more specific — never overrides a real extracted or
     #: filing-stated value.
     sector: str | None = None
+    #: The registrant's SEC Standard Industrial Classification code (EDGAR
+    #: submissions ``sic``), supplied by the ticker path only. Used to spot
+    #: commodity producers — see ``_COMMODITY_SIC_RANGES`` in assumptions.py.
+    sic_code: int | None = None
     #: Which backends actually produced text (for debugging in the UI).
     backends_used: list[str] = field(default_factory=list)
     #: Raw text (first ~50k chars) kept for downstream inspection.
@@ -244,6 +248,7 @@ class ExtractedFinancials:
             "statement_basis": self.statement_basis,
             "ttm_flows": self.ttm_flows,
             "sector": self.sector,
+            "sic_code": self.sic_code,
             "backends_used": self.backends_used,
         }
 

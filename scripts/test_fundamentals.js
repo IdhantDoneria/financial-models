@@ -1192,10 +1192,13 @@ console.log("\n· Balance sheet — every line from one date, debt summed by rol
                   adjclose: [{ adjclose: Array.from({ length: months }, (_, i) => price + (i % 5)) }] },
     events: {},
   }] } });
-  const runCase = async ({ ticker, cik, factsByCik, quotes, rates = {} }) => {
+  const runCase = async ({ ticker, cik, factsByCik, quotes, rates = {}, sic = null }) => {
     global.fetch = async (url) => {
       url = String(url);
       if (url.includes("company_tickers")) return json({ 0: { cik_str: Number(cik), ticker, title: ticker } });
+      if (url.includes("/submissions/")) {
+        return sic ? json({ sic: String(sic), sicDescription: "x" }) : { ok: false, status: 404, json: async () => ({}) };
+      }
       const m = url.match(/CIK(\d{10})\.json/);
       if (m) return factsByCik[m[1]] ? json(factsByCik[m[1]]) : { ok: false, status: 404, json: async () => ({}) };
       if (url.includes("open.er-api.com")) return json({ rates: { USD: 1, ...rates } });
@@ -1282,11 +1285,15 @@ console.log("\n· Balance sheet — every line from one date, debt summed by rol
         } } },
       },
       quotes: { XOM: [161.23, "USD"] },
+      sic: 2911,
     });
     const X = xom && xom.fields || {};
     eq(X.revenue, 332.238e9, "XOM: FY2025 revenue from the predecessor registrant");
     eq(Math.round(X.total_debt / 1e6), 42368, "XOM: 2026 debt from the successor's balance sheet");
     ok((xom.notes || []).some((n) => /predecessor registrant/.test(n)), "XOM: the merge is disclosed");
+    eq(X.sic_code, 2911, "XOM: SIC code from EDGAR submissions (petroleum refining)");
+    ok(S.sic_code === null && !(sap.missing || []).includes("sic_code"),
+      "a failed SIC lookup is null and not counted as a missing figure");
 
     // Toyota-style: OCF and D&A tagged, no capex line -> OCF − D&A, flagged.
     const tm = await runCase({
