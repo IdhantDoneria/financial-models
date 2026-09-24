@@ -174,6 +174,50 @@ const SEGMENT_DEBT = {
                  ["us-gaap:LongTermDebtAndCapitalLeaseObligationsCurrent", "us-gaap:LongTermDebtCurrent"]],
   noncurrent: ["us-gaap:LongTermDebtAndCapitalLeaseObligations", "us-gaap:LongTermDebtNoncurrent"],
 };
+//: Cash-flow lines that make up a captive lender's equity cash flow. Per
+//  role, the first tag present wins, except the lending arm's new loans and
+//  leases, which GM tags as separate lines (receivables, leased vehicles).
+const CAPTIVE_FLOW = {
+  newAssetsCombined: ["PaymentsToAcquireLoansAndLeasesHeldForInvestment"],
+  newAssets: ["PaymentsToAcquireFinanceReceivables", "PaymentsToAcquireLeasesHeldForInvestment",
+              "PaymentsToAcquireEquipmentOnLease"],
+  collected: ["ProceedsFromCollectionOfFinanceReceivables", "ProceedsFromSaleOfFinanceReceivables",
+              "ProceedsFromLeasesHeldForInvestment", "ProceedsFromSaleOfEquipmentOnLease"],
+  issued: ["ProceedsFromDebtMaturingInMoreThanThreeMonths", "ProceedsFromIssuanceOfLongTermDebt"],
+  repaid: ["RepaymentsOfDebtMaturingInMoreThanThreeMonths", "RepaymentsOfLongTermDebt"],
+  shortTerm: ["ProceedsFromRepaymentsOfShortTermDebtMaturingInThreeMonthsOrLess",
+              "ProceedsFromRepaymentsOfShortTermDebt"],
+};
+
+//: Free cash flow to EQUITY for a manufacturer with a lending arm, year by
+//  year on `ends`: FCF − the arm's net new loans and leases + net borrowing.
+//  A captive is part bank: its loans are its operating assets and its debt
+//  is their funding, so an FCFF-and-WACC valuation either ignores the loan
+//  book (consolidated FCF added back GM Financial's lease depreciation but
+//  never paid for the leased cars) or lets the arm's $114bn of debt drag
+//  WACC to 5.9%. Cash to shareholders, discounted at the cost of equity,
+//  needs neither split. GM FY2025: 17.56 − 5.33 − 2.71 = 9.52bn.
+//  A year with any role missing is null; CAT tags its long-term borrowing
+//  only per segment, so it gets no series rather than a wrong one.
+function captiveEquityCashFlows(facts, ends, fcfs, currency) {
+  const byEnd = (tags) => new Map((pickAnnualSeries(facts, tags, 12, currency)?.series || [])
+    .map((r) => [r.end, Math.abs(r.val)]));
+  const signed = (tags) => new Map((pickAnnualSeries(facts, tags, 12, currency)?.series || [])
+    .map((r) => [r.end, r.val]));
+  const combined = byEnd(CAPTIVE_FLOW.newAssetsCombined);
+  const parts = CAPTIVE_FLOW.newAssets.map((t) => byEnd([t]));
+  const collected = CAPTIVE_FLOW.collected.map((t) => byEnd([t]));
+  const issued = byEnd(CAPTIVE_FLOW.issued), repaid = byEnd(CAPTIVE_FLOW.repaid);
+  const shortTerm = signed(CAPTIVE_FLOW.shortTerm);
+  const sumAt = (maps, e) => (maps.some((m) => m.has(e)) ? maps.reduce((a, m) => a + (m.get(e) || 0), 0) : null);
+  return ends.map((e, i) => {
+    const added = combined.has(e) ? combined.get(e) : sumAt(parts, e);
+    const back = sumAt(collected, e);
+    if (added === null || back === null || !issued.has(e) || !repaid.has(e)) return null;
+    return fcfs[i] - (added - back) + (issued.get(e) - repaid.get(e) + (shortTerm.get(e) || 0));
+  });
+}
+
 const isFinanceMember = (m) => /Financial|Credit|Capital/i.test(localName(m)) && !/Excluding/i.test(localName(m));
 //: Business-line axes only. Debt-type axes carry members such as Deere's
 //  "ProductFinancingArrangement", which is a kind of debt, not a lending arm.
@@ -536,10 +580,10 @@ const DEBT_TAGS = {
 const DEBT_COMPONENT_SLOTS = [
   ["LongTermLoansFromBank", "LongTermLoansPayable"],
   ["SeniorLongTermNotes", "LongTermNotesPayable"],
-  ["ConvertibleDebtNoncurrent"],
+  ["ConvertibleDebtNoncurrent", "ConvertibleLongTermNotesPayable"],
   ["ShortTermBankLoansAndNotesPayable", "LoansPayableCurrent"],
   ["SeniorNotesCurrent", "NotesPayableCurrent"],
-  ["ConvertibleDebtCurrent"],
+  ["ConvertibleDebtCurrent", "ConvertibleNotesPayableCurrent"],
 ];
 
 //: A tag name that denotes the company's OWN borrowing (not debt securities
@@ -553,14 +597,18 @@ const NOT_OWN_BORROWING = /Securities|Receivable|Investment|Asset|HeldToMaturity
 //  a liquidity table stating bank borrowings of 0), so it is genuinely
 //  debt-free; a filer whose debt lives only in custom tags (Berkshire) still
 //  tags a standard maturity schedule and so is NOT mistaken for debt-free.
-function hasEverBorrowed(facts) {
+//: `since` (ISO date, optional) limits the look-back: Arm drew and repaid
+//  $50m of short-term debt in FY2022 and has tagged no borrowing since, so
+//  "ever" left its debt missing; three years without a borrowing balance or
+//  flow is debt-free for a valuation today.
+function hasEverBorrowed(facts, since = null) {
   for (const [tag, body] of Object.entries(facts)) {
     if (!BORROWING_NAME.test(tag) || NOT_OWN_BORROWING.test(tag)) continue;
     //: Money units only — Infosys's IFRS 16 transition tag
     //  WeightedAverageLesseesIncrementalBorrowingRate… is a 4.5% RATE.
     for (const [unit, rows] of Object.entries(body.units || {})) {
       if (!/^[A-Z]{3}$/.test(unit)) continue;
-      if (rows.some((r) => typeof r.val === "number" && r.val !== 0)) return true;
+      if (rows.some((r) => typeof r.val === "number" && r.val !== 0 && (!since || (r.end || "") >= since))) return true;
     }
   }
   return false;
@@ -892,7 +940,8 @@ function pickBalanceSheet(facts, taxonomy, currency, anchorOverride = null) {
   }
   out.debtParts = parts.filter((p) => typeof p.value === "number");
   out.debt = out.debtParts.length ? out.debtParts.reduce((a, p) => a + p.value, 0) : null;
-  if (out.debt === null && !hasEverBorrowed(facts)) {
+  const threeYearsBefore = new Date(Date.parse(anchor) - 3 * 365.25 * 86_400_000).toISOString().slice(0, 10);
+  if (out.debt === null && !hasEverBorrowed(facts, threeYearsBefore)) {
     out.debt = 0;
     out.neverBorrowed = true;
   }
@@ -1932,7 +1981,13 @@ module.exports = async (req, res) => {
   //  financials is converted below, never silently mixed in.
   const reportingCurrency = detectReportingCurrency(facts, flowTags.revenue);
   for (const [k, tags] of Object.entries(flowTags)) {
-    flows[k] = pickAnnualSeries(facts, tags, 6, reportingCurrency, k === "revenue");
+    //: Largest on a same-year tie for dividends too: Prologis tags FY2025 as
+    //  0.03 "declared" beside 4.04 "cash paid" (four quarters of 1.01), and
+    //  cascade order took the 0.03. Sony's ¥10 interim beside its ¥95 total
+    //  is the same shape. A special dividend makes "declared" the larger, which
+    //  is still what was paid to shareholders that year.
+    flows[k] = pickAnnualSeries(facts, tags, 6, reportingCurrency,
+      k === "revenue" || k === "dividends_per_share");
   }
   //: Every income and cash-flow concept must describe the same fiscal year
   //  as revenue. A revenue tag the filer abandoned years ago (Morgan Stanley's
@@ -2131,6 +2186,36 @@ module.exports = async (req, res) => {
     interestExpenseFromRow);
   const sbcSeries = seriesAlignedTo(flows.stock_based_compensation, fcfPeriodEnds,
     (v) => (v == null ? null : Math.abs(v)));
+  //: Telecoms buy spectrum in auctions every few years, outside capex:
+  //  Verizon paid 47.6bn for C-band in 2021, AT&T 25.5bn (tagged as an
+  //  acquisition). It is a recurring cost of staying in business, so it is
+  //  averaged over every year available and charged against cash flow.
+  let spectrumCharge = null;
+  if (sic !== null && sic >= 4812 && sic <= 4899) {
+    const pick = pickAnnualSeries(facts, ["PaymentsToAcquireIntangibleAssets"], 6, reportingCurrency)
+      || pickAnnualSeries(facts, ["PaymentsToAcquireBusinessesNetOfCashAcquired"], 6, reportingCurrency);
+    if (pick && pick.series.length >= 3) {
+      const vals = pick.series.map((r) => Math.abs(r.val));
+      spectrumCharge = vals.reduce((a, v) => a + v, 0) / vals.length;
+      notes.push(`Spectrum and licence purchases (${pick.tag}) average `
+        + `${(spectrumCharge / 1e9).toFixed(2)}bn a year over ${vals.length} years `
+        + `(${pick.series.map((r) => `${r.end.slice(0, 4)}: ${(Math.abs(r.val) / 1e9).toFixed(1)}bn`).join(", ")}); `
+        + "the DCF charges that average against free cash flow.");
+    }
+  }
+  //: Equity cash flow for a manufacturer with a lending arm (see
+  //  captiveEquityCashFlows). Only when the latest three years are complete.
+  let fcfeSeries = [];
+  if (facts[CAPTIVE_FINANCE_SIGNAL] && !isLenderSic && fcfBasis === "reported" && freeCashFlows.length >= 3) {
+    const fcfe = captiveEquityCashFlows(facts, fcfPeriodEnds, freeCashFlows, reportingCurrency);
+    if (fcfe.slice(-3).every((v) => v !== null)) {
+      fcfeSeries = fcfe;
+      notes.push("This company lends to its own customers, so it is valued on free cash flow to "
+        + "EQUITY: operating cash flow minus capex, minus the lending arm's net new loans and leased "
+        + "assets, plus net borrowing, discounted at the cost of equity. Latest year: "
+        + `${(fcfe[fcfe.length - 1] / 1e9).toFixed(2)}bn.`);
+    }
+  }
   //: Revenue for each FCF year, so the pipeline can normalise the FCF margin
   //  and apply it to the latest revenue (a grower's plain 3-year average lags).
   const revenueSeries = seriesAlignedTo(flows.revenue, fcfPeriodEnds);
@@ -2249,8 +2334,9 @@ module.exports = async (req, res) => {
     }
   }
   if (bs.neverBorrowed) {
-    notes.push("Total debt is 0: this company has never tagged a borrowing of any kind in its "
-      + "XBRL filings (no debt, notes, loans or maturity schedule), so it is treated as debt-free.");
+    notes.push("Total debt is 0: this company has tagged no borrowing of any kind (no debt, notes, "
+      + "loans, maturity schedule or borrowing cash flow) in the last three years of its XBRL "
+      + "filings, so it is treated as debt-free.");
   } else if (bs.fromComponents) {
     notes.push("Total debt is summed from the separate borrowing lines this filer uses (bank "
       + "loans, senior notes, convertibles) because it tags no total-debt line.");
@@ -2684,6 +2770,9 @@ module.exports = async (req, res) => {
     sic_code: filerInfo.sic,
     //: Aligned element-for-element with free_cash_flows — see revenueSeries.
     revenue_series: revenueSeries,
+    spectrum_charge: spectrumCharge,
+    //: Free cash flow to equity, aligned with free_cash_flows (captives only).
+    fcfe_series: fcfeSeries,
     //: The finance arm's share of total_debt (captive finance only).
     finance_arm_debt: financeArmDebt,
     instrument_type: priceInfo ? priceInfo.instrumentType : null,
@@ -2701,7 +2790,8 @@ module.exports = async (req, res) => {
 
   //: Classification metadata and optional refinements, not financial figures
   //  the extraction-confidence count should penalise.
-  const NOT_FIGURES = new Set(["sic_code", "revenue_series", "finance_arm_debt", "instrument_type"]);
+  const NOT_FIGURES = new Set(["sic_code", "revenue_series", "finance_arm_debt", "instrument_type",
+                                "fcfe_series", "spectrum_charge"]);
   const missing = Object.entries(fields)
     .filter(([k, v]) => !NOT_FIGURES.has(k) && (v === null || (Array.isArray(v) && v.length === 0)))
     .map(([k]) => k);
@@ -2742,7 +2832,7 @@ module.exports = async (req, res) => {
 //  parts that are easy to get subtly wrong (share-class spelling, restatement
 //  dedup, period alignment) and impossible to check by eyeballing a live
 //  response, so they are tested directly rather than only through the handler.
-module.exports._internals = { correctQuarterTaggedAsAnnual, parseInlineXbrl, impliedSharesFromEps, segmentDebt, sumQuarterlyPerShare,
+module.exports._internals = { captiveEquityCashFlows, correctQuarterTaggedAsAnnual, parseInlineXbrl, impliedSharesFromEps, segmentDebt, sumQuarterlyPerShare,
                                RETIRED_TICKERS, isTransient, resolveTicker, detectReportingCurrency, deriveAdrRatio,
                               pickBalanceSheet, valueAt, translationRates, pickCoverShares, mergeFacts, latestAnnualEnd, latestFilingForm, hasEverBorrowed, DEBT_COMPONENT_SLOTS, pickWeightedAverageShares,
                               PREDECESSOR_CIKS, DEBT_TAGS, IFRS_DEBT_TAGS, ADR_PINNED_RATIOS, ADR_PINNED_BAND,

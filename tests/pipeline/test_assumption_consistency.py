@@ -678,3 +678,60 @@ def test_dcf_headline_is_value_per_share_beside_the_price():
         == "₹56,700,000,000 enterprise value"
     assert AnalysisReport._headline(RDCF, {"growth_profile": "revenue", "implied_revenue_cagr": 0.2879}) \
         == "28.79% revenue growth"
+
+
+# --------------------------------------------------------------------------- #
+# Audit round 4 (2026-09-24): remaining gaps
+# --------------------------------------------------------------------------- #
+def _captive(**kw) -> ExtractedFinancials:
+    """GM's shape: FCF [9.96, 9.30, 17.56]bn, equity cash flow [8.45, 10.51, 9.52]bn."""
+    base = dict(free_cash_flows=[9.96e9, 9.30e9, 17.56e9], fcfe_series=[8.45e9, 10.51e9, 9.52e9],
+                fcf_history_order="oldest_first", revenue=185e9, total_debt=130.3e9,
+                finance_arm_debt=114.0e9, cash_and_equivalents=27.7e9, interest_expense=4.1e9,
+                interest_expense_series=[4e9, 4e9, 4.1e9], current_price=82.0, shares_outstanding=0.88e9,
+                beta=1.28, sic_code=3711, currency="USD", backends_used=["sec-edgar-xbrl"])
+    base.update(kw)
+    return ExtractedFinancials(**base)
+
+
+def test_captive_with_equity_cash_flow_is_valued_at_the_cost_of_equity():
+    """GM read 3.3x its market value on consolidated FCF (which added back GM
+    Financial's lease depreciation without paying for the leased cars). The
+    equity cash flow, at the cost of equity, with no net debt deducted."""
+    a = AutoAssumer().build(_captive())
+    kw = a.kwargs_by_model[DCF]
+    assert kw["discount_rate"] == pytest.approx(a.market_context["cost_of_equity"])
+    assert kw["net_debt"] == 0.0 and a.kwargs_by_model[RDCF]["net_debt"] == 0.0
+    assert a.kwargs_by_model[RDCF]["base_fcf"] == pytest.approx((8.45e9 + 10.51e9 + 9.52e9) / 3)
+    assert "EQUITY" in a.rationale[("DCF", "free_cash_flows")]
+    assert "interest stays deducted" in a.rationale[("DCF", "free_cash_flows")]
+    assert a.market_context["valuation_basis"].startswith("free cash flow to equity")
+
+
+def test_incomplete_equity_cash_flow_falls_back_to_the_industrial_split():
+    """CAT tags its long-term borrowing only per segment: no complete equity
+    cash flow, so it keeps the industrial-debt treatment."""
+    a = AutoAssumer().build(_captive(fcfe_series=[None, 10.51e9, 9.52e9]))
+    assert a.kwargs_by_model[DCF]["discount_rate"] == pytest.approx(a.market_context["wacc"])
+    assert "captive finance arm" in a.partial[DCF]
+
+
+def test_telecom_spectrum_is_charged_against_cash_flow():
+    """Verizon: 10.38bn a year of spectrum (C-band 47.6bn in 2021) was never
+    deducted, so the DCF read 2.8x the market value."""
+    plain = AutoAssumer().build(_ticker(sic_code=4813))
+    charged = AutoAssumer().build(_ticker(sic_code=4813, spectrum_charge=10.38e9))
+    diff = plain.kwargs_by_model[RDCF]["base_fcf"] - charged.kwargs_by_model[RDCF]["base_fcf"]
+    assert diff == pytest.approx(10.38e9)
+    assert "spectrum" in charged.rationale[("DCF", "free_cash_flows")]
+
+
+def test_cost_of_debt_is_never_below_todays_borrowing_rate():
+    """Verizon's interest/debt was 4.05% against a 5.11% Treasury: the coupon
+    on old bonds. WACC uses rf + 150bp then; a higher book rate is kept."""
+    auto = AutoAssumer(risk_free_rate=0.0511)
+    low = auto.build(_ticker(interest_expense=0.0405 * 40e9, total_debt=40e9))
+    assert "coupon on older debt" in low.rationale[("DCF", "discount_rate")]
+    assert "6.61%" in low.rationale[("DCF", "discount_rate")]
+    high = auto.build(_ticker(interest_expense=0.09 * 40e9, total_debt=40e9))
+    assert "9.00% (interest expense/total debt)" in high.rationale[("DCF", "discount_rate")]
