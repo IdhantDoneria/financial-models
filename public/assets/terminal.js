@@ -1368,15 +1368,19 @@ window.addEventListener("DOMContentLoaded", () => {
  * IB DESK — company PDF analyzer
  * Upload a 10-K/10-Q -> pure-Python extraction (pypdf + pdfminer.six in
  * WASM) -> auto assumptions (live US-Treasury risk-free + IB heuristics) or
- * manual overrides -> run any subset of the twelve models (two Pro+-gated)
+ * manual overrides -> run any subset of the report models (two Pro+-gated)
  * -> download the report as PDF / Google-Docs (.docx) / Excel.
  * ======================================================================== */
 
+//: The models a ticker or filing report runs. Modern Portfolio Theory,
+//  Binomial, Monte Carlo and Heston are not in it: on a company report they
+//  either tell the user nothing about the company (MPT returned about 0.32 for
+//  every stock) or repeat Black-Scholes to within 2% on the same hypothetical
+//  at-the-money call. They remain full calculators, with their own inputs, in
+//  the terminal. Their manual-mode sliders are gone from IB_OVERRIDES too.
 const IB_MODELS = [
-  "Discounted Cash Flow", "Gordon Growth Model", "Modern Portfolio Theory",
-  "Value at Risk / CVaR", "Capital Asset Pricing Model", "Fama-French 3-Factor",
-  "Black-Scholes-Merton", "Binomial Tree (CRR)", "Monte Carlo (GBM)",
-  "Heston Stochastic Volatility",
+  "Discounted Cash Flow", "Gordon Growth Model", "Value at Risk / CVaR",
+  "Capital Asset Pricing Model", "Fama-French 3-Factor", "Black-Scholes-Merton",
 ];
 
 //: The two premium models, gated the same way the mnemonic-driven direct
@@ -1409,11 +1413,6 @@ const IB_OVERRIDES = [
   { id: "strike_ratio", label: "STRIKE / SPOT", min: 0.5, max: 1.5, step: 0.01, def: 1.0 },
   { id: "var_confidence", label: "VAR CONF", min: 0.90, max: 0.99, step: 0.005, def: 0.95, pct: true },
   { id: "var_horizon_days", label: "VAR HORIZON (D)", min: 1, max: 30, step: 1, def: 10, int: true },
-  { id: "monte_carlo_paths", label: "MC PATHS", min: 10000, max: 500000, step: 10000, def: 100000, int: true },
-  { id: "heston_kappa", label: "HESTON κ", min: 0.1, max: 10, step: 0.1, def: 1.5 },
-  { id: "heston_theta", label: "HESTON θ", min: 0.005, max: 0.5, step: 0.005, def: 0.0625 },
-  { id: "heston_xi", label: "HESTON ξ", min: 0.05, max: 1.5, step: 0.05, def: 0.3 },
-  { id: "heston_rho", label: "HESTON ρ", min: -0.95, max: 0.5, step: 0.05, def: -0.6 },
   // HDEBT/RDCF: the footnote-only figures the auto-assumer defaults to $0 /
   // 10x-revenue precisely because no regex can trust extracting them (see
   // AutoAssumer.build's rationale) — this is how a user supplies the real
@@ -1792,7 +1791,22 @@ function ensureAnalyzerPackages() {
           if (!premiumSelected.length || !baseOut.ok) return JSON.stringify(baseOut);
 
           const extracted = state.ib.extracted && state.ib.extracted.fields;
+          //: US GAAP already puts operating leases on the balance sheet (ASC
+          //  842), and the model's reverse-factoring and contingent-liability
+          //  inputs are footnote-only, so on a US filer it can only echo net
+          //  debt (73 of 83 live tickers came back "leases are covered"). Say
+          //  so instead of spending a paid server call on a no-op. The box
+          //  stays in the grid, and the calculator is unchanged.
+          const HDEBT = "Ind AS 116 Hidden-Debt Normalizer";
+          const usGaap = extracted && extracted.accounting_standard === "us-gaap";
           const premiumResults = await Promise.all(premiumSelected.map(async (fullName) => {
+            if (fullName === HDEBT && usGaap) {
+              return { ok: false, notApplicable: true, model: fullName,
+                error: "Not applicable to a US GAAP filer: operating leases are already on its "
+                  + "balance sheet (ASC 842) and in the debt used for the DCF. Reverse factoring and "
+                  + "contingent liabilities are footnote-only, so use the Ind AS 116 calculator to "
+                  + "enter them from the filing." };
+            }
             try {
               const r = await fetch("api/premium", {
                 method: "POST", credentials: "same-origin",
@@ -1820,7 +1834,7 @@ function ensureAnalyzerPackages() {
               Object.assign(baseOut.rationale, pr.rationale || {});
             } else {
               baseOut.summary.push({ Model: name, "Headline result": "-",
-                Status: pr.denied ? pr.error : `ERROR: ${pr.error}` });
+                Status: pr.denied || pr.notApplicable ? pr.error : `ERROR: ${pr.error}` });
               baseOut.errors[name] = pr.error;
             }
           }

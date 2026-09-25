@@ -196,8 +196,13 @@ widgets only call the public interface.
 ## 📄 Company PDF Analyzer
 
 Upload a company financial PDF (10-K, 10-Q, annual report, investor deck) and the
-pipeline scrapes the numbers, applies assumptions, runs any subset of the twelve
-models, and hands you a downloadable report.
+pipeline scrapes the numbers, applies assumptions, runs any subset of the six report
+models (DCF, Gordon Growth, VaR, CAPM, Fama-French, Black-Scholes, plus the two Pro+
+models), and hands you a downloadable report. Modern Portfolio Theory, Binomial,
+Monte Carlo and Heston are not in the report because on a company they add nothing
+Black-Scholes does not; all twelve remain full calculators in the terminal. Gordon
+Growth is skipped when the dividend is under 40% of net income, and the Ind AS 116
+model is skipped for US GAAP filers, each with the reason shown on the report.
 
 **Pipeline** — `src/pipeline/`:
 
@@ -209,9 +214,9 @@ models, and hands you a downloadable report.
 | 4 · Export | `exporters.py` | **PDF** (reportlab, multi-page), **Excel** (openpyxl, one sheet per model), **Google Docs** (googleapiclient; [3-step setup](docs/google_docs_setup.md)). |
 
 **Notebook UI** (in `notebooks/financial_models.ipynb` → section 5):
-① `FileUpload` widget → ② extracted-data preview → ③ model checkboxes with select-all/clear-all → ④ **Auto** / **Manual** toggle (sliders for `r_f`, β, WACC, terminal *g*, σ, option T, VaR confidence/horizon, MC paths, strike/spot ratio, dividend growth) → ⑤ **Run** → ⑥ **⬇ PDF / ⬇ Excel / ⬇ Google Doc** buttons.
+① `FileUpload` widget → ② extracted-data preview → ③ model checkboxes with select-all/clear-all → ④ **Auto** / **Manual** toggle (sliders for `r_f`, β, WACC, terminal *g*, σ, option T, VaR confidence/horizon, strike/spot ratio, dividend growth) → ⑤ **Run** → ⑥ **⬇ PDF / ⬇ Excel / ⬇ Google Doc** buttons.
 
-Tested end-to-end: synthetic 10-K → extract → run all twelve models → export PDF+XLSX
+Tested end-to-end: synthetic 10-K → extract → run every model the engine has → export PDF+XLSX
 (see `tests/pipeline/test_pipeline.py`).
 
 ## Testing & scoring
@@ -342,7 +347,7 @@ the full analysis pipeline *client-side*:
    offline fallback. **MANUAL**: 24 override sliders (16 general + 8 for the two
    Pro+ models' footnote-only figures — lease payment, reverse-factoring exposure,
    contingent liabilities, TAM); untouched sliders keep bot values.
-3. **Run** — checkboxes select which of the twelve models enter the report (ALL/NONE);
+3. **Run** — checkboxes select which of the report models enter the report (ALL/NONE);
    the two Ind AS hidden-debt/reverse-DCF checkboxes are gated to Analyst Pro and above.
 4. **Export** — download the report as **PDF** (reportlab), **Google Docs** (a .docx built
    with python-docx that Google Docs opens natively), or **Excel** (openpyxl) — all
