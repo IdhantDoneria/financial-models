@@ -273,7 +273,8 @@ const state = {
         // which is only the Reverse DCF model's live-price source.
         ticker: "", sourceNotes: [], billedTickers: new Set() },
   rdcf: { mode: "manual", ticker: "" },  // Reverse DCF price-source toggle
-  pkgs: { pandasPromise: null, plotlyPromise: null },   // lazy-loaded deps beyond boot's core set
+  pkgs: { pandasPromise: null, plotlyPromise: null, pyPlotlyPromise: null, pyPlotlyReady: false },
+                                    // lazy-loaded deps beyond boot's core set
   tape: { raw: null },             // last fetched USD tape quotes — repainted per-country without a refetch
 };
 
@@ -440,6 +441,26 @@ function ensurePlotly() {
   return state.pkgs.plotlyPromise;
 }
 
+//: The *Python* plotly package (installed via micropip so web_bridge's
+//  .visualize() can build a figure — separate from the *JS* Plotly bundle
+//  ensurePlotly() fetches above) is 9+ MB, by far the single heaviest thing
+//  boot() used to pull before showing the terminal. Every client-side model
+//  run calls .visualize() (see web_bridge.run_model), so it has to be ready
+//  before the first calculation — it just doesn't have to be ready before
+//  the boot screen goes away. boot() kicks this off in the background right
+//  after micropip itself loads; runCurrent() awaits it here, lazily, same
+//  guarded-promise idiom as ensurePandas() so a boot-time kick-off and a
+//  run-time await share one in-flight install instead of racing.
+function ensurePyPlotly() {
+  if (!state.pkgs.pyPlotlyPromise) {
+    state.pkgs.pyPlotlyPromise = (async () => {
+      try { await state.micropip.install(window.FINMODELS_PLOTLY_SPEC); }
+      catch { await state.micropip.install("plotly"); }
+    })().then(() => { state.pkgs.pyPlotlyReady = true; });
+  }
+  return state.pkgs.pyPlotlyPromise;
+}
+
 async function boot() {
   try {
     bootLog("FINMODELS TERMINAL v2 — session start");
@@ -452,9 +473,20 @@ async function boot() {
       load: async (indexURL) => {
         const py = await loadPyodide({ indexURL });
         bootLog("pyodide runtime online", "ok"); bootPct(30);
-        bootLog("loading numpy · scipy…");
-        await py.loadPackage(window.FINMODELS_CORE_PACKAGES);
-        bootLog("scientific stack loaded", "ok"); bootPct(50);
+        // loadPackage (numpy/scipy/micropip — every module in src/ needs one
+        // or both at import time, so this can't be deferred past `ready`) and
+        // mountSources (same-origin fetches into py.FS, no Python dependency)
+        // are independent I/O. Both stay inside this retryable `load` so a
+        // wheel-fetch failure still gets bringUpRuntime's cache-bypass/mirror
+        // retries, not just the pyodide core files — re-mounting sources on a
+        // retry is a harmless, cheap same-origin re-fetch either way.
+        bootLog("loading numpy · scipy · mounting model sources…");
+        const [, fileCount] = await Promise.all([
+          py.loadPackage(window.FINMODELS_CORE_PACKAGES),
+          mountSources(py.FS),
+        ]);
+        bootLog("scientific stack loaded", "ok"); bootPct(55);
+        bootLog(`mounted ${fileCount + 2} python sources (incl. factor data)`, "ok"); bootPct(75);
         return py;
       },
     });
@@ -462,22 +494,21 @@ async function boot() {
     const micropip = state.pyodide.pyimport("micropip");
     state.micropip = micropip;
 
-    // Every model run tries to render a chart (web_bridge.run_model always
-    // calls visualize()), so plotly has to be ready before the first run —
-    // it just doesn't need to be ready *after* the scientific stack finishes;
-    // running it alongside the source-file mount instead of serially after
-    // both previous stages hides most of its cost under that other work.
-    bootLog("installing plotly · mounting model sources from repository…");
-    const FS = state.pyodide.FS;
-    const [, fileCount] = await Promise.all([
-      (async () => {
-        try { await micropip.install(window.FINMODELS_PLOTLY_SPEC); }
-        catch { await micropip.install("plotly"); }
-      })(),
-      mountSources(FS),
-    ]);
-    bootLog("plotly installed", "ok");
-    bootLog(`mounted ${fileCount + 2} python sources (incl. factor data)`, "ok"); bootPct(90);
+    // Python plotly (9+ MB) is needed before the first calculation
+    // (web_bridge.run_model always calls .visualize()) but not before the
+    // terminal becomes interactive — kick it off now, in the background, and
+    // let runCurrent() await it lazily (ensurePyPlotly()) right before the
+    // first run instead of blocking `ready` on it here.
+    ensurePyPlotly();
+    // Same reasoning for the *JS* Plotly bundle (ensurePlotly() — the one
+    // renderChart() normally fetches on the first chart): boot() now reaches
+    // `ready` sooner, which moved a visitor's first calculation earlier too,
+    // so this fetch would otherwise start later and leave the chart panel
+    // visibly empty for a second or so right after the first numeric result
+    // lands. Speculative and non-blocking — a failure here is silently
+    // swallowed and retried for real by renderChart()'s own call.
+    ensurePlotly().catch(() => {});
+    bootPct(85);
 
     bootLog("importing model package…");
     state.runPy = state.pyodide.runPython(
@@ -1144,6 +1175,24 @@ async function runCurrent() {
     } catch (err) {
       if (seq !== state.seq) return;
       renderError(new Error("Failed to load pandas: " + (err.message || err)));
+      return;
+    }
+    if (seq !== state.seq) return;
+    $("#ostat").textContent = "CALCULATING…";
+  }
+
+  // Every client-side run calls .visualize() (web_bridge.run_model), which
+  // needs Python plotly — installed in the background during boot()
+  // (ensurePyPlotly()), almost always already finished by a visitor's first
+  // calculation. Premium models compute server-side (below) and never touch
+  // this runtime's plotly at all.
+  if (!PREMIUM_MODELS.has(model.mn) && !state.pkgs.pyPlotlyReady) {
+    try {
+      $("#ostat").textContent = "LOADING PLOTLY (ONE-TIME)…";
+      await ensurePyPlotly();
+    } catch (err) {
+      if (seq !== state.seq) return;
+      renderError(new Error("Failed to load plotly: " + (err.message || err)));
       return;
     }
     if (seq !== state.seq) return;
