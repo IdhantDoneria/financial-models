@@ -127,6 +127,35 @@ class AnalysisReport:
                 "(a captive finance arm's debt pulls WACC down). Treat the DCF as one "
                 "input, not a price target.")
 
+    #: Implied growth above these rates, held for the whole horizon, is beyond what
+    #: almost any company has sustained. Free cash flow is the harder to compound
+    #: (margins cap out), so its bar is lower than revenue's.
+    _IMPLAUSIBLE_FCF_GROWTH = 0.30
+    _IMPLAUSIBLE_REVENUE_GROWTH = 0.40
+
+    @staticmethod
+    def reverse_dcf_note(res: dict[str, Any] | None) -> str | None:
+        """Say so when the growth the price implies is one almost no company sustains.
+
+        The solve is exact, but a constant rate for ten years reads as a forecast
+        ("71% a year for NVDA"). It is the arithmetic of a demanding price: the
+        market is pricing a step change (new markets, margin expansion), not the
+        current trend continuing. The note states that instead of leaving the
+        number to be read as a prediction."""
+        if not res:
+            return None
+        revenue = res.get("growth_profile") == "revenue"
+        g = res.get("implied_revenue_cagr" if revenue else "implied_fcf_cagr")
+        limit = (AnalysisReport._IMPLAUSIBLE_REVENUE_GROWTH if revenue
+                 else AnalysisReport._IMPLAUSIBLE_FCF_GROWTH)
+        if not isinstance(g, (int, float)) or g <= limit:
+            return None
+        what = "revenue" if revenue else "free cash flow"
+        return (f"The price implies {what} growing {g * 100:.0f}% a year, every year of the "
+                "horizon. Very few companies have sustained that. Read it as a demanding "
+                "price, one that assumes a step change (new markets, margin expansion) "
+                "rather than the current trend continuing, not as a forecast.")
+
     #: Models whose headline unit switches from "$" to "%" when
     #: AssumptionSet.partial flags them — VaR/CVaR's dollar figure only
     #: means something with a real portfolio value; without one, the model
@@ -169,6 +198,10 @@ class AnalysisReport:
         # a reader could act on. Without shares, the enterprise value, labelled.
         if name == "Discounted Cash Flow":
             pps, ev = res.get("price_per_share"), res.get("enterprise_value")
+            if isinstance(pps, (int, float, np.floating)) and pps <= 0:
+                # Net debt exceeds the enterprise value: there is no equity value
+                # per share to quote, and "-$60.45 / share" reads as a price.
+                return ("negative equity value" + (f" · price {currency_symbol}{price:,.2f}" if price else ""))
             if isinstance(pps, (int, float, np.floating)):
                 return (f"{currency_symbol}{pps:,.2f} / share"
                         + (f" · price {currency_symbol}{price:,.2f}" if price else ""))

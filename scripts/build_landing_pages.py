@@ -601,9 +601,9 @@ BY_SLUG = {p["slug"]: p for p in PAGES}
 
 PLAN_NOTE = {
     "free": None,
-    "pro": ('This model is part of <strong>Analyst Pro</strong> ($29/month). The other ten models — '
-            'including Black-Scholes, Monte Carlo and DCF — are free to run with no signup. '
-            '<a href="/login">Create an account</a> to get started.'),
+    "pro": ('This is an <strong>Analyst Pro</strong> model ($29/month). While checkout is being set up it is '
+            'open to every signed-in account. The other ten models — including Black-Scholes, Monte Carlo and '
+            'DCF — are free to run with no signup. <a href="/login">Create an account</a> to get started.'),
 }
 
 

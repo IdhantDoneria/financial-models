@@ -94,7 +94,7 @@ def test_the_client_gate_leaves_the_decision_to_the_server_when_billing_is_offli
 def test_the_offline_banner_says_what_the_switch_is_set_to():
     js = (ROOT / "public" / "assets" / "terminal.js").read_text()
     banner = js[js.index("BILLING OFFLINE"):]
-    banner = banner[:banner.index("until checkout is connected.</div>`;")]
+    banner = banner[:banner.index("until checkout is connected.</div>`);")]
     assert "cfg.proOpen === false" in js[js.index("BILLING OFFLINE") - 200:]
     assert "open to every signed-in account" in banner and "reserved for accounts" in banner
 
@@ -230,5 +230,43 @@ def test_over_http_only_open_access_accounts_are_charged_to_the_per_account_cap(
         code, out = post(body)
         assert code == 429
         assert post(body, token="pay")[0] == 200                                   # paying accounts unaffected
+    finally:
+        server.shutdown()
+
+
+def test_the_plan_chip_and_tab_show_a_plan_the_operator_granted_while_billing_is_offline():
+    js = (ROOT / "public" / "assets" / "terminal.js").read_text()
+    chip = js[js.index("function syncPlanChip"):]
+    chip = chip[:chip.index("\n}\n")]
+    assert "usage.grant" in chip and "g.planName" in chip
+    tab = js[js.index("async function renderPlanTab"):js.index("const canBuy")]
+    assert "us.grant" in tab and "granted to this account by the" in tab
+    usage = (ROOT / "api" / "usage.js").read_text()
+    assert "out.grant = grant" in usage
+
+
+def test_over_http_bad_input_is_a_422_with_the_reason_and_other_methods_get_json(monkeypatch):
+    import urllib.request
+    for var in ("RAZORPAY_KEY_ID", "RAZORPAY_KEY_SECRET"):
+        monkeypatch.delenv(var, raising=False)
+    data = {"sess:tok": json.dumps({"email": "free@x.co"})}
+    server, post, _ = _serve(monkeypatch, data)
+    try:
+        code, out = post(dict(RDCF_BODY, extracted=_fields(), mode="manual",
+                              overrides={"discount_rate": 0.02, "terminal_growth": 0.05}))
+        assert code == 422 and out["ok"] is False and out["error"].startswith("INVALID INPUT:"), out
+        assert "Traceback" not in json.dumps(out)
+        code, out = post({"model": "HDEBT", "params": {}})
+        assert code == 422 and "missing field" in out["error"]
+        code, out = post(dict(RDCF_BODY, extracted=_fields(), live_rf="abc"))
+        assert code == 422
+        for method in ("GET", "OPTIONS", "PUT"):
+            req = urllib.request.Request(f"http://127.0.0.1:{server.server_port}/api/premium", method=method)
+            try:
+                urllib.request.urlopen(req)
+                raise AssertionError("expected 405")
+            except urllib.error.HTTPError as e:
+                assert e.code == 405 and e.headers["Allow"] == "POST"
+                assert json.loads(e.read())["ok"] is False
     finally:
         server.shutdown()

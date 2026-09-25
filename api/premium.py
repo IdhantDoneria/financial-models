@@ -128,6 +128,15 @@ def _redis_get(key: str) -> str | None:
     return results[0] if results else None
 
 
+def _invalid_input(exc: BaseException) -> dict:
+    """A request the model itself rejected (a discount rate at or below terminal
+    growth, a missing field): the caller's mistake, said plainly, as HTTP 422.
+    The message is the model's own validation text, never a traceback. This used
+    to come back as HTTP 200 "INTERNAL ERROR", which hid what to fix."""
+    text = f"missing field {exc}" if isinstance(exc, KeyError) else str(exc)
+    return {"ok": False, "_http": 422, "error": f"INVALID INPUT: {text[:200]}"}
+
+
 _GENERIC_CALC_ERROR = "INTERNAL ERROR — CALCULATION FAILED, THIS HAS BEEN LOGGED"
 
 
@@ -296,6 +305,17 @@ def _rate_limited(handler: BaseHTTPRequestHandler, open_access_email: str | None
     return not _within_limits(counters)
 
 
+def _reasons(model_name: str, assumptions, results: dict) -> dict:
+    """The text shown under the row: why it is PARTIAL or UNASSESSED, plus a note
+    when Reverse DCF's implied growth is one almost no company sustains."""
+    parts = [assumptions.partial[model_name]] if model_name in assumptions.partial else []
+    if model_name == PREMIUM_MODELS["RDCF"]:
+        note = AnalysisReport.reverse_dcf_note(results)
+        if note:
+            parts.append(note)
+    return {model_name: " ".join(parts)} if parts else {}
+
+
 def _run_extracted(mnemonic: str, model_name: str, body: dict) -> dict:
     """IB desk path: build an ExtractedFinancials from the client's own
     earlier PDF extraction, run it through the real auto/manual assumption
@@ -341,6 +361,8 @@ def _run_extracted(mnemonic: str, model_name: str, body: dict) -> dict:
         model_kwargs = dict(assumptions.kwargs_by_model.get(model_name, {}))
         model = PREMIUM_CLASSES[mnemonic](**model_kwargs)
         results = _clean(model.calculate())
+    except (ValueError, KeyError) as exc:
+        return _invalid_input(exc)
     except Exception as exc:
         _log_server_error("_run_extracted", exc)
         return {"ok": True, "model": model_name, "headline": "-",
@@ -358,7 +380,7 @@ def _run_extracted(mnemonic: str, model_name: str, body: dict) -> dict:
         # Same OK / PARTIAL / UNASSESSED rule as the free report's summary, and
         # the same reason text shown under the row.
         "status": AnalysisReport.status_of(model_name, assumptions),
-        "status_reasons": {model_name: assumptions.partial[model_name]} if partial else {},
+        "status_reasons": _reasons(model_name, assumptions, results),
         "results": results, "errors": None, "rationale": rationale,
     }
 
@@ -408,6 +430,8 @@ def _run_raw(mnemonic: str, model_name: str, body: dict) -> dict:
         results = _clean(model.calculate())
         calc_ms = round((time.perf_counter() - t0) * 1000.0, 2)
         explain = model.explain()
+    except (ValueError, KeyError) as exc:
+        return _invalid_input(exc)
     except Exception as exc:
         _log_server_error("_run_raw", exc)
         return {"ok": True, "model": model_name, "headline": "-",
@@ -503,4 +527,10 @@ class handler(BaseHTTPRequestHandler):
                       "status": _GENERIC_CALC_ERROR,
                       "results": None, "errors": _GENERIC_CALC_ERROR, "rationale": {}}
 
-        return self._json(200, result)
+        return self._json(result.pop("_http", 200), result)
+
+    def _not_allowed(self) -> None:
+        self._json(405, {"ok": False, "error": "POST only"}, extra_headers={"Allow": "POST"})
+
+    #: Anything but POST used to get http.server's HTML 501 page.
+    do_GET = do_PUT = do_DELETE = do_PATCH = do_HEAD = do_OPTIONS = _not_allowed  # noqa: N815

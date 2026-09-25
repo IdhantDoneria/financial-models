@@ -49,7 +49,7 @@ const SUBMISSIONS_URL = (cik) => `https://data.sec.gov/submissions/CIK${cik}.jso
 //  handler say when the structured data trails the latest filing. A failed
 //  lookup only loses those refinements, so it never fails the request.
 async function fetchFilerInfo(cik) {
-  const none = { sic: null, latestAnnual: null, latestReport: null };
+  const none = { sic: null, latestAnnual: null, latestReport: null, latestAnnualDoc: null };
   try {
     const r = await secFetch(SUBMISSIONS_URL(cik));
     if (!r.ok) return none;
@@ -60,12 +60,22 @@ async function fetchFilerInfo(cik) {
     //  the handler compares its period to the data it actually found.
     const rec = (j.filings && j.filings.recent) || {};
     const forms = rec.form || [];
-    let latestAnnual = null, latestReport = null;
+    let latestAnnual = null, latestReport = null, latestAnnualDoc = null;
     for (let i = 0; i < forms.length; i++) {
       if (!rec.reportDate?.[i]) continue;
       if (/^(10-K|20-F|40-F)$/.test(forms[i])
           && (!latestAnnual || rec.reportDate[i] > latestAnnual.reportDate)) {
         latestAnnual = { form: forms[i], reportDate: rec.reportDate[i], filed: rec.filingDate?.[i] || null };
+      }
+      //: The newest annual report's document, when it is inline XBRL: read only
+      //  if companyfacts trails it by most of a year (see mergeNewestAnnualReport).
+      if (/^(10-K|20-F|40-F)$/.test(forms[i]) && rec.isInlineXBRL?.[i] && rec.accessionNumber?.[i]
+          && rec.primaryDocument?.[i] && (!latestAnnualDoc || rec.reportDate[i] > latestAnnualDoc.reportDate)) {
+        latestAnnualDoc = {
+          form: forms[i], reportDate: rec.reportDate[i], filed: rec.filingDate?.[i] || null,
+          url: `https://www.sec.gov/Archives/edgar/data/${parseInt(cik, 10)}/`
+             + `${rec.accessionNumber[i].replace(/-/g, "")}/${rec.primaryDocument[i]}`,
+        };
       }
       //: The newest periodic report's own document, read as inline XBRL when
       //  companyfacts cannot answer (see readInlineXbrl).
@@ -78,7 +88,7 @@ async function fetchFilerInfo(cik) {
         };
       }
     }
-    return { sic: Number.isFinite(sic) && sic > 0 ? sic : null, latestAnnual, latestReport };
+    return { sic: Number.isFinite(sic) && sic > 0 ? sic : null, latestAnnual, latestReport, latestAnnualDoc };
   } catch {
     return none;
   }
@@ -105,6 +115,14 @@ function parseInlineXbrl(html) {
     const pick = (tag) => (body.match(new RegExp(`<(?:xbrli:)?${tag}>\\s*([^<\\s]+)`)) || [])[1] || null;
     ctx.set(m[1], { dims, instant: pick("instant"), start: pick("startDate"), end: pick("endDate") });
   }
+  //: unitRef -> "USD", "TWD", "shares", "USD/shares" (companyfacts' own spellings).
+  const units = new Map();
+  const unitRe = /<(?:xbrli:)?unit\b[^>]*\bid="([^"]+)"[^>]*>([\s\S]*?)<\/(?:xbrli:)?unit>/g;
+  const measure = (t) => String(t || "").replace(/^.*:/, "").trim();
+  for (let m; (m = unitRe.exec(html)); ) {
+    const ms = [...m[2].matchAll(/<(?:xbrli:)?measure>\s*([^<\s]+)\s*<\/(?:xbrli:)?measure>/g)].map((x) => measure(x[1]));
+    units.set(m[1], /divide/i.test(m[2]) && ms.length === 2 ? `${ms[0]}/${ms[1]}` : ms[0] || null);
+  }
   const facts = [];
   const factRe = /<ix:nonFraction\b([^>]*)>([\s\S]*?)<\/ix:nonFraction>/g;
   for (let m; (m = factRe.exec(html)); ) {
@@ -120,9 +138,56 @@ function parseInlineXbrl(html) {
     const scale = Number((attrs.match(/\bscale="(-?\d+)"/) || [])[1] || 0);
     value *= 10 ** scale;
     if (/\bsign="-"/.test(attrs)) value = -value;
-    facts.push({ name, value, ...c });
+    facts.push({ name, value, unit: units.get((attrs.match(/\bunitRef="([^"]+)"/) || [])[1]) || null, ...c });
   }
   return facts;
+}
+
+//: Undimensioned facts of one taxonomy from an inline document, in companyfacts'
+//  shape ({ tag: { units: { USD: [{ start, end, val, form, filed }] } } }), so
+//  the same pickers read them. Company-extension tags and dimensioned facts
+//  (segments, share classes) are left out.
+function inlineToCompanyFacts(ixFacts, taxonomy, form, filed) {
+  const out = {};
+  const seen = new Set();
+  for (const f of ixFacts || []) {
+    if (f.dims.length || !f.unit) continue;
+    const [prefix, tag] = f.name.split(":");
+    if (prefix !== taxonomy || !tag) continue;
+    const end = f.instant || f.end;
+    if (!end) continue;
+    const key = `${tag}|${f.unit}|${f.start || ""}|${end}|${f.value}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const row = { end, val: f.value, form, filed };
+    if (!f.instant && f.start) row.start = f.start;
+    ((out[tag] ||= { units: {} }).units[f.unit] ||= []).push(row);
+  }
+  return out;
+}
+
+//: companyfacts can trail a foreign filer's newest annual report by most of a
+//  year (Infosys, TSMC, Toyota, Sony had 2026 20-Fs on file while it held the
+//  year before). When the newest annual report is over 300 days past the data,
+//  read that report's own inline XBRL and merge it in; the merged rows are the
+//  latest filed, so the pickers use them. Bounded by a timeout and never fatal:
+//  on any failure the older figures stand and the existing "newer report on
+//  file" note says so.
+async function mergeNewestAnnualReport(facts, taxonomy, filerInfo, tags) {
+  const doc = filerInfo && filerInfo.latestAnnualDoc;
+  if (!doc) return null;
+  const have = latestAnnualEnd(facts, tags);
+  if (!have || (Date.parse(doc.reportDate) - Date.parse(have)) / 86_400_000 <= 300) return null;
+  try {
+    const ix = await Promise.race([
+      readInlineXbrl(doc.url),
+      new Promise((resolve) => setTimeout(() => resolve(null), 9_000)),
+    ]);
+    if (!ix || !ix.length) return null;
+    const extra = inlineToCompanyFacts(ix, taxonomy, doc.form, doc.filed);
+    if (latestAnnualEnd(extra, tags) <= have) return null;     // nothing newer came out of it
+    return { facts: mergeFacts({ [taxonomy]: facts }, { [taxonomy]: extra })[taxonomy], doc };
+  } catch { return null; }
 }
 
 async function readInlineXbrl(url) {
@@ -480,6 +545,9 @@ const FLOW_TAGS = {
   //  which is exactly why period length, not recency, decides.
   dividends_per_share: ["CommonStockDividendsPerShareDeclared",
                         "CommonStockDividendsPerShareCashPaid"],
+  //: Total common dividends paid in cash. Only a fallback: some filers tag no
+  //  per-share figure at all (see the derivation beside dividendPerShare).
+  dividends_paid_total: ["PaymentsOfDividendsCommonStock"],
   pretax_income: ["IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest",
                   "IncomeLossFromContinuingOperationsBeforeIncomeTaxesMinorityInterestAndIncomeLossFromEquityMethodInvestments"],
 };
@@ -517,6 +585,8 @@ const IFRS_FLOW_TAGS = {
                         "DividendsRecognisedAsDistributionsToOwnersOfParentPerShare",
                         "DividendsRecognisedAsDistributionsToOwnersPerShare",
                         "DividendsPaidOrdinarySharesPerShare"],
+  //: Infosys, Toyota and TSMC tag total dividends paid but no per-share figure.
+  dividends_paid_total: ["DividendsPaidClassifiedAsFinancingActivities", "DividendsPaid"],
   pretax_income: ["ProfitLossBeforeTax"],
   operating_income: ["ProfitLossFromOperatingActivities"],
   stock_based_compensation: ["AdjustmentsForSharebasedPayments"],
@@ -1995,6 +2065,21 @@ module.exports = async (req, res) => {
   const flowTags = taxonomy === "ifrs-full" ? IFRS_FLOW_TAGS : FLOW_TAGS;
   const stockTags = taxonomy === "ifrs-full" ? IFRS_STOCK_TAGS : STOCK_TAGS;
 
+  //: SIC code and newest filing come from a request started beside companyfacts.
+  //  Awaited here, before any figure is read, because the newest annual report
+  //  may need merging into `facts` first (see mergeNewestAnnualReport).
+  const filerInfo = await filerInfoPromise;
+  {
+    const merged = await mergeNewestAnnualReport(
+      facts, taxonomy, filerInfo, [...flowTags.revenue, ...flowTags.net_income]);
+    if (merged) {
+      facts = merged.facts;
+      notes.push(`SEC's structured data still stops at an earlier year, so the figures here are read from `
+        + `the ${merged.doc.form} for the year ending ${merged.doc.reportDate} (filed ${merged.doc.filed || "recently"}) `
+        + `directly, from that filing's own XBRL. Only its main statements and undimensioned figures are used.`);
+    }
+  }
+
   //: Establish the filing's reporting currency BEFORE reading any figure, and
   //  hold every concept to it: the currency reaching the newest fiscal year,
   //  USD on a tie (see detectReportingCurrency). A USD price beside non-USD
@@ -2030,7 +2115,6 @@ module.exports = async (req, res) => {
   }
   //: SIC code and newest filing: needed from here on (REIT cash flow, share
   //  classes, captive finance). Started beside companyfacts, so normally ready.
-  const filerInfo = await filerInfoPromise;
   const sic = filerInfo.sic;
   const isLenderSic = sic !== null && sic >= 6000 && sic <= 6799;
   let inlinePromise = null;
@@ -2618,6 +2702,31 @@ module.exports = async (req, res) => {
         + `figure is one quarter's dividend, not the year's.`);
     }
   }
+  //: No per-share dividend for the latest fiscal year, but the cash flow
+  //  statement shows dividends paid: divide by the year's weighted-average
+  //  shares. It is the filer's own total over its own share count, so it can
+  //  differ from the declared rate by timing and buybacks; it is labelled as
+  //  derived. Without it a company that pays a large dividend (Infosys, Toyota,
+  //  TSMC) read as "no dividend disclosed" and Gordon Growth refused it.
+  {
+    const fyEnd = flows.net_income?.series?.length
+      ? flows.net_income.series[flows.net_income.series.length - 1].end : null;
+    const divSeriesNow = flows.dividends_per_share?.series || [];
+    const perShareCurrent = divSeriesNow.length && fyEnd
+      && Math.abs(Date.parse(fyEnd) - Date.parse(divSeriesNow[divSeriesNow.length - 1].end)) / 86_400_000 <= 300;
+    const paid = flows.dividends_paid_total?.series;
+    const paidLast = paid && paid.length ? paid[paid.length - 1] : null;
+    const wa = pickWeightedAverageShares(facts, taxonomy);
+    if (!perShareCurrent && fyEnd && paidLast && paidLast.end === fyEnd && paidLast.val > 0
+        && wa && wa.end === fyEnd) {
+      const derived = paidLast.val / wa.value;
+      flows.dividends_per_share = { series: [{ end: fyEnd, val: derived }],
+        tag: `${flows.dividends_paid_total.tag} / weighted-average shares`, unit: `${reportingCurrency}/shares` };
+      notes.push(`Dividend per share is derived: ${paidLast.val.toLocaleString("en-US")} of dividends paid in the `
+        + `year ended ${fyEnd} divided by ${Math.round(wa.value).toLocaleString("en-US")} weighted-average shares `
+        + `= ${derived.toFixed(4)}. The filing tags no per-share dividend for that year.`);
+    }
+  }
   let dividendPerShare = latestFlow("dividends_per_share");
   const dividendPeriodEnd = flows.dividends_per_share?.series?.length
     ? flows.dividends_per_share.series[flows.dividends_per_share.series.length - 1].end
@@ -2852,7 +2961,7 @@ module.exports = async (req, res) => {
 //  parts that are easy to get subtly wrong (share-class spelling, restatement
 //  dedup, period alignment) and impossible to check by eyeballing a live
 //  response, so they are tested directly rather than only through the handler.
-module.exports._internals = { captiveEquityCashFlows, correctQuarterTaggedAsAnnual, parseInlineXbrl, impliedSharesFromEps, segmentDebt, sumQuarterlyPerShare,
+module.exports._internals = { inlineToCompanyFacts, mergeNewestAnnualReport, captiveEquityCashFlows, correctQuarterTaggedAsAnnual, parseInlineXbrl, impliedSharesFromEps, segmentDebt, sumQuarterlyPerShare,
                                RETIRED_TICKERS, isTransient, resolveTicker, detectReportingCurrency, deriveAdrRatio,
                               pickBalanceSheet, valueAt, translationRates, pickCoverShares, mergeFacts, latestAnnualEnd, latestFilingForm, hasEverBorrowed, DEBT_COMPONENT_SLOTS, pickWeightedAverageShares,
                               PREDECESSOR_CIKS, DEBT_TAGS, IFRS_DEBT_TAGS, ADR_PINNED_RATIOS, ADR_PINNED_BAND,

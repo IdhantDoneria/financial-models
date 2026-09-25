@@ -3134,7 +3134,11 @@ function syncPlanChip() {
   const el = $("#planchip");
   if (!el) return;
   const cfg = state.billing.cfg;
-  if (!cfg || !cfg.billing) { el.innerHTML = `PLAN <b>FREE</b>`; return; }
+  if (!cfg || !cfg.billing) {
+    const g = state.billing.usage && state.billing.usage.grant;
+    el.innerHTML = g ? `PLAN <b class="paid">${esc(g.planName)}</b>` : `PLAN <b>FREE</b>`;
+    return;
+  }
   const us = state.billing.usage;
   if (!us || !us.metered) { el.innerHTML = `PLAN <b>FREE · SIGN IN</b>`; return; }
   const lim = us.limit === null ? "∞" : us.limit;
@@ -3230,19 +3234,23 @@ function planPriceHTML(p) {
 async function renderPlanTab(body) {
   body.innerHTML = `<h3>PLANS &amp; USAGE</h3><p class="hist-empty">LOADING…</p>`;
   const cfg = await getBillingCfg();
-  const us = cfg && cfg.billing ? await refreshUsage() : null;
   const u = state.user;
   const isOtp = isServerBacked(u);   // any server-backed session — email/password, OTP, or Google
-  const current = us ? us.plan : "free";
+  // Offline, refreshUsage() still reports an admin-granted plan (`grant`).
+  const us = cfg && cfg.billing || isOtp ? await refreshUsage() : null;
+  const grant = !(cfg && cfg.billing) && us && us.grant ? us.grant : null;
+  const current = cfg && cfg.billing ? (us ? us.plan : "free") : (grant ? grant.plan : "free");
 
   let head = "";
   if (!cfg || !cfg.billing) {
-    head = cfg && cfg.proOpen === false
+    const granted = grant ? `<div class="pnote gift">✔ <b>${esc(grant.planName)}</b> granted to this account by the
+      operator, active until ${new Date(grant.expiresAt).toLocaleDateString()}.</div>` : "";
+    head = granted + (cfg && cfg.proOpen === false
       ? `<div class="pnote">BILLING OFFLINE: analyses are free and unmetered, but the Ind AS 116
       and Reverse DCF models are reserved for accounts the operator has granted ANALYST PRO
       or above, until checkout is connected.</div>`
       : `<div class="pnote">BILLING OFFLINE: analyses are free and unmetered, and the Ind AS 116
-      and Reverse DCF models are open to every signed-in account until checkout is connected.</div>`;
+      and Reverse DCF models are open to every signed-in account until checkout is connected.</div>`);
   } else if (!isOtp) {
     head = `<div class="pnote warn">Plans attach to a server-backed account. You're browsing as
       <b>${(u && u.provider ? u.provider : "guest").toUpperCase()}</b> — SIGN OUT and sign back in

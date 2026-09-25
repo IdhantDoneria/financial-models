@@ -70,7 +70,7 @@ def test_a_partial_or_unassessed_row_carries_its_reason(ticker, model):
     if row is None or row["Status"] == "OK":
         pytest.skip("nothing to explain")
     paid = _paid(ticker, model)
-    assert paid["status_reasons"] == {model: assumptions.partial[model]}
+    assert paid["status_reasons"][model].startswith(assumptions.partial[model])
 
 
 def test_a_cash_burner_reads_as_revenue_growth_not_a_raw_number():
@@ -308,3 +308,27 @@ def test_an_option_on_a_dividend_payer_is_priced_with_its_yield():
     assert none.kwargs_by_model["Black-Scholes-Merton"]["dividend_yield"] == 0.0
     huge = AutoAssumer().build(ExtractedFinancials(**{**{k: v for k, v in fields.items() if k in ExtractedFinancials.__dataclass_fields__}, "dividend_per_share": 40.0}))
     assert huge.kwargs_by_model["Black-Scholes-Merton"]["dividend_yield"] == 0.25
+
+
+def test_an_implausible_implied_growth_rate_is_explained_not_left_as_a_forecast():
+    """NVDA, AMD, ARM and SNOW imply 70-86% a year for ten years. That is what the
+    price requires, not something a company sustains; the row says so."""
+    solved = {"implied_fcf_cagr": 0.71, "growth_profile": "constant"}
+    note = AnalysisReport.reverse_dcf_note(solved)
+    assert "71% a year" in note and "not as a forecast" in note
+    assert AnalysisReport.reverse_dcf_note({"implied_fcf_cagr": 0.29, "growth_profile": "constant"}) is None
+    assert "revenue growing 82%" in AnalysisReport.reverse_dcf_note(
+        {"implied_revenue_cagr": 0.82, "growth_profile": "revenue"})
+    assert AnalysisReport.reverse_dcf_note({"implied_revenue_cagr": 0.39, "growth_profile": "revenue"}) is None
+    assert AnalysisReport.reverse_dcf_note({"implied_fcf_cagr": None}) is None and AnalysisReport.reverse_dcf_note(None) is None
+    paid = _paid("RIVN", RDCF)                       # 78% revenue growth in the fixture
+    assert "step change" in paid["status_reasons"][RDCF]
+
+
+def test_a_dcf_with_negative_equity_value_is_not_headlined_as_a_negative_price():
+    """Duke Energy's DCF gave -$60.45 a share (enterprise value below net debt)."""
+    text = AnalysisReport._headline("Discounted Cash Flow", {"price_per_share": -60.45, "enterprise_value": 1e9},
+                                    "$", price=113.23)
+    assert text == "negative equity value · price $113.23"
+    assert AnalysisReport._headline("Discounted Cash Flow", {"price_per_share": 12.5}, "$", price=10.0) \
+        == "$12.50 / share · price $10.00"
