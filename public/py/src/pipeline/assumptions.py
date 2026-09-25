@@ -267,6 +267,15 @@ _BETA_MIN_T = 2.0
 #: old max(wacc, g+0.5%) floor silently valued a stock at ~200x its dividend.
 _GORDON_MIN_SPREAD = 0.01
 
+#: Smallest share of net income the dividend must be for Gordon Growth to say
+#: anything about the company. The model values the dividend stream alone, so
+#: a company that keeps most of its earnings or returns them as buybacks comes
+#: out at a small fraction of its price whatever it is worth (Nvidia 0.00x,
+#: Apple 0.04x, GM 0.08x; 27 of 60 dividend payers in the live audit sat below
+#: 40% payout). Above it the dividend is the main return channel and the
+#: result is a fair read of that channel.
+_GORDON_MIN_PAYOUT = 0.40
+
 #: Fewest overlapping months a real Fama-French regression is run on: four
 #: parameters need a real sample, and 24 is the same floor the ticker path's
 #: beta regression uses (MIN_BETA_OBSERVATIONS in api/fundamentals.js).
@@ -1392,6 +1401,25 @@ class AutoAssumer:
                 f"to shareholders, so they're discounted at the equity holders' "
                 f"required return, not WACC."
             )
+        payout = (data.dividend_per_share * data.shares_outstanding / data.net_income
+                  if data.dividend_per_share and data.shares_outstanding
+                  and data.net_income and data.net_income > 0 else None)
+        if data.dividend_per_share is not None and data.dividend_per_share <= 0:
+            unavailable["Gordon Growth Model"] = (
+                "This company pays no dividend, and Gordon Growth values a "
+                "dividend stream, so there is nothing for it to value.")
+            rationale[("Gordon Growth", "dividend")] = unavailable["Gordon Growth Model"]
+        elif (payout is not None and payout < _GORDON_MIN_PAYOUT
+              and o.dividend_growth is None):
+            unavailable["Gordon Growth Model"] = (
+                f"The dividend is only {payout:.0%} of net income. Gordon Growth "
+                "values the dividend stream alone, so for a company that keeps "
+                "most of its earnings or returns them as buybacks it would "
+                "report a small fraction of the price whatever the business is "
+                f"worth. It runs when the payout is at least {_GORDON_MIN_PAYOUT:.0%}; "
+                "the DCF is the better read here, or set a dividend growth rate in "
+                "MANUAL mode to run it anyway.")
+            rationale[("Gordon Growth", "dividend")] = unavailable["Gordon Growth Model"]
         if data.dividend_per_share is None:
             unavailable["Gordon Growth Model"] = (
                 "No dividend per share disclosed. Gordon Growth can't "
