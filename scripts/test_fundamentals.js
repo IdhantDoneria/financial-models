@@ -122,6 +122,35 @@ console.log("\n· A quarter's dividend tagged as the year's is corrected (Visa F
     "a real annual figure (Apple 1.02 vs 0.25-0.26 quarters) is not touched");
 }
 
+console.log("\n· Captive lenders: free cash flow to equity (GM FY2025)");
+{
+  const { captiveEquityCashFlows, hasEverBorrowed } = _internals;
+  const y = (v) => ({ start: "2025-01-01", end: "2025-12-31", val: v, form: "10-K", filed: "2026-02-01" });
+  const U = (v) => ({ units: { USD: [y(v)] } });
+  const gm = { PaymentsToAcquireFinanceReceivables: U(36.745e9), PaymentsToAcquireLeasesHeldForInvestment: U(15.79e9),
+    ProceedsFromCollectionOfFinanceReceivables: U(35.109e9), ProceedsFromSaleOfFinanceReceivables: U(2.0e9),
+    ProceedsFromLeasesHeldForInvestment: U(10.10e9), ProceedsFromDebtMaturingInMoreThanThreeMonths: U(43.191e9),
+    RepaymentsOfDebtMaturingInMoreThanThreeMonths: U(45.591e9),
+    ProceedsFromRepaymentsOfShortTermDebtMaturingInThreeMonthsOrLess: U(-0.312e9) };
+  const [v] = captiveEquityCashFlows(gm, ["2025-12-31"], [17.564e9], "USD");
+  ok(Math.abs(v - (17.564e9 - (52.535e9 - 47.209e9) + (43.191e9 - 45.591e9 - 0.312e9))) < 1, "GM: FCF − net new loans/leases + net borrowing", v);
+  const cat = { ...gm }; delete cat.ProceedsFromDebtMaturingInMoreThanThreeMonths;
+  ok(captiveEquityCashFlows(cat, ["2025-12-31"], [9e9], "USD")[0] === null,
+    "CAT-like: borrowing tagged only per segment -> null, never a partial figure");
+  const arm = { ProceedsFromShortTermDebt: { units: { USD: [{ start: "2021-04-01", end: "2022-03-31", val: 5e7 }] } } };
+  ok(hasEverBorrowed(arm) && !hasEverBorrowed(arm, "2023-06-30"),
+    "Arm: a 2022 loan repaid long ago does not stop it counting as debt-free today");
+}
+
+console.log("\n· Two dividend tags for one year: the larger wins (Prologis 0.03 vs 4.04)");
+{
+  const yr25 = (v) => ({ start: "2025-01-01", end: "2025-12-31", val: v, form: "10-K", filed: "2026-02-10" });
+  const facts = { CommonStockDividendsPerShareDeclared: { units: { "USD/shares": [yr25(0.03)] } },
+                  CommonStockDividendsPerShareCashPaid: { units: { "USD/shares": [yr25(4.04)] } } };
+  const got = pickAnnualSeries(facts, FLOW_TAGS.dividends_per_share, 6, "USD", true);
+  eq(got.series[0].val, 4.04, "Prologis: 4.04 cash paid, not the 0.03 mis-tag listed first");
+}
+
 console.log("\n· Quarterly dividends summed when no annual figure is tagged (Citigroup)");
 {
   const q = (start, end, val, filed) => ({ start, end, val, form: "10-K", filed });
@@ -1234,7 +1263,8 @@ console.log("\n· Balance sheet — every line from one date, debt summed by rol
         15: { cik_str: 1467858, ticker: "GMX", title: "CAPTIVE CO" },
         16: { cik_str: 726728, ticker: "O", title: "REALTY INCOME CORP" },
         17: { cik_str: 1512673, ticker: "XYZ", title: "Block, Inc." },
-        18: { cik_str: 831001, ticker: "C", title: "CITIGROUP INC" } });
+        18: { cik_str: 831001, ticker: "C", title: "CITIGROUP INC" },
+        19: { cik_str: 732712, ticker: "VZX", title: "TELECO" } });
       if (url.includes("companyfacts")) { factsCalls++; return factsBehaviour(); }
       if (url.includes("finance.yahoo.com")) return json(chart);
       return { ok: false, status: 404, json: async () => ({}), text: async () => "" };
@@ -1633,6 +1663,21 @@ console.log("\n· Balance sheet — every line from one date, debt summed by rol
       });
       eq(sq && sq.ticker, "XYZ", "SQ resolves to XYZ, Block's ticker since January 2025");
       ok((sq.notes || []).some((n) => /changed its ticker from SQ to XYZ/.test(n)), "and says so");
+
+      const tel = await runCaseSpaced({
+        ticker: "VZX", cik: "0000732712", sic: 4813,
+        factsByCik: { "0000732712": { entityName: "TELECO", facts: { "us-gaap": {
+          Revenues: { units: { USD: [2023, 2024, 2025].map((yy) => yr(yy, 135e9, "10-K")) } },
+          PaymentsToAcquireIntangibleAssets: { units: { USD: [yr(2021, 47.6e9, "10-K"), yr(2022, 3.65e9, "10-K"),
+            yr(2023, 5.8e9, "10-K"), yr(2024, 0.9e9, "10-K"), yr(2025, 0.45e9, "10-K")] } },
+          CashAndCashEquivalentsAtCarryingValue: { units: { USD: [inst("2025-12-31", 4e9, "10-K")] } },
+          ConvertibleLongTermNotesPayable: { units: { USD: [inst("2025-12-31", 0.578e9, "10-K")] } },
+        } } } },
+        quotes: { VZX: [47, "USD"] },
+      });
+      ok(Math.abs(tel.fields.spectrum_charge - (47.6 + 3.65 + 5.8 + 0.9 + 0.45) / 5 * 1e9) < 1,
+        "telecom: spectrum purchases averaged over every year available", tel.fields.spectrum_charge);
+      eq(tel.fields.total_debt, 0.578e9, "convertible notes tagged ConvertibleLongTermNotesPayable count as debt (Plug)");
 
       const tw = await runCaseSpaced({ ticker: "TWTR", cik: "0000000001", factsByCik: {}, quotes: {} });
       ok(tw && tw.ok === false && /taken private in October 2022/.test(tw.error), "TWTR: a clear message, not 'not found'");

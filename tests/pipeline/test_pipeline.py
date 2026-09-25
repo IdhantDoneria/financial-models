@@ -599,12 +599,15 @@ def test_wacc_uses_real_equity_weight_and_cost_of_debt_when_plausible():
     data = ExtractedFinancials(
         revenue=1_000_000, net_income=100_000, current_price=50.0,
         shares_outstanding=10_000_000, total_debt=200_000_000,
-        interest_expense=10_000_000,   # 5% of total_debt — plausible
+        # 7% of total_debt — plausible, and above today's rf + 150bp (5.75%).
+        # A book rate BELOW that is the coupon on older debt and is floored
+        # to rf + 150bp (see test_cost_of_debt_is_never_below_todays_borrowing_rate).
+        interest_expense=14_000_000,
         free_cash_flows=[80_000, 85_000, 90_000, 95_000, 100_000])
     a = AutoAssumer().build(data)
     # market cap = 50 * 10,000,000 = 500,000,000; we = 500M / (500M + 200M)
     expected_we = 500_000_000 / 700_000_000
-    expected_kd = 10_000_000 / 200_000_000
+    expected_kd = 14_000_000 / 200_000_000
     rf = 0.0425
     expected_wacc = expected_we * (rf + 1.0 * 0.05) + (1 - expected_we) * expected_kd * (1 - 0.25)
     assert a.market_context["wacc"] == pytest.approx(expected_wacc, rel=1e-6)

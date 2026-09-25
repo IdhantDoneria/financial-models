@@ -518,14 +518,32 @@ class AutoAssumer:
         Returns the adjusted copy and what changed, for the rationale.
         """
         changes: dict[str, Any] = {}
-        info: dict[str, Any] = {"sic_sector": None, "captive": None}
+        info: dict[str, Any] = {"sic_sector": None, "captive": None, "equity_mode": False}
         if data.sector is None:
             mapped = sector_from_sic(data.sic_code)
             if mapped:
                 changes["sector"] = mapped
                 info["sic_sector"] = data.sic_code
+        # A lender to its own customers with a complete equity cash flow: value
+        # the equity directly (see api/fundamentals.js captiveEquityCashFlows).
+        # The series replaces FCF from its contiguous tail, and nothing that
+        # belongs to an FCFF valuation (interest add-back, lease debt) applies.
+        fcfe = list(data.fcfe_series or [])
+        n = len(data.free_cash_flows or [])
+        if len(fcfe) == n and n >= _BASE_YEARS and all(v is not None for v in fcfe[-_BASE_YEARS:]):
+            k = 0
+            while k < n and fcfe[n - 1 - k] is not None:
+                k += 1
+            tail = lambda xs: list(xs)[-k:] if xs and len(xs) == n else []
+            changes.update(
+                free_cash_flows=fcfe[-k:], fcf_history_order="oldest_first",
+                revenue_series=tail(data.revenue_series), sbc_series=tail(data.sbc_series),
+                fcf_period_ends=tail(data.fcf_period_ends),
+                interest_expense=None, interest_expense_series=[],
+                operating_lease_liabilities=None, finance_lease_liabilities=None)
+            info["equity_mode"] = True
         fin, total = data.finance_arm_debt, data.total_debt
-        if fin and total and 0 < fin <= total:
+        if fin and total and 0 < fin <= total and not info["equity_mode"]:
             share = (total - fin) / total
             changes["total_debt"] = total - fin
             if data.interest_expense is not None:
@@ -713,10 +731,17 @@ class AutoAssumer:
         # investment-grade through deep junk but rejects a clearly wrong
         # ratio like the pre-fix 21.5%.
         cost_of_debt_real = None
+        cost_of_debt_book = None
         if data.interest_expense is not None and data.total_debt:
             candidate = data.interest_expense / data.total_debt
             if (rf - 0.02) <= candidate <= (rf + 0.15):
                 cost_of_debt_real = candidate
+                # WACC needs the rate on debt raised TODAY. Interest / debt is
+                # the coupon on bonds sold years ago: Verizon's 4.05% sat below
+                # the 5.11% Treasury, which no company can borrow at. Below the
+                # model's default spread over today's rf, the default is used.
+                if candidate < rf + 0.015:
+                    cost_of_debt_book, cost_of_debt_real = candidate, None
         wacc = o.discount_rate if o.discount_rate is not None else self._wacc(
             beta, tax, we=we_real, cost_of_debt=cost_of_debt_real, rf=rf, erp=erp)
         # Terminal growth cannot exceed the risk-free rate (Gordon constraint).
@@ -772,6 +797,10 @@ class AutoAssumer:
         # Reddit), refusing the DCF leaves the user nothing: value it on the
         # cash flow before stock comp and say, in the status, that the result
         # is high by the dilution stock comp represents.
+        if data.spectrum_charge and data.free_cash_flows:
+            base_fcf -= data.spectrum_charge
+            base_note += (f"; − {data.spectrum_charge:,.0f} a year of spectrum and licence purchases "
+                          f"(their multi-year average, as auctions are lumpy)")
         sbc_not_deducted = False
         reported_base = self._reported_base(data)
         if base_fcf <= 0 and reported_base is not None and reported_base > 0:
@@ -971,6 +1000,9 @@ class AutoAssumer:
                 "terminal_growth": g_terminal,
             },
         }
+        if prep["equity_mode"] and o.discount_rate is None:
+            for name in ("Discounted Cash Flow", "Reverse DCF / Market-Implied Expectations"):
+                kwargs[name].update(discount_rate=cost_of_equity, net_debt=0.0)
         # A cash-burning company with real revenue: no FCF growth rate turns a
         # negative base into a positive value, so solve for the REVENUE growth
         # the price implies while the FCF margin moves from today's to a
@@ -999,7 +1031,7 @@ class AutoAssumer:
         rationale[("DCF", "discount_rate")] = (
             f"WACC via CAPM: {we_shown:.0%} equity @ (rf {rf:.2%} + β {beta:.2f}·ERP "
             f"{erp:.2%}) + {1 - we_shown:.0%} debt @ {kd_shown:.2%}"
-            f"{' (interest expense/total debt)' if cost_of_debt_real is not None else ' (rf+150bp default)'}"
+            f"{' (interest expense/total debt)' if cost_of_debt_real is not None else f' (rf+150bp: the book rate {cost_of_debt_book:.2%} is the coupon on older debt, below what the company could borrow at today)' if cost_of_debt_book is not None else ' (rf+150bp default)'}"
             f"·(1-{tax:.0%} tax{' · scraped from filing' if data.tax_rate is not None else ' · default'})."
             f" Equity weight {'= market cap/(market cap+debt), scraped' if we_real is not None else '= 80/20 default'}."
         )
@@ -1042,7 +1074,9 @@ class AutoAssumer:
             fade = (f"projected {_FORECAST_YEARS} years at the {g_terminal:.2%} terminal rate — "
                     f"a REIT grows mostly by buying property with new capital, and those "
                     f"purchases are not deducted from its cash flow here, so it is credited "
-                    f"with organic growth only")
+                    f"with organic growth only. A REIT that develops property (Prologis) creates "
+                    f"value this does not capture; its dividend (Gordon Growth) is the usual "
+                    f"cross-check")
         else:
             fade = (f"projected {_FORECAST_YEARS} years, growth fading linearly from "
                     f"{g_used:.2%} ({growth_src}) to the {g_terminal:.2%} terminal rate")
@@ -1470,6 +1504,22 @@ class AutoAssumer:
                    "shares, so this value is high by the dilution it represents.")
             add_partial(DCF_NAME, msg)
             add_partial(RDCF_NAME, msg)
+        if prep["equity_mode"]:
+            rationale[("DCF", "discount_rate")] = (
+                f"Cost of equity {cost_of_equity:.2%} (rf {rf:.2%} + β {beta:.2f}·ERP {erp:.2%}), not "
+                f"WACC: this company lends to its own customers, so it is valued on the cash flow "
+                f"left for shareholders. Its lending arm's debt is operating funding, and weighting "
+                f"it into a WACC would drag the discount rate toward a bank's cost of borrowing."
+                if o.discount_rate is None else f"Manually overridden = {wacc:.2%}.")
+            rationale[("DCF", "net_debt")] = (
+                "Not subtracted: free cash flow to equity is already after interest and after net "
+                "borrowing, so the discounted value is the equity value directly.")
+            eq_note = base_note.replace(
+                "no interest figure to add back", "interest stays deducted (a cash flow to equity)")
+            rationale[("DCF", "free_cash_flows")] = (
+                f"Base free cash flow to EQUITY {base_fcf:,.0f} — {eq_note}; each year is operating "
+                f"cash flow − capex − the lending arm's net new loans and leased assets + net "
+                f"borrowing (from the company's SEC XBRL filing data); {fade}.")
         if prep["captive"]:
             c = prep["captive"]
             msg = (f"Industrial business only: {c['finance']:,.0f} of the {c['total']:,.0f} total debt "
@@ -1508,7 +1558,9 @@ class AutoAssumer:
 
         return AssumptionSet(
             kwargs_by_model=kwargs,
-            market_context={"risk_free_rate": rf, "expected_market_return": erm,
+            market_context={"valuation_basis": ("free cash flow to equity at the cost of equity"
+                                                if prep["equity_mode"] else "free cash flow to the firm at WACC"),
+                            "risk_free_rate": rf, "expected_market_return": erm,
                             "beta": beta, "beta_raw": beta_raw,
                             "cost_of_equity": cost_of_equity,
                             "lease_debt": lease_debt, "volatility": vol, "wacc": wacc,

@@ -206,15 +206,16 @@ def test_tesla_total_debt_sums_current_and_long_term_columns(tesla_text):
     assert data.total_debt == pytest.approx(8_153_000_000, rel=0.01)
 
 
-def test_tesla_real_cost_of_debt_now_flows_into_wacc(tesla_text):
-    """With total_debt fixed, interest expense / real total debt (~4.15%)
-    is a genuinely plausible cost of debt and should now be used in WACC
-    instead of falling back to the generic rf+150bp default."""
+def test_tesla_real_cost_of_debt_is_extracted_and_floored_at_todays_rate(tesla_text):
+    """With total_debt fixed, interest expense / real total debt (~4.15%) is
+    extracted correctly — but it is the coupon on debt raised when rates were
+    lower, under today's rf (4.25%) + 150bp. WACC needs the rate the company
+    would borrow at now, so it uses rf + 150bp and says why, naming 4.15%."""
     data = PDFExtractor().scrape_figures(tesla_text)
     assumptions = AutoAssumer().build(data)
     rationale = assumptions.rationale[("DCF", "discount_rate")]
-    assert "interest expense/total debt" in rationale
-    assert "rf+150bp default" not in rationale
+    assert "the book rate 4.15%" in rationale
+    assert "5.75%" in rationale
 
 
 def test_tesla_disclosed_stock_comp_volatility_used_instead_of_default(tesla_text):

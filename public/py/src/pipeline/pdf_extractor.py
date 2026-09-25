@@ -203,6 +203,13 @@ class ExtractedFinancials:
     #: Ford Credit), from the balance sheet's segment columns. ``None`` when
     #: the company has no finance arm or the split is not disclosed.
     finance_arm_debt: float | None = None
+    #: Free cash flow to EQUITY per year, aligned with ``free_cash_flows``
+    #: (captive-finance manufacturers only; see api/fundamentals.js
+    #: captiveEquityCashFlows). When present the DCF values equity directly.
+    fcfe_series: list[float | None] = field(default_factory=list)
+    #: A telecom's average annual spectrum/licence purchases (ticker path),
+    #: charged against free cash flow like capex.
+    spectrum_charge: float | None = None
     #: The quote's instrument type (EQUITY, ETF, CRYPTOCURRENCY...), ticker
     #: path only. The company models refuse anything but an EQUITY.
     instrument_type: str | None = None
@@ -262,6 +269,8 @@ class ExtractedFinancials:
             "sic_code": self.sic_code,
             "revenue_series": self.revenue_series,
             "finance_arm_debt": self.finance_arm_debt,
+            "fcfe_series": self.fcfe_series,
+            "spectrum_charge": self.spectrum_charge,
             "instrument_type": self.instrument_type,
             "backends_used": self.backends_used,
         }
