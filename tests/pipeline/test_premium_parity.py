@@ -250,7 +250,9 @@ def test_exports_include_the_server_computed_paid_rows(tmp_path):
     row = report.summary_frame().set_index("Model").loc[RDCF]
     assert row["Headline result"] == paid["headline"] and row["Status"] == paid["status"]
 
-    for fmt in ("xlsx", "pdf", "docx"):
+    import importlib.util
+    formats = ["xlsx", "pdf"] + (["docx"] if importlib.util.find_spec("docx") else [])   # CI lacks python-docx
+    for fmt in formats:
         exported = json.loads(wb.export_report(fmt))
         assert exported["ok"], exported
     exported = json.loads(wb.export_report("xlsx"))
