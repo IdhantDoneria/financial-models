@@ -69,8 +69,8 @@ const PLANS = {
   //  actually does, which converts worse, not better. 10 buys enough room to
   //  check a few real holdings; it is still far short of habitual use.
   free: { id: "free", name: "FREE", uploads: 10,
-          blurb: "10 company analyses / month · ticker or PDF · all 10 models · " +
-                 "every assumption sourced · SCEN engine" },
+          blurb: "10 company analyses / month · ticker or PDF · six-model valuation report · " +
+                 "all 10 calculators · every assumption sourced · SCEN engine" },
   pro: { id: "pro", name: "ANALYST PRO", uploads: 50,
          periods: { monthly: { amount: usdToPaise(29), usd: 29, days: 30 },
                     annual: { amount: usdToPaise(299), usd: 299, days: 365 } },
@@ -114,6 +114,18 @@ const PLANS = {
 const PURCHASABLE_PLANS = Object.keys(PLANS).filter((id) => PLANS[id].periods);
 
 const configured = () => DEV || !!(KEY_ID && KEY_SECRET);
+
+//: Operator switch for the two Pro models while checkout is offline. Open by
+//  default (nobody can buy Pro yet, so gating it would only turn people away);
+//  the admin desk writes "0" here to lock it back to granted accounts. It has
+//  no effect once billing is live: then the plan decides, as before.
+//  api/premium.py reads the same key, directly, on every request.
+const PRO_OPEN_KEY = "flag:pro_open";
+const proOpen = async () => {
+  if (configured()) return false;
+  try { return (await store.get(PRO_OPEN_KEY)) !== "0"; } catch { return true; }
+};
+const setProOpen = (open) => store.set(PRO_OPEN_KEY, open ? "1" : "0");
 const mode = () => (DEV ? "dev-fake" : KEY_ID && KEY_SECRET ? "razorpay" : "unconfigured");
 const keyId = () => (DEV ? "rzp_test_devfake" : KEY_ID);
 const secret = () => (DEV ? DEV_SECRET : KEY_SECRET);
@@ -262,7 +274,7 @@ const consumeUpload = (email) => store.incr(`use:${email}:${monthKey()}`, 35 * 8
 
 module.exports = {
   PLANS, PERIODS, PURCHASABLE_PLANS, ORDER_TTL, FOUNDER_CAP, FOUNDER_PLAN, FOUNDER_DAYS, USD_TO_INR,
-  configured, mode, keyId,
+  configured, mode, keyId, proOpen, setProOpen, PRO_OPEN_KEY,
   createOrder, verifyCheckoutSig, verifyWebhookSig,
   getSub, effectivePlan, activate, getUsed, consumeUpload, monthKey,
   grant, claimFounderSlot, foundersLeft,

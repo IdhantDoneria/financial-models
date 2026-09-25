@@ -67,21 +67,28 @@ class AnalysisReport:
         """Return a tidy DataFrame — one row per model with headline outputs."""
         import pandas as pd
 
-        currency_symbol = PDFExtractor.CURRENCY_SYMBOLS.get(
-            self.company.currency, "$")
+        currency_symbol = PDFExtractor.currency_prefix(self.company.currency)
         rows = []
         for name, res in self.results.items():
             is_partial = name in self.assumptions.partial
             headline = self._headline(name, res, currency_symbol, partial=is_partial,
                                       price=self.company.current_price)
-            status = ("OK" if not is_partial
-                      else "PARTIAL" if name in self.assumptions.partly_assessed
-                      else "UNASSESSED")
+            status = self.status_of(name, self.assumptions)
             rows.append({"Model": name, "Headline result": headline,
                          "Status": status})
         for name, err in self.errors.items():
             rows.append({"Model": name, "Headline result": "-", "Status": err})
         return pd.DataFrame(rows)
+
+    @staticmethod
+    def status_of(name: str, assumptions: AssumptionSet) -> str:
+        """The badge a model that ran gets: OK, PARTIAL (an input the filing
+        lacked was filled in) or UNASSESSED (the model had nothing to assess).
+        One rule for the free report and for api/premium.py, so the two cannot
+        label the same run differently."""
+        if name not in assumptions.partial:
+            return "OK"
+        return "PARTIAL" if name in assumptions.partly_assessed else "UNASSESSED"
 
     #: DCF equity value / market cap outside this band draws a plain-language
     #: warning. It is deliberately wide: it flags a model that is far from the
@@ -167,9 +174,18 @@ class AnalysisReport:
                         + (f" · price {currency_symbol}{price:,.2f}" if price else ""))
             if isinstance(ev, (int, float, np.floating)):
                 return f"{currency_symbol}{ev:,.0f} enterprise value"
-        if name == "Reverse DCF / Market-Implied Expectations" and res.get("growth_profile") == "revenue":
-            g = res.get("implied_revenue_cagr")
-            return f"{g * 100:.2f}% revenue growth" if isinstance(g, (int, float)) else "-"
+        if name == "Reverse DCF / Market-Implied Expectations":
+            if res.get("growth_profile") == "revenue":
+                g = res.get("implied_revenue_cagr")
+                if isinstance(g, (int, float)):
+                    return f"{g * 100:.2f}% revenue growth"
+            elif isinstance(res.get("implied_fcf_cagr"), (int, float)):
+                return f"{res['implied_fcf_cagr'] * 100:.2f}%"
+            # The solver found no growth rate that justifies the price (its
+            # solver_note says why). The fall-through below would print the
+            # first dict value, the implied enterprise value, as if it were
+            # the answer, with an OK badge.
+            return "no growth rate solves the price"
         key, unit = picks.get(name, (None, ""))
         if partial and name in AnalysisReport._PERCENT_WHEN_PARTIAL:
             unit = "%"

@@ -553,6 +553,15 @@ def _effective_plan(email: str) -> str:
     return "free" if expires <= datetime.now(timezone.utc) else sub["plan"]
 
 
+def _pro_open() -> bool:
+    """Same operator switch as api/premium.py's _may_use_premium(): while
+    checkout is offline the Pro models are open to any signed-in account unless
+    the admin desk wrote "0" to flag:pro_open. Ignored once Razorpay is live."""
+    if os.environ.get("RAZORPAY_KEY_ID") and os.environ.get("RAZORPAY_KEY_SECRET"):
+        return False
+    return _redis_get("flag:pro_open") != "0"
+
+
 UPGRADE_HINT = (
     "This model requires an ANALYST PRO (or higher) plan. Pass your session "
     "token as an Authorization: Bearer <token> header on the MCP endpoint — in "
@@ -575,7 +584,7 @@ def _check_entitlement(bearer: str | None) -> str | None:
         email = json.loads(sess)["email"]
     except (ValueError, KeyError, TypeError):
         return "That session token is not valid."
-    if _effective_plan(email) not in ("pro", "unlimited", "boutique", "enterprise"):
+    if _effective_plan(email) not in ("pro", "unlimited", "boutique", "enterprise") and not _pro_open():
         return "Your account is on the FREE plan. " + UPGRADE_HINT
     return None
 
