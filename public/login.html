@@ -81,6 +81,16 @@
       <!-- complimentary-access notice: filled in by auth.js in server-auth mode -->
       <div id="concierge" style="display:none"></div>
 
+      <!-- Fastest path first: the product's own pitch is "no install, no
+           account needed" — putting the guest CTA below two auth forms and a
+           Google button contradicted that, so it leads here instead. -->
+      <button id="guest" type="button">▸ EXPLORE AS GUEST — NO ACCOUNT NEEDED</button>
+      <div class="dim agree-note">Nothing to remember, nothing to install. Continuing as a guest
+        means you agree to the <a href="/terms" target="_blank" rel="noopener">Terms</a> and
+        <a href="/privacy" target="_blank" rel="noopener">Privacy Policy</a>.</div>
+
+      <div class="adiv"><span>OR SIGN IN / CREATE ACCOUNT TO SAVE YOUR WORK</span></div>
+
       <div class="atabs">
         <button id="tab-signin" class="on">SIGN IN</button>
         <button id="tab-signup">CREATE ACCOUNT</button>
@@ -173,8 +183,7 @@
         <div id="ghint" class="dim"></div>
       </div>
 
-      <button id="guest" type="button">▸ EXPLORE AS GUEST — NO ACCOUNT NEEDED</button>
-      <div class="dim agree-note">Continuing with Google, or as a guest, means you agree to the
+      <div class="dim agree-note">Continuing with Google means you agree to the
         <a href="/terms" target="_blank" rel="noopener">Terms</a> and
         <a href="/privacy" target="_blank" rel="noopener">Privacy Policy</a>.</div>
 

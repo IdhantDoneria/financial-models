@@ -354,9 +354,8 @@ async function initGoogle(cfg) {
   const cid = cfg && cfg.googleClientId;
   if (!cid) {
     $("#gfake").disabled = true;
-    $("#ghint").textContent =
-      "GOOGLE SSO NOT CONFIGURED ON THIS DEPLOYMENT — set GOOGLE_CLIENT_ID " +
-      "in Vercel env vars (OAuth web client) to enable. Email & guest access work fully.";
+    $("#ghint").textContent = "Google sign-in isn't available right now — use email or continue as guest.";
+    console.error("Google SSO not configured on this deployment: GOOGLE_CLIENT_ID is unset (see /api/auth-config).");
     return;
   }
   try {
@@ -371,17 +370,14 @@ async function initGoogle(cfg) {
     });
   } catch (err) {
     $("#gfake").disabled = true;
-    $("#ghint").textContent =
-      "GOOGLE LIBRARY LOAD FAILED — check that accounts.google.com is accessible. " +
-      "If blocked by network policy, email/guest access work fully.";
-    console.error("Google GSI script load failed:", err);
+    $("#ghint").textContent = "Google sign-in isn't reachable right now — use email or continue as guest.";
+    console.error("Google GSI script load failed (accounts.google.com unreachable?):", err);
     return;
   }
 
   if (typeof google === "undefined" || !google.accounts || !google.accounts.id) {
     $("#gfake").disabled = true;
-    $("#ghint").textContent =
-      "GOOGLE IDENTITY SERVICES UNAVAILABLE — library loaded but google.accounts undefined";
+    $("#ghint").textContent = "Google sign-in isn't available right now — use email or continue as guest.";
     console.error("google.accounts.id not available after script load");
     return;
   }
