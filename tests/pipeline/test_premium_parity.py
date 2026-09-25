@@ -276,3 +276,35 @@ def test_the_offline_billing_banner_does_not_promise_the_pro_models_for_free():
     banner = banner[:banner.index("</div>`")]
     assert "every feature is currently free" not in banner
     assert "ANALYST PRO" in banner and "Reverse DCF" in banner
+
+
+def test_a_market_data_only_listing_does_not_report_zero_hidden_debt():
+    """ICICI Bank arrives with price and beta only. The hidden-debt model ran on
+    the placeholder company and printed "$0.00", which reads as "checked, found
+    nothing"."""
+    fields = {"company_name": "ICICI Bank Limited", "currency": "USD", "current_price": 27.88,
+              "beta": 0.36, "free_cash_flows": []}
+    paid = premium._run_extracted("HDEBT", HDEBT, {"extracted": fields, "mode": "auto"})
+    assert paid["status"] == "INSUFFICIENT DATA" and paid["headline"] == "-"
+    assert "no balance-sheet figures" in paid["errors"]
+
+
+def test_an_option_on_a_dividend_payer_is_priced_with_its_yield():
+    """Black-Scholes ran with q = 0 for everyone, overstating a 1-year at-the-money
+    call on a payer (by 47% at the worst in the live universe)."""
+    payer = AutoAssumer().build(_data("KO" if "KO" in FIELDS else "AAPL"))
+    fields = dict(FIELDS["INFY"], dividend_per_share=2.0, current_price=50.0)   # a 4% yield
+    data = ExtractedFinancials(**{k: v for k, v in fields.items()
+                                  if k in ExtractedFinancials.__dataclass_fields__})
+    a = AutoAssumer().build(data)
+    for name in ("Black-Scholes-Merton", "Binomial Tree (CRR)", "Monte Carlo (GBM)", "Heston Stochastic Volatility"):
+        assert a.kwargs_by_model[name]["dividend_yield"] == pytest.approx(0.04), name
+    from src.black_scholes import BlackScholesModel
+    with_q = BlackScholesModel(**a.kwargs_by_model["Black-Scholes-Merton"]).calculate()["price"]
+    no_q = BlackScholesModel(**dict(a.kwargs_by_model["Black-Scholes-Merton"], dividend_yield=0.0)).calculate()["price"]
+    assert with_q < no_q
+    # a non-payer keeps a zero yield, and a data-error "yield" is capped
+    none = AutoAssumer().build(ExtractedFinancials(**{**{k: v for k, v in fields.items() if k in ExtractedFinancials.__dataclass_fields__}, "dividend_per_share": None}))
+    assert none.kwargs_by_model["Black-Scholes-Merton"]["dividend_yield"] == 0.0
+    huge = AutoAssumer().build(ExtractedFinancials(**{**{k: v for k, v in fields.items() if k in ExtractedFinancials.__dataclass_fields__}, "dividend_per_share": 40.0}))
+    assert huge.kwargs_by_model["Black-Scholes-Merton"]["dividend_yield"] == 0.25

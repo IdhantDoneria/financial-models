@@ -36,6 +36,17 @@ function render(data) {
     <div class="stat">ACTIVE PAID<b>${t.activePaid}</b></div>
     <div class="stat">FREE-ACCESS GRANTS<b>${t.granted}</b></div>
     <div class="stat">TRACKED VISITS<b>${data.geo ? data.geo.total : 0}</b></div>`;
+  const pa = data.proAccess;
+  const proBox = $("#proaccess");
+  if (pa && proBox) {
+    proBox.innerHTML = pa.billingLive
+      ? `<div class="stat">PRO MODELS<b>BILLING LIVE: THE PLAN DECIDES</b></div>`
+      : `<div class="stat">PRO MODELS (IND AS 116, REVERSE DCF)<b>${pa.open ? "OPEN TO EVERY SIGNED-IN ACCOUNT" : "LOCKED: GRANTED ACCOUNTS ONLY"}</b>
+           <button id="pro-toggle" class="${pa.open ? "danger" : ""}">${pa.open ? "LOCK THEM" : "OPEN THEM"}</button></div>`;
+    const tog = $("#pro-toggle");
+    if (tog) tog.onclick = () => act({ action: "pro_access", open: !pa.open },
+      pa.open ? "PRO MODELS LOCKED TO GRANTED ACCOUNTS" : "PRO MODELS OPEN TO EVERY SIGNED-IN ACCOUNT");
+  }
   const tb = $("#users tbody");
   tb.innerHTML = data.rows.map((r) => `
     <tr>

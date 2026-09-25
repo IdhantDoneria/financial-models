@@ -819,6 +819,14 @@ class AutoAssumer:
         fcfs = self._project_fcfs(base_fcf, data, g_terminal)
         spot = data.current_price or 100.0  # normalised units when unknown
         strike = o.strike_ratio * spot if o.strike_ratio else spot
+        # An option on a dividend payer is worth less than the same option on a
+        # non-payer: the stock drops by each dividend, and the call holder gets
+        # none. Leaving q at 0 overstated a 1-year at-the-money call by over 10%
+        # for 30 of 60 payers in the live universe and by 47% at the worst.
+        # Annual dividend per share over the price, capped: a "yield" above 25%
+        # is a data error (a special dividend, a units mismatch), not a rate.
+        div_yield = (min(data.dividend_per_share / data.current_price, 0.25)
+                     if data.dividend_per_share and data.current_price else 0.0)
         # Gordon Growth requires dividend > 0 — unlike DCF (which happily
         # reports enterprise/equity value with price_per_share left None
         # when share count is unknown), there's no honest partial output
@@ -926,16 +934,19 @@ class AutoAssumer:
             "Fama-French 3-Factor": {"_needs_factor_data": True},   # runner handles this
             "Black-Scholes-Merton": {
                 "spot": spot, "strike": strike, "rate": rf, "sigma": vol,
+                "dividend_yield": div_yield,
                 "maturity": o.option_maturity if o.option_maturity is not None else 1.0,
                 "option_type": "call",
             },
             "Binomial Tree (CRR)": {
                 "spot": spot, "strike": strike, "rate": rf, "sigma": vol,
+                "dividend_yield": div_yield,
                 "maturity": o.option_maturity if o.option_maturity is not None else 1.0,
                 "option_type": "call", "exercise": "american", "n_steps": 500,
             },
             "Monte Carlo (GBM)": {
                 "spot": spot, "strike": strike, "rate": rf, "sigma": vol,
+                "dividend_yield": div_yield,
                 "maturity": o.option_maturity if o.option_maturity is not None else 1.0,
                 "option_type": "call",
                 "n_sims": o.monte_carlo_paths if o.monte_carlo_paths is not None else 100_000,
@@ -943,6 +954,7 @@ class AutoAssumer:
             },
             "Heston Stochastic Volatility": {
                 "spot": spot, "strike": strike, "rate": rf,
+                "dividend_yield": div_yield,
                 "maturity": o.option_maturity if o.option_maturity is not None else 1.0,
                 "v0": vol**2,
                 "kappa": o.heston_kappa if o.heston_kappa is not None else 1.5,
@@ -1477,6 +1489,15 @@ class AutoAssumer:
             unavailable.setdefault(
                 "Reverse DCF / Market-Implied Expectations",
                 unavailable["Discounted Cash Flow"])
+            # The hidden-debt model on the same placeholder company printed
+            # "$0.00" (ICICI Bank, price and beta only), which reads as
+            # "no hidden debt found" when nothing was looked at.
+            if data.net_income is None and data.total_debt is None:
+                unavailable.setdefault(
+                    "Ind AS 116 Hidden-Debt Normalizer",
+                    "This listing has no balance-sheet figures (price and beta only), "
+                    "so there is no debt to normalise. Upload the annual report as a "
+                    "PDF, or enter the figures manually, to run it.")
         elif terminal_fcf <= 0 or base_fcf <= 0:
             reported = self._reported_base(data)
             if reported is not None and reported > 0:

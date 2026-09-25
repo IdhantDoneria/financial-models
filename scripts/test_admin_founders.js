@@ -223,6 +223,27 @@ const ADMIN = { "x-admin-key": "devadmin" };
     body: { action: "reset_password", email: "nobody@example.com" } });
   check("admin: reset_password on an unknown email -> 404", rpMissing.code === 404);
 
+  // -- admin: pro_access switch (the two Pro models while billing is offline)
+  const paNo = await call(handlers.admin, { method: "POST", body: { action: "pro_access", open: false } });
+  check("admin: pro_access needs the admin key", paNo.code === 401);
+  const paBad = await call(handlers.admin, { method: "POST", headers: ADMIN,
+    body: { action: "pro_access", open: "yes" } });
+  check("admin: pro_access rejects a non-boolean", paBad.code === 400 && (await store.get("flag:pro_open")) === null);
+  const paLock = await call(handlers.admin, { method: "POST", headers: ADMIN,
+    body: { action: "pro_access", open: false } });
+  check("admin: pro_access can lock the Pro models (flag:pro_open = 0)",
+    paLock.code === 200 && paLock.body.ok && (await store.get("flag:pro_open")) === "0");
+  const paOpen = await call(handlers.admin, { method: "POST", headers: ADMIN,
+    body: { action: "pro_access", open: true } });
+  check("admin: pro_access can open them again (flag:pro_open = 1)",
+    paOpen.code === 200 && (await store.get("flag:pro_open")) === "1");
+  const paList = await call(handlers.admin, { headers: ADMIN });
+  check("admin: the directory reports the switch and whether billing is live",
+    paList.body.proAccess && typeof paList.body.proAccess.open === "boolean"
+    && paList.body.proAccess.billingLive === true);   // dev harness runs with billing "configured"
+  const cfgPub = await call(require("../api/_handlers/billing-config.js"));
+  check("billing-config exposes proOpen (false while billing is live)", cfgPub.body.proOpen === false);
+
   console.log(`\n${passed} passed · ${failed} failed`);
   process.exit(failed ? 1 : 0);
 })().catch((err) => { console.error(err); process.exit(1); });

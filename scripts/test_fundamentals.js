@@ -234,6 +234,28 @@ console.log("\n· Only annual periods enter the series — quarters must not lea
     "a 53-week (371-day) fiscal year still counts as annual");
 }
 
+console.log("\n· Proxy-statement rows are not financial statements");
+{
+  // FedEx: the DEF 14A pay-versus-performance table tags NetIncomeLoss with a
+  // different figure and is filed after the 10-K, so "latest filed wins"
+  // returned $4,433 of net income against ~$4.4bn audited.
+  const facts = {
+    NetIncomeLoss: { units: { USD: [
+      { start: "2024-06-01", end: "2025-05-31", val: 4331000000, fy: 2025, form: "10-K", filed: "2025-07-15" },
+      { start: "2024-06-01", end: "2025-05-31", val: 4433, fy: 2025, form: "DEF 14A", filed: "2025-08-20" },
+      { start: "2023-06-01", end: "2024-05-31", val: 4049000000, fy: 2024, form: "10-K", filed: "2025-07-15" },
+      { start: "2023-06-01", end: "2024-05-31", val: 9999, fy: 2024, form: "DEFA14A", filed: "2025-09-01" },
+    ] } },
+  };
+  const got = pickAnnualSeries(facts, ["NetIncomeLoss"]);
+  eq(got.series.map((r) => r.val).join(","), "4049000000,4331000000",
+    "annual series keeps the 10-K figures and ignores DEF 14A / DEFA14A rows");
+  const onlyProxy = { NetIncomeLoss: { units: { USD: [
+    { start: "2024-01-01", end: "2024-12-31", val: 4226000000, fy: 2024, form: "DEF 14A", filed: "2026-04-29" } ] } } };
+  ok(pickAnnualSeries(onlyProxy, ["NetIncomeLoss"]) === null,
+    "a figure that appears only in a proxy statement is reported missing, not used");
+}
+
 /* ------------------------------ tag cascade ------------------------------ */
 console.log("\n· Tag cascade — companies tag the same concept differently");
 {
@@ -515,6 +537,19 @@ console.log("\n· Share-count freshness: corporate actions since the filing date
   const adj = computeSplitAdjustment(rdySplits, "2025-03-31");
   eq(adj.events.length, 0, "a split well before the filing date is not re-applied");
   eq(adj.ratio, 1, "no adjustment when the filing already postdates the split");
+}
+{
+  // FedEx: Yahoo lists the Freight spin-off (2026-06-01) as a 1241:1000 "split".
+  // Nothing was exchanged; applying it added 24% to the share count.
+  const fdx = { "1780272000": { date: 1780272000, numerator: 1241, denominator: 1000, splitRatio: "1241:1000" } };
+  const adj = computeSplitAdjustment(fdx, "2026-05-31");
+  eq(adj.events.length, 0, "a 1241:1000 spin-off price adjustment is not a share split");
+  eq(adj.ratio, 1, "so the share count is left alone");
+  // Real ratios of every shape still apply.
+  for (const [n, d] of [[2, 1], [3, 2], [5, 4], [1, 10], [20, 1], [1, 8], [4, 1]]) {
+    const a = computeSplitAdjustment({ x: { date: 1780272000, numerator: n, denominator: d } }, "2026-05-31");
+    ok(a.events.length === 1 && Math.abs(a.ratio - n / d) < 1e-12, `a real ${n}:${d} split still applies`);
+  }
 }
 {
   // No corporate action at all — the common case (Infosys, AAPL) — must be

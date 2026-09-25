@@ -37,6 +37,7 @@ module.exports = async (req, res) => {
   res.status(200).json({
     foundersLeft,
     billing,
+    proOpen: await B.proOpen(),   // Pro models open to every signed-in account (billing offline only)
     mode: B.mode(),
     paymentMode: PAYMENTS_MODE,
     ...(PAYMENTS_MODE === "upi-manual"

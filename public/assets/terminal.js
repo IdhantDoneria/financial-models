@@ -1911,6 +1911,10 @@ async function onIBTicker() {
     if (!payload.ok) throw new Error(payload.error || `HTTP ${r.status}`);
   } catch (err) {
     ibStatus("TICKER LOAD FAILED: " + String(err.message || err).slice(0, 200), true);
+    //: The previous company stays loaded when the fetch fails (rate limit, typo),
+    //  so the box must keep naming it: leaving the new symbol there made "Run
+    //  report" analyse one company under another's name.
+    if (state.ib.extracted) $("#ibticker").value = state.ib.ticker || "";
     return;
   }
 
@@ -3108,24 +3112,25 @@ async function uploadGate() {
 
 /* ------------------------- premium model gate --------------------------- *
  * HDEBT and RDCF (Ind AS hidden-debt normalizer, reverse-DCF solver) need
- * ANALYST PRO or higher. Mirrors uploadGate()'s shape/fail-open behaviour —
- * but ONLY for the plan-tier check below, not for sign-in. api/premium.py's
- * own entitlement check is unconditional: it 401s an unsigned-in caller and
- * 403s a free-plan one regardless of whether Razorpay is configured on this
- * deployment (billing:false just means checkout is unavailable, it doesn't
- * relax server-side enforcement) — so this client-side pre-check must never
- * report `allowed: true` for a visitor the server would reject outright.
- * Sign-in is therefore checked FIRST and unconditionally; only once that
- * passes do we consult billing config / plan, where fail-open-on-hiccup is
- * still the right call for an already-identified, already-signed-in user. */
+ * ANALYST PRO or higher once billing is live. While checkout is offline
+ * (no Razorpay keys) they are open to every signed-in account unless the
+ * operator locks them from the admin desk (flag:pro_open, read by
+ * api/premium.py). Either way api/premium.py's own check is the boundary: it
+ * 401s a caller with no session, and 403s an account the rules above refuse.
+ * This client pre-check must never report `allowed: true` for a visitor the
+ * server would reject outright, so sign-in is checked FIRST and
+ * unconditionally. With billing offline the plan is not consulted here at all
+ * (usage reports FREE for everyone then, granted accounts included): the
+ * server, which sees the grant and the switch, decides. */
 async function premiumModelGate() {
   const u = state.user;
+  const cfg = await getBillingCfg();
   if (!isServerBacked(u)) {
     return { allowed: false,
-      reason: "This tool needs a server-backed account on ANALYST PRO or higher — sign out and sign in with email or Google, then upgrade." };
+      reason: "This tool needs a server-backed account: sign out and sign in with email or Google"
+        + (cfg && cfg.billing ? ", on ANALYST PRO or higher." : ".") };
   }
-  const cfg = await getBillingCfg();
-  if (!cfg || !cfg.billing) return { allowed: true };   // billing offline -> open
+  if (!cfg || !cfg.billing) return { allowed: true };   // billing offline: the server decides (open unless the operator locked it)
   const us = await refreshUsage();
   if (!us) return { allowed: true };   // fail-open on a network hiccup
   if (us.plan === "free") {
@@ -3183,9 +3188,12 @@ async function renderPlanTab(body) {
 
   let head = "";
   if (!cfg || !cfg.billing) {
-    head = `<div class="pnote">BILLING OFFLINE: analyses are free and unmetered, but the Ind AS 116
-      and Reverse DCF models stay reserved for ANALYST PRO and above, which the operator grants
-      per account until checkout is connected (Razorpay, see README).</div>`;
+    head = cfg && cfg.proOpen === false
+      ? `<div class="pnote">BILLING OFFLINE: analyses are free and unmetered, but the Ind AS 116
+      and Reverse DCF models are reserved for accounts the operator has granted ANALYST PRO
+      or above, until checkout is connected.</div>`
+      : `<div class="pnote">BILLING OFFLINE: analyses are free and unmetered, and the Ind AS 116
+      and Reverse DCF models are open to every signed-in account until checkout is connected.</div>`;
   } else if (!isOtp) {
     head = `<div class="pnote warn">Plans attach to a server-backed account. You're browsing as
       <b>${(u && u.provider ? u.provider : "guest").toUpperCase()}</b> — SIGN OUT and sign back in

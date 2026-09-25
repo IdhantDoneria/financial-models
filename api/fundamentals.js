@@ -1019,6 +1019,11 @@ function pickAnnualSeries(facts, tags, maxYears = 6, prefer = null, largestOnTie
     }
     const rows = (f.units[unit] || []).filter((r) => {
       if (typeof r.val !== "number" || !r.start || !r.end) return false;
+      //: A proxy statement's pay-versus-performance table tags NetIncomeLoss too,
+      //  on its own definition, and is filed after the 10-K, so "latest filed
+      //  wins" below let it overwrite the audited figure (FedEx read $4,433 of
+      //  net income; MetLife's differed too). It is not a financial statement.
+      if (/14[AC]/.test(r.form || "")) return false;
       const days = (Date.parse(r.end) - Date.parse(r.start)) / 86_400_000;
       return days >= 340 && days <= 400;          // a fiscal year, however offset
     });
@@ -1612,6 +1617,20 @@ const SPLIT_ALLOTMENT_LAG_MS = 14 * 86_400_000;
  * count as though it had been checked, so null propagates rather than being
  * treated as "no splits".
  */
+//: Yahoo records some spin-offs as a "split" whose ratio is the price-adjustment
+//  factor, not a share exchange: FedEx's Freight separation (2026-06-01) came
+//  through as 1241:1000, which raised FedEx's share count 24% and cut its
+//  dividend to match. A real split or bonus is a small whole-number ratio
+//  (2:1, 3:2, 5:4, 1:10, 20:1); anything that does not reduce to one is a
+//  price adjustment and must not touch the share count.
+const gcd = (a, b) => (b ? gcd(b, a % b) : a);
+function isShareSplit(s) {
+  const { numerator: n, denominator: d } = s;
+  if (!Number.isInteger(n) || !Number.isInteger(d)) return false;
+  const g = gcd(n, d);
+  return n / g <= 100 && d / g <= 100;
+}
+
 function computeSplitAdjustment(splitsObj, sinceISODate) {
   const sinceMs = Date.parse(sinceISODate);
   if (!Number.isFinite(sinceMs)) return null;
@@ -1620,6 +1639,7 @@ function computeSplitAdjustment(splitsObj, sinceISODate) {
 
   const events = Object.values(splitsObj)
     .filter(s => typeof s?.date === "number" && s.numerator > 0 && s.denominator > 0
+      && isShareSplit(s)
       && s.date * 1000 > sinceMs - SPLIT_ALLOTMENT_LAG_MS)
     .sort((a, b) => a.date - b.date);
   if (!events.length) return { ratio: 1, events: [] };

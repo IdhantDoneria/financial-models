@@ -176,9 +176,31 @@ def _effective_plan(email: str) -> str:
     return plan
 
 
+#: Operator switch written by the admin desk (api/_lib/billing.js proOpen()).
+#: While checkout is offline nobody can buy Pro, so the two models are open to
+#: every signed-in account unless the operator has locked them ("0"). Once the
+#: Razorpay keys exist the plan alone decides again.
+_PRO_OPEN_KEY = "flag:pro_open"
+_PAID_PLANS = ("pro", "unlimited", "boutique", "enterprise")
+
+
+def _billing_live() -> bool:
+    return bool(os.environ.get("RAZORPAY_KEY_ID") and os.environ.get("RAZORPAY_KEY_SECRET"))
+
+
+def _premium_access(email: str) -> str | None:
+    """"paid" for an account on a paying (or admin-granted) plan, "open" for any
+    other account while the operator switch is open, else None."""
+    if _effective_plan(email) in _PAID_PLANS:
+        return "paid"
+    if not _billing_live() and _redis_get(_PRO_OPEN_KEY) != "0":
+        return "open"
+    return None
+
+
 # --------------------------------------------------------------------------- #
-# Rate limiting / spend cap — every caller here is already signed in and on a
-# paying plan (see do_POST below), so this isn't defending against anonymous
+# Rate limiting / spend cap — every caller here is already signed in (and, once
+# billing is live, on a paying plan; see do_POST below), so this isn't defending against anonymous
 # abuse the way api/mcp.py's version has to. It's defending against one
 # compromised or careless account running up real Vercel/Redis cost: the
 # monthly upload quota in api/_lib/billing.js only meters the IB-desk PDF
@@ -254,13 +276,24 @@ def _client_ip(handler: BaseHTTPRequestHandler) -> str:
     return handler.client_address[0] if handler.client_address else "unknown"
 
 
-def _rate_limited(handler: BaseHTTPRequestHandler) -> bool:
+#: An account that reaches the Pro models only through the operator's open
+#: switch (no paid or granted plan) gets its own daily allowance. Sign-up is
+#: open, so without this a few throwaway accounts could spend the shared daily
+#: budget above and lock every paying customer out.
+_RL_OPEN_ACCT_MAX, _RL_OPEN_ACCT_WINDOW_SEC = 150, 86_400
+
+
+def _rate_limited(handler: BaseHTTPRequestHandler, open_access_email: str | None = None) -> bool:
     ip = _client_ip(handler)
-    return not _within_limits([
+    counters = [
         (f"premium:rl:ip:{ip}", _RL_IP_MAX, _RL_IP_WINDOW_SEC),
         ("premium:rl:global", _RL_GLOBAL_MAX, _RL_GLOBAL_WINDOW_SEC),
         ("premium:rl:daily", _RL_DAILY_MAX, _RL_DAILY_WINDOW_SEC),
-    ])
+    ]
+    if open_access_email:
+        counters.insert(0, (f"premium:rl:acct:{open_access_email}",
+                            _RL_OPEN_ACCT_MAX, _RL_OPEN_ACCT_WINDOW_SEC))
+    return not _within_limits(counters)
 
 
 def _run_extracted(mnemonic: str, model_name: str, body: dict) -> dict:
@@ -439,8 +472,8 @@ class handler(BaseHTTPRequestHandler):
         except (ValueError, KeyError, TypeError):
             return self._json(401, {"ok": False, "error": "SESSION INVALID"})
 
-        plan = _effective_plan(email)
-        if plan not in ("pro", "unlimited", "boutique", "enterprise"):
+        access = _premium_access(email)
+        if access is None:
             return self._json(403, {"ok": False, "error":
                 "This tool requires ANALYST PRO or higher — upgrade to unlock the "
                 "Ind AS hidden-debt normalizer and reverse-DCF solver."})
@@ -453,7 +486,7 @@ class handler(BaseHTTPRequestHandler):
         # Checked here, after the (cheap) plan/model-name validation above and
         # right before the actual compute call — a request rejected for a bad
         # model name shouldn't spend rate budget it was never going to use.
-        if _rate_limited(self):
+        if _rate_limited(self, email if access == "open" else None):
             return self._json(429, {"ok": False, "error":
                 "RATE LIMIT EXCEEDED — this protects shared compute and Redis "
                 "budget across every caller, not just this request. Wait a "

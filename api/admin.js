@@ -8,6 +8,8 @@
 //   POST {action:"grant", email, plan, days}   -> free premium for anyone —
 //        type an email + duration; works even before that person signs up
 //        (the pass is waiting when they first verify their email).
+//   POST {action:"pro_access", open:true|false} -> open (default) or lock the two
+//        Pro models for every signed-in account while billing is offline.
 //   POST {action:"revoke", email}              -> end a plan immediately.
 //   POST {action:"reset_password", email}       -> clears the account's
 //        password so the owner must return through EMAIL CODE and set a
@@ -148,6 +150,11 @@ async function listClaims() {
   return claims;
 }
 
+// `billingLive` true means the plan decides and the switch is ignored.
+async function proAccessState() {
+  return { open: await B.proOpen(), billingLive: B.configured() };
+}
+
 module.exports = async (req, res) => {
   if (!KEY || !store.configured())
     return A.json(res, 503, { error: "ADMIN DESK NOT CONFIGURED — set ADMIN_KEY (and a store) in Vercel env vars" });
@@ -187,7 +194,8 @@ module.exports = async (req, res) => {
       const url = new URL(req.url || "/", "http://internal");
       if (url.searchParams.get("action") === "claims")
         return A.json(res, 200, { ok: true, claims: await listClaims() });
-      return A.json(res, 200, { ok: true, ...(await listUsers()), geo: await geoBreakdown() });
+      return A.json(res, 200, { ok: true, ...(await listUsers()), geo: await geoBreakdown(),
+                                proAccess: await proAccessState() });
     }
     if (req.method !== "POST") return A.json(res, 405, { error: "GET or POST" });
 
@@ -195,6 +203,14 @@ module.exports = async (req, res) => {
     try { body = await A.readBody(req); } catch (err) {
       if (err instanceof A.BodyTooLargeError) return A.json(res, 413, { error: "REQUEST BODY TOO LARGE" });
       return A.json(res, 400, { error: "invalid JSON" });
+    }
+
+    // Open or lock the two Pro models for every signed-in account while
+    // checkout is offline. Granted accounts keep access either way.
+    if (body.action === "pro_access") {
+      if (typeof body.open !== "boolean") return A.json(res, 400, { error: "open MUST BE true OR false" });
+      await B.setProOpen(body.open);
+      return A.json(res, 200, { ok: true, proAccess: await proAccessState() });
     }
 
     // "claims" is a plain list (no email, no id): accept it on POST as well as
@@ -273,7 +289,7 @@ module.exports = async (req, res) => {
     }
 
     return A.json(res, 400,
-      { error: "action MUST BE grant, revoke, reset_password, approve_claim OR reject_claim" });
+      { error: "action MUST BE grant, revoke, reset_password, pro_access, approve_claim OR reject_claim" });
   } catch (err) {
     return A.json(res, 502, { error: String(err.message || err).slice(0, 180) });
   }
