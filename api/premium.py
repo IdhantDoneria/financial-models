@@ -29,21 +29,20 @@ browser's WASM build runs) with no other module in between:
     in sync by hand since duplicating a ~15-line dict literal is lower-risk
     here than depending on that file: see below) and calls .calculate().
 
-Neither path imports AnalysisRunner or public/py/web_bridge.py:
-  - AnalysisRunner pulls in pandas (AnalysisReport.summary_frame()), which
-    alone pushed this function's Vercel bundle over its 500MB Python limit
-    once combined with numpy+scipy (confirmed by two failed preview
-    builds) — this file instead replicates the ~15 lines of
-    src/pipeline/runner.py's dispatch/headline logic it actually needs.
-    requirements.txt excludes pandas entirely; see src/fama_french.py and
-    src/pipeline/runner.py for the matching lazy-pandas-import changes
-    that make `from src import ...` safe without it installed.
+Neither path imports AnalysisRunner or public/py/web_bridge.py's run loop:
+  - The extracted path does import AnalysisReport from src/pipeline/runner.py,
+    for its headline and status rules only, so the paid rows are labelled by the
+    same code as the free report. That import is safe here: runner.py imports
+    pandas lazily (inside summary_frame), and tests/pipeline/test_premium_parity.py
+    imports it with pandas blocked to keep it that way. requirements.txt excludes
+    pandas entirely, which is what keeps this function under Vercel's 500MB Python
+    bundle limit (two earlier preview builds failed on it).
   - web_bridge.py lives under public/py/, outside api/'s own file tree —
     Vercel's Python bundler doesn't reliably include files reached only via
     a runtime sys.path insert rather than a static import it can trace
     (confirmed by a third failed preview build: ModuleNotFoundError at
-    runtime despite building successfully). Everything this file needs from
-    it is inlined below instead.
+    runtime despite building successfully). The raw-params dict builders below
+    are inlined instead.
 
 Response: 200 { ok:true, model, headline, status, results, errors,
 rationale } | 401/403/503 { ok:false, error } for auth/plan/config
@@ -67,6 +66,7 @@ import numpy as np
 from src import IndASHiddenDebtModel, ReverseDCFModel
 from src.pipeline.assumptions import AutoAssumer, ManualAssumer, ManualOverrides
 from src.pipeline.pdf_extractor import ExtractedFinancials, PDFExtractor
+from src.pipeline.runner import AnalysisReport
 
 PREMIUM_MODELS = {
     "HDEBT": "Ind AS 116 Hidden-Debt Normalizer",
@@ -76,8 +76,11 @@ PREMIUM_CLASSES = {
     "HDEBT": IndASHiddenDebtModel,
     "RDCF": ReverseDCFModel,
 }
-#: Mirrors AnalysisReport._headline() in src/pipeline/runner.py, for just
-#: these two models (that method itself needs pandas-free replicating).
+#: The raw-params (calculator) headline key per model. The extracted path does
+#: not use this: it calls AnalysisReport._headline, which also knows the
+#: revenue-mode Reverse DCF that a cash-burning company gets. It stays because
+#: api/mcp.py's headline table is checked against it, and because a test pins it
+#: to what AnalysisReport._headline actually picks.
 _HEADLINE_PICK = {
     "HDEBT": ("adjusted_net_debt", "$"),
     "RDCF": ("implied_fcf_cagr", "%"),
@@ -101,15 +104,8 @@ def _clean(value):
 
 
 def _headline(mnemonic: str, results: dict, currency_symbol: str = "$") -> str:
-    key, unit = _HEADLINE_PICK[mnemonic]
-    value = results.get(key)
-    if isinstance(value, (int, float)):
-        if unit == "%":
-            return f"{value * 100:.2f}%"
-        if unit == "$":
-            return f"{currency_symbol}{value:,.2f}"
-        return f"{value:.4f}"
-    return str(next(iter(results.values()), "-"))
+    return AnalysisReport._headline(PREMIUM_MODELS[mnemonic], results, currency_symbol)
+
 
 REDIS_URL = os.environ.get("KV_REST_API_URL") or os.environ.get("UPSTASH_REDIS_REST_URL")
 REDIS_TOKEN = os.environ.get("KV_REST_API_TOKEN") or os.environ.get("UPSTASH_REDIS_REST_TOKEN")
@@ -286,6 +282,11 @@ def _run_extracted(mnemonic: str, model_name: str, body: dict) -> dict:
             auto_kwargs["risk_free_rate"] = float(body["live_rf"])
         if body.get("erp") is not None:
             auto_kwargs["equity_risk_premium"] = float(body["erp"])
+        # The selected market's long-run growth cap, as the free report applies
+        # it (public/py/web_bridge.py run_report); without it every market got
+        # the default 2.5% terminal growth.
+        if body.get("lt_growth") is not None:
+            auto_kwargs["terminal_growth_cap"] = float(body["lt_growth"])
         auto = AutoAssumer(**auto_kwargs)
 
         if body.get("mode") == "manual":
@@ -315,14 +316,16 @@ def _run_extracted(mnemonic: str, model_name: str, body: dict) -> dict:
 
     rationale = {f"{m} · {p}": text for (m, p), text in assumptions.rationale.items()
                  if m == mnemonic}
-    currency_symbol = PDFExtractor.CURRENCY_SYMBOLS.get(data.currency, "$")
-    # A model that ran but on inputs the filing never disclosed (e.g. HDEBT
-    # with no lease/contingent-liability figures) shouldn't read as a
-    # confirmed-clean "OK" — see AssumptionSet.partial.
-    status = "UNASSESSED" if model_name in assumptions.partial else "OK"
+    currency_symbol = PDFExtractor.currency_prefix(data.currency)
+    partial = model_name in assumptions.partial
     return {
         "ok": True, "model": model_name,
-        "headline": _headline(mnemonic, results, currency_symbol), "status": status,
+        "headline": AnalysisReport._headline(model_name, results, currency_symbol,
+                                             partial=partial, price=data.current_price),
+        # Same OK / PARTIAL / UNASSESSED rule as the free report's summary, and
+        # the same reason text shown under the row.
+        "status": AnalysisReport.status_of(model_name, assumptions),
+        "status_reasons": {model_name: assumptions.partial[model_name]} if partial else {},
         "results": results, "errors": None, "rationale": rationale,
     }
 

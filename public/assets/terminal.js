@@ -1815,6 +1815,7 @@ function ensureAnalyzerPackages() {
                   model: IB_PREMIUM_MNEMONIC[fullName], extracted,
                   mode: params.mode, overrides: params.overrides,
                   live_rf: params.live_rf, rf_source: params.rf_source, erp: params.erp,
+                  lt_growth: params.lt_growth,
                 }),
               });
               const j = await r.json();
@@ -1832,14 +1833,25 @@ function ensureAnalyzerPackages() {
               if (pr.results) baseOut.results[name] = pr.results;
               if (pr.errors) baseOut.errors[name] = pr.errors;
               Object.assign(baseOut.rationale, pr.rationale || {});
+              baseOut.status_reasons = Object.assign(baseOut.status_reasons || {}, pr.status_reasons || {});
             } else {
               baseOut.summary.push({ Model: name, "Headline result": "-",
                 Status: pr.denied || pr.notApplicable ? pr.error : `ERROR: ${pr.error}` });
               baseOut.errors[name] = pr.error;
             }
           }
+          //: Hand the server's numbers to the Python report so PDF, Excel and
+          //  Word exports carry the paid rows, not only the ones run locally.
+          const attached = { results: {}, errors: {} };
+          premiumResults.forEach((pr, i) => {
+            const name = pr.model || premiumSelected[i];
+            if (pr.ok && pr.results) attached.results[name] = pr.results;
+            else attached.errors[name] = pr.error || pr.errors || "no result";
+          });
+          try { state.ib.fns.attach(JSON.stringify(attached)); } catch (e) { console.error("attach premium failed:", e); }
           return JSON.stringify(baseOut);
         },
+        attach: state.pyodide.runPython("web_bridge.attach_premium"),
         exportR: state.pyodide.runPython("web_bridge.export_report"),
         restore: state.pyodide.runPython("web_bridge.restore_extraction"),
         override: state.pyodide.runPython("web_bridge.override_field"),
@@ -3171,8 +3183,9 @@ async function renderPlanTab(body) {
 
   let head = "";
   if (!cfg || !cfg.billing) {
-    head = `<div class="pnote">BILLING OFFLINE — every feature is currently free and unmetered.
-      Paid plans activate when the operator connects Razorpay (see README).</div>`;
+    head = `<div class="pnote">BILLING OFFLINE: analyses are free and unmetered, but the Ind AS 116
+      and Reverse DCF models stay reserved for ANALYST PRO and above, which the operator grants
+      per account until checkout is connected (Razorpay, see README).</div>`;
   } else if (!isOtp) {
     head = `<div class="pnote warn">Plans attach to a server-backed account. You're browsing as
       <b>${(u && u.provider ? u.provider : "guest").toUpperCase()}</b> — SIGN OUT and sign back in
@@ -3205,7 +3218,7 @@ async function renderPlanTab(body) {
   }
 
   const plans = (cfg && cfg.plans) || [
-    { id: "free", name: "FREE", periods: null, uploads: 10, blurb: "10 company analyses / month · ticker or PDF · all 10 models · every assumption sourced · SCEN engine" },
+    { id: "free", name: "FREE", periods: null, uploads: 10, blurb: "10 company analyses / month · ticker or PDF · six-model valuation report · all 10 calculators · every assumption sourced · SCEN engine" },
     { id: "pro", name: "ANALYST PRO", uploads: 50,
       periods: { monthly: { priceInr: 2552, priceUsd: 29 }, annual: { priceInr: 26312, priceUsd: 299 } },
       blurb: "50 company analyses / month · every figure traced to its source · also unlocks the Ind AS 116 hidden-debt normalizer and reverse-DCF solver" },

@@ -655,6 +655,37 @@ def run_report(params_json: str) -> str:
     })
 
 
+#: Models whose numbers are computed on the server (api/premium.py) and handed
+#: back to the browser. Only these may be attached to a report.
+_SERVER_MODELS = ("Ind AS 116 Hidden-Debt Normalizer",
+                  "Reverse DCF / Market-Implied Expectations")
+
+
+def attach_premium(payload_json: str) -> str:
+    """Put server-computed premium results into the last report.
+
+    The two Pro models never run in the browser, so the report the exporters
+    read (``_ANALYZER["report"]``) held only the other models: a PDF, Excel or
+    Word export left out the very rows the plan pays for. Attaching their
+    results here lets ``summary_frame`` and the exporters treat them like any
+    other model, which also gives them the same headline and status rules.
+
+    ``payload_json``: ``{"results": {model: {...}}, "errors": {model: str}}``.
+    """
+    report = _ANALYZER["report"]
+    if report is None:
+        return json.dumps({"ok": False, "error": "Run a report first."})
+    p = json.loads(payload_json)
+    for name, res in (p.get("results") or {}).items():
+        if name in _SERVER_MODELS and isinstance(res, dict):
+            report.results[name] = res
+            report.errors.pop(name, None)
+    for name, err in (p.get("errors") or {}).items():
+        if name in _SERVER_MODELS and name not in report.results:
+            report.errors[name] = str(err)
+    return json.dumps({"ok": True})
+
+
 def restore_extraction(fields_json: str, period: str = "annual") -> str:
     """Rehydrate a saved extraction (browser history) into the analyzer state.
 

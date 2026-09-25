@@ -310,6 +310,16 @@ class PDFExtractor:
         "CHF": "CHF ", "KRW": "₩",
     }
 
+    @classmethod
+    def currency_prefix(cls, code: str | None) -> str:
+        """The prefix for a money figure in `code`: its symbol when known, else
+        the ISO code itself ("DKK 113,066"). Falling back to "$" labelled a
+        krone or Taiwan-dollar figure as US dollars. No code at all means the
+        filing's currency wasn't detected, which keeps the historical "$"."""
+        if not code:
+            return "$"
+        return cls.CURRENCY_SYMBOLS.get(code) or f"{code} "
+
     #: A bare currency symbol/code anywhere in running text is not a
     #: reliable signal on its own — a real BLS International filing
     #: contains "BLS £-Services Limited" (a subsidiary's name, not a GBP

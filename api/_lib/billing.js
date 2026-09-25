@@ -69,8 +69,8 @@ const PLANS = {
   //  actually does, which converts worse, not better. 10 buys enough room to
   //  check a few real holdings; it is still far short of habitual use.
   free: { id: "free", name: "FREE", uploads: 10,
-          blurb: "10 company analyses / month · ticker or PDF · all 10 models · " +
-                 "every assumption sourced · SCEN engine" },
+          blurb: "10 company analyses / month · ticker or PDF · six-model valuation report · " +
+                 "all 10 calculators · every assumption sourced · SCEN engine" },
   pro: { id: "pro", name: "ANALYST PRO", uploads: 50,
          periods: { monthly: { amount: usdToPaise(29), usd: 29, days: 30 },
                     annual: { amount: usdToPaise(299), usd: 299, days: 365 } },

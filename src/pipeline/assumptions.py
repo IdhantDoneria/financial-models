@@ -1430,6 +1430,19 @@ class AutoAssumer:
             )
             rationale[("Gordon Growth", "dividend")] = unavailable["Gordon Growth Model"]
 
+        # US GAAP puts operating leases on the balance sheet (ASC 842), so the
+        # debt this model would add is already in net debt, and reverse
+        # factoring and contingent liabilities are footnote-only. On a US GAAP
+        # filer it can only echo net debt. The browser skips it before calling
+        # the server; this keeps the server from computing it when called
+        # directly.
+        if data.accounting_standard == "us-gaap":
+            unavailable["Ind AS 116 Hidden-Debt Normalizer"] = (
+                "Not applicable to a US GAAP filer: operating leases are already on "
+                "its balance sheet (ASC 842) and in the debt used for the DCF. "
+                "Reverse factoring and contingent liabilities are footnote-only, so "
+                "use the Ind AS 116 calculator to enter them from the filing.")
+
         # A cash-burning company's real, disclosed negative free cash flow is
         # data worth keeping — the extractor no longer discards it, because
         # discarding it meant synthesising a POSITIVE figure that contradicts
