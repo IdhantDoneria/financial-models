@@ -213,7 +213,7 @@ def test_ticker_load_is_metered_like_an_upload():
     body = _js_method_body(TERMINAL_JS.read_text(),
                            "        loadFundamentals: async (fieldsJson) => {")
     assert "await uploadGate()" in body, "ticker loads must check the plan gate"
-    assert "consumeUpload()" in body, "a successful ticker load must consume a credit"
+    assert "await consumeUpload(" in body, "a successful ticker load must consume a credit"
     assert "gate.metered" in body, "only meter when the plan says this account is metered"
 
 

@@ -305,6 +305,26 @@ def _rate_limited(handler: BaseHTTPRequestHandler, open_access_email: str | None
     return not _within_limits(counters)
 
 
+def _track(email: str, mnemonic: str, status: str) -> None:
+    """Record a Pro-model run in the account's activity log, in the shape
+    api/_lib/activity.js writes (events:<email>, events:all, act:<email>, a
+    daily count). Best effort: a failed write never fails the calculation."""
+    try:
+        now = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        ev = json.dumps({"at": now, "email": email, "type": "premium",
+                         "model": mnemonic, "status": str(status)[:60]})
+        day_key = f"stat:{now[:10]}:premium"
+        results = _redis_pipeline([
+            ["LPUSH", f"events:{email}", ev], ["LTRIM", f"events:{email}", "0", "199"],
+            ["LPUSH", "events:all", ev], ["LTRIM", "events:all", "0", "499"],
+            ["SET", f"act:{email}", now], ["INCR", day_key],
+        ])
+        if results and results[-1] == 1:
+            _redis_pipeline([["EXPIRE", day_key, str(90 * 86_400)]])
+    except Exception:  # noqa: BLE001 - tracking must never break the request
+        pass
+
+
 def _reasons(model_name: str, assumptions, results: dict) -> dict:
     """The text shown under the row: why it is PARTIAL or UNASSESSED, plus a note
     when Reverse DCF's implied growth is one almost no company sustains."""
@@ -527,7 +547,9 @@ class handler(BaseHTTPRequestHandler):
                       "status": _GENERIC_CALC_ERROR,
                       "results": None, "errors": _GENERIC_CALC_ERROR, "rationale": {}}
 
-        return self._json(result.pop("_http", 200), result)
+        code = result.pop("_http", 200)
+        _track(email, mnemonic, result.get("status") or result.get("error") or code)
+        return self._json(code, result)
 
     def _not_allowed(self) -> None:
         self._json(405, {"ok": False, "error": "POST only"}, extra_headers={"Allow": "POST"})

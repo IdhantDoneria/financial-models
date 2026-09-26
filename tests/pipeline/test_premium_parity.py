@@ -268,11 +268,12 @@ def test_attaching_before_any_report_is_refused_not_crashed():
     assert json.loads(wb.attach_premium("{}"))["ok"] is False
 
 
-def test_the_offline_billing_banner_does_not_promise_the_pro_models_for_free():
+def test_the_unenforced_banner_does_not_promise_the_pro_models_for_free():
     """With Razorpay unconnected the banner said "every feature is currently free",
-    while api/premium.py still refuses the two Pro models to a free account."""
+    while api/premium.py can still refuse the two Pro models to a free account
+    (when the operator locks them). The banner states which of the two applies."""
     js = (Path(__file__).resolve().parents[2] / "public" / "assets" / "terminal.js").read_text()
-    banner = js[js.index("BILLING OFFLINE"):]
+    banner = js[js.index("MONTHLY LIMITS ARE NOT ENFORCED"):]
     banner = banner[:banner.index("</div>`")]
     assert "every feature is currently free" not in banner
     assert "ANALYST PRO" in banner and "Reverse DCF" in banner
@@ -332,3 +333,18 @@ def test_a_dcf_with_negative_equity_value_is_not_headlined_as_a_negative_price()
     assert text == "negative equity value · price $113.23"
     assert AnalysisReport._headline("Discounted Cash Flow", {"price_per_share": 12.5}, "$", price=10.0) \
         == "$12.50 / share · price $10.00"
+
+
+def test_a_series_with_a_missing_year_still_exports(tmp_path):
+    """Apple's interest expense series ends in two untagged years (None). The
+    Excel and PDF exporters formatted every list entry as a number and crashed,
+    failing the export for 6 of 83 live tickers (AAPL, GM, GME, LCID, O, RTX)."""
+    from src.pipeline import export_pdf, export_xlsx
+    from src.pipeline.exporters import _fmt
+    assert _fmt([2873000000, 2645000000, None, None]) == "2,873,000,000.00, 2,645,000,000.00, n/a, n/a"
+    fields = dict(FIELDS["AAPL"], interest_expense_series=[2873000000, 2645000000, 2931000000, 3933000000, None, None])
+    data = ExtractedFinancials(**{k: v for k, v in fields.items() if k in ExtractedFinancials.__dataclass_fields__})
+    report = AnalysisRunner(data).run(AutoAssumer().build(data), ["Discounted Cash Flow"], "auto")
+    export_xlsx(report, tmp_path / "a.xlsx")
+    export_pdf(report, tmp_path / "a.pdf")
+    assert (tmp_path / "a.xlsx").stat().st_size > 0 and (tmp_path / "a.pdf").stat().st_size > 0

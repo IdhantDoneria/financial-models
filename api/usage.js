@@ -1,15 +1,25 @@
-// /api/usage — plan entitlement + monthly upload metering. (Bearer session)
+// /api/usage — plan entitlement, monthly metering and activity. (session)
 //
-//   GET  -> { plan, planName, used, limit, expiresAt, billing }
-//   POST -> consume one upload (called when the IB desk analyzes a PDF);
-//           402 with the same shape when the month's allowance is spent.
+//   GET  -> { plan, planName, used, limit, expiresAt, billing, metered, checkout }
+//   POST {}                         -> one analysis: counted, logged, and
+//        {source, ticker}              refused with 402 once the month's
+//                                      allowance is spent (when enforced)
+//   POST {event, ...detail}         -> log an activity event only (report,
+//                                      export, plan_view); nothing counted
 //
-// When billing isn't configured the terminal is free and unmetered — GET
-// says so and POST is a no-op success, so the front end never blocks.
+// Plans run without a payment gateway: the operator assigns them from the
+// admin desk, and usage is counted per account per month in the store.
+// `billing` / `metered` say whether the allowance is ENFORCED (the admin
+// desk's metering switch); usage is counted and activity logged whenever a
+// store exists, enforced or not. `checkout` says whether Razorpay is live.
+//
+// With no store at all the terminal is free and unmetered: GET says so and
+// POST is a no-op success, so the front end never blocks.
 
 const store = require("./_lib/store");
 const A = require("./_lib/auth");
 const B = require("./_lib/billing");
+const activity = require("./_lib/activity");
 
 //: The signed-in account's admin-granted plan, or null (no session, no store,
 //  no active grant). Never throws: this only decorates an unmetered reply.
@@ -24,40 +34,59 @@ async function offlineGrant(req) {
   } catch { return null; }
 }
 
-module.exports = async (req, res) => {
-  const billing = B.configured() && store.configured();
-  if (!billing) {
-    // Checkout is offline, so nothing is metered and `plan` stays "free". An
-    // account the operator has granted a plan still gets to see it: `grant`
-    // carries the real plan, so the plan chip and tab stop showing FREE for it.
-    const out = { ok: true, billing: false, metered: false,
-                  plan: "free", planName: "FREE", used: 0, limit: null };
-    const grant = await offlineGrant(req);
-    if (grant) out.grant = grant;
-    return A.json(res, 200, out);
-  }
+//: Events the browser may report. "analysis" and "signin" are recorded by the
+//  server itself (below, and in the sign-in handlers), never taken on trust.
+const CLIENT_EVENTS = new Set(["report", "export", "plan_view"]);
 
+const UNMETERED = { ok: true, billing: false, metered: false, checkout: false,
+                    plan: "free", planName: "FREE", used: 0, limit: null };
+
+module.exports = async (req, res) => {
+  if (!store.configured()) return A.json(res, 200, UNMETERED);
+
+  const enforced = await B.metering();
+  const checkout = B.configured();
   const sess = await A.getSession(req);
-  if (!sess) return A.json(res, 401, { error: "SIGN IN WITH EMAIL TO USE UPLOADS", billing });
+  if (!sess) {
+    if (!enforced) return A.json(res, 200, { ...UNMETERED });
+    return A.json(res, 401, { error: "SIGN IN WITH EMAIL TO USE UPLOADS", billing: true });
+  }
 
   try {
     const { plan, sub } = await B.effectivePlan(sess.email);
     const p = B.PLANS[plan];
     const used = await B.getUsed(sess.email);
-    const base = { billing: true, metered: true, plan, planName: p.name,
+    const base = { billing: enforced, metered: enforced, checkout, plan, planName: p.name,
                    limit: p.uploads, expiresAt: sub ? sub.expiresAt : null,
                    via: sub ? sub.via || "checkout" : null,       // founder/grant/checkout
                    founderNo: sub && sub.founderNo ? sub.founderNo : null,
                    month: B.monthKey() };
+    //: Kept for clients built before metering was on: they read `grant`
+    //  to show an operator-assigned plan while `billing` is false.
+    if (!enforced && plan !== "free") {
+      base.grant = { plan, planName: p.name, expiresAt: sub.expiresAt, via: sub.via || "grant" };
+    }
 
     if (req.method === "GET") return A.json(res, 200, { ok: true, used, ...base });
     if (req.method !== "POST") return A.json(res, 405, { error: "GET or POST" });
 
-    if (p.uploads !== null && used >= p.uploads) {
+    let body = {};
+    try { body = await A.readBody(req); } catch { body = {}; }
+
+    if (body.event) {
+      if (!CLIENT_EVENTS.has(body.event)) return A.json(res, 400, { error: "unknown event" });
+      await activity.track(sess.email, body.event, body);
+      return A.json(res, 200, { ok: true, used, ...base });
+    }
+
+    if (enforced && p.uploads !== null && used >= p.uploads) {
       return A.json(res, 402, { error: `MONTHLY UPLOAD LIMIT REACHED (${used}/${p.uploads})` +
-        ` — UPGRADE IN MENU ▸ PLAN`, used, ...base });
+        (checkout ? " — UPGRADE IN MENU ▸ PLAN" : " — ASK THE OPERATOR FOR MORE IN MENU ▸ PLAN"),
+        used, ...base });
     }
     const now = await B.consumeUpload(sess.email);
+    await activity.track(sess.email, "analysis",
+      { source: body.source === "pdf" ? "pdf" : "ticker", ticker: body.ticker });
     return A.json(res, 200, { ok: true, used: now, ...base });
   } catch (err) {
     return A.json(res, 502, { error: String(err.message || err).slice(0, 180) });

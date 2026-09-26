@@ -43,3 +43,11 @@ jobs:
         run: node scripts/test_boot_runtime.js
       - name: US 10Y risk-free parsing (Treasury par yield curve)
         run: node scripts/test_rates.js
+      # Server-side account and billing handlers, against the in-memory store
+      # (AUTH_DEV_MEMORY, set by each script). No network, no npm install.
+      - name: Plans, metering and activity with no checkout (operator-managed)
+        run: node scripts/test_manual_billing.js
+      - name: Purchase lifecycle (fake gateway)
+        run: node scripts/test_billing_api.js
+      - name: Admin desk, grants and switches
+        run: node scripts/test_admin_founders.js

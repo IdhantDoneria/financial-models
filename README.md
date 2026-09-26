@@ -239,6 +239,7 @@ node scripts/test_xss_escaping.js            # escaping of every HTML sink
 node scripts/test_metal_unit_conventions.js  # per-market gold/silver units
 node scripts/test_billing_api.js             # full purchase lifecycle
 node scripts/test_admin_founders.js          # admin desk + grants
+node scripts/test_manual_billing.js          # plans + metering + activity, no checkout
 node scripts/test_boot_runtime.js            # Pyodide boot retry / mirror fallback / error text
 node scripts/test_rates.js                   # US 10Y par-yield parsing for the risk-free rate
 ```
@@ -534,6 +535,19 @@ mechanism**: type any email, choose a plan and a duration (7–365 days) → tha
 free premium — it works even before they sign up (the pass is waiting at first sign-in),
 re-granting stacks days, and REVOKE ends a plan instantly. Backed by `/api/admin`; tested
 by `node scripts/test_admin_founders.js` and `python scripts/e2e_founders_admin.py`.
+
+**Plans without checkout (current mode).** Until Razorpay is connected, plans are
+assigned from the desk (GRANT / REVOKE) and the monthly allowance (FREE 10, ANALYST PRO 50)
+is counted and enforced per account in Redis. The **MONTHLY LIMITS** switch stops enforcing
+(usage is still counted); RESET zeroes one account's month. Paid-plan cards show REQUEST
+ACCESS (email) instead of buy buttons. Guests cannot run company analyses while limits are
+enforced, since there is no account to count them against.
+
+**Activity log.** Every signed-in account's sign-ins, analyses (ticker symbol, or "pdf"; never
+file contents), report runs, exports, Pro-model runs and PLAN-tab visits are recorded
+server-side (`api/_lib/activity.js`; `events:<email>` keeps 200, `events:all` 500, daily counts
+90 days). The desk shows the all-accounts feed with 14 days of counts, and ACTIVITY on any row
+shows that account. The privacy policy (§2.2) discloses it.
 
 **Pro-models switch.** While Razorpay is not connected nobody can buy Analyst Pro, so the
 two Pro models (Ind AS 116, Reverse DCF) are open to every signed-in account by default.

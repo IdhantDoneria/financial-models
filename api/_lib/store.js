@@ -100,6 +100,28 @@ module.exports = {
     }
     return (await redis("SMEMBERS", key)) || [];
   },
+  /** Capped lists — the per-account activity log (api/_lib/activity.js).
+   *  push() prepends and trims to `max` entries in one call. */
+  async push(key, value, max) {
+    if (DEV) {
+      const cur = mem.get(key);
+      const list = cur && Array.isArray(cur.v) ? cur.v : [];
+      list.unshift(value);
+      if (list.length > max) list.length = max;
+      mem.set(key, { v: list, exp: 0 });
+      return;
+    }
+    await redis("LPUSH", key, value);
+    await redis("LTRIM", key, "0", String(max - 1));
+  },
+  async range(key, n) {
+    if (DEV) {
+      const cur = mem.get(key);
+      return cur && Array.isArray(cur.v) ? cur.v.slice(0, n) : [];
+    }
+    return (await redis("LRANGE", key, "0", String(n - 1))) || [];
+  },
+
   /** Batched GET — one round-trip for the admin user table. */
   async mget(keys) {
     if (!keys.length) return [];

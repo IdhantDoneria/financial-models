@@ -1773,7 +1773,7 @@ function ensureAnalyzerPackages() {
           if (!gate.allowed) return JSON.stringify({ ok: false, error: gate.reason });
           const result = rawAnalyze(buf, period);
           if (gate.metered) {
-            try { if (JSON.parse(result).ok) await consumeUpload(); } catch { /* malformed result — nothing to meter */ }
+            try { if (JSON.parse(result).ok) await consumeUpload({ source: "pdf" }); } catch { /* malformed result — nothing to meter */ }
           }
           return result;
         },
@@ -1809,7 +1809,7 @@ function ensureAnalyzerPackages() {
           if (gate.metered && !alreadyBilled && !marketOnly) {
             try {
               if (JSON.parse(result).ok) {
-                await consumeUpload();
+                await consumeUpload({ source: "ticker", ticker: symbol });
                 if (symbol) state.ib.billedTickers.add(symbol);
               }
             } catch { /* malformed result — nothing to meter */ }
@@ -2262,6 +2262,8 @@ async function runIBReport() {
     state.ib.report = out;
     renderIBReport();
     recordHistory();          // persist this company's analysis to menu history
+    trackEvent("report", { models: payload.selected, mode: payload.mode,
+                           ticker: state.ib.ticker || (state.ib.file ? "pdf" : "") });
     setTab("chart");
     if (isPhone()) setMobileView("viz");   // the report renders in ANALYTICS
     const nErr = Object.keys(out.errors).length;
@@ -2413,6 +2415,7 @@ async function exportIB(fmt) {
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(a.href), 30000);
     ibStatus(`SAVED ${out.filename}`);
+    trackEvent("export", { format: fmt, ticker: state.ib.ticker || "pdf" });
     $("#ostat").className = "meta";
   } catch (err) {
     ibStatus("EXPORT FAILED: " + String(err).slice(0, 160), true);
@@ -3148,7 +3151,12 @@ function syncPlanChip() {
 /* ----------------------------- upload gate ------------------------------ */
 async function uploadGate() {
   const cfg = await getBillingCfg();
-  if (!cfg || !cfg.billing) return { allowed: true, metered: false };
+  //: Allowance not enforced: always allowed, but a signed-in account's
+  //  analyses are still counted and logged for the operator (`metered` here
+  //  means "report this analysis", not "limit it").
+  if (!cfg || !cfg.billing) {
+    return { allowed: true, metered: !!(cfg && cfg.tracking && isServerBacked(state.user)) };
+  }
   const u = state.user;
   if (!isServerBacked(u)) {
     return { allowed: false, upgrade: true,
@@ -3158,7 +3166,8 @@ async function uploadGate() {
   if (!us) return { allowed: true, metered: false };   // fail-open on hiccup
   if (us.limit !== null && us.used >= us.limit) {
     return { allowed: false, upgrade: true,
-      reason: `MONTHLY UPLOAD LIMIT REACHED (${us.used}/${us.limit}) — UPGRADE IN MENU ▸ PLAN` };
+      reason: `MONTHLY UPLOAD LIMIT REACHED (${us.used}/${us.limit}) — `
+        + (cfg.checkout ? "UPGRADE IN MENU ▸ PLAN" : "ASK FOR MORE IN MENU ▸ PLAN") };
   }
   return { allowed: true, metered: true };
 }
@@ -3186,21 +3195,39 @@ async function premiumModelGate() {
   if (!cfg || !cfg.billing) return { allowed: true };   // billing offline: the server decides (open unless the operator locked it)
   const us = await refreshUsage();
   if (!us) return { allowed: true };   // fail-open on a network hiccup
-  if (us.plan === "free") {
+  //: Plans are enforced, but while checkout is off the operator's switch can
+  //  still open the two Pro models to every signed-in account (the server
+  //  applies the same rule).
+  if (us.plan === "free" && !(!cfg.checkout && cfg.proOpen)) {
     return { allowed: false,
-      reason: "This tool requires ANALYST PRO or higher — upgrade to unlock the Ind AS hidden-debt normalizer and reverse-DCF solver." };
+      reason: "This tool requires ANALYST PRO or higher — "
+        + (cfg.checkout ? "upgrade" : "ask for access in MENU ▸ PLAN")
+        + " to unlock the Ind AS hidden-debt normalizer and reverse-DCF solver." };
   }
   return { allowed: true };
 }
 
-async function consumeUpload() {
+async function consumeUpload(detail = {}) {
   const u = state.user;
   if (!isServerBacked(u)) return;
   try {
-    const r = await fetch("api/usage", { method: "POST", credentials: "same-origin" });
+    const r = await fetch("api/usage", { method: "POST", credentials: "same-origin",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify(detail) });
     const j = await r.json();
     if (j && typeof j.used === "number") { state.billing.usage = j; syncPlanChip(); }
   } catch { /* metering is best-effort */ }
+}
+
+//: Report what a signed-in account did (a report run, an export, opening the
+//  PLAN tab) to the operator's activity log. Fire-and-forget: it never delays
+//  or fails the action. Analyses are logged by consumeUpload() above, sign-ins
+//  and Pro-model runs by the server itself.
+function trackEvent(event, detail = {}) {
+  const cfg = state.billing.cfg;
+  if (!cfg || !cfg.tracking || !isServerBacked(state.user)) return;
+  fetch("api/usage", { method: "POST", credentials: "same-origin", keepalive: true,
+    headers: { "Content-Type": "application/json" }, body: JSON.stringify({ event, ...detail }) })
+    .catch(() => {});
 }
 
 /* ------------------------------ PLAN tab -------------------------------- */
@@ -3240,17 +3267,27 @@ async function renderPlanTab(body) {
   const us = cfg && cfg.billing || isOtp ? await refreshUsage() : null;
   const grant = !(cfg && cfg.billing) && us && us.grant ? us.grant : null;
   const current = cfg && cfg.billing ? (us ? us.plan : "free") : (grant ? grant.plan : "free");
+  trackEvent("plan_view");
+  const salesEmail = (cfg && cfg.contactEmail) || "sales@finmodels.app";
+  //: No checkout yet: plans are assigned by the operator, so upgrading is a
+  //  request by email, and the Pro models may be open to everyone.
+  const manualNote = cfg && cfg.billing && !cfg.checkout
+    ? `<div class="pnote">Plans are assigned by the operator while online checkout is being set up.
+      To upgrade or raise your monthly allowance, use REQUEST ACCESS below or email
+      <a href="mailto:${esc(salesEmail)}">${esc(salesEmail)}</a>.${cfg.proOpen
+        ? " The Ind AS 116 and Reverse DCF models are open to every signed-in account for now." : ""}</div>`
+    : "";
 
   let head = "";
   if (!cfg || !cfg.billing) {
     const granted = grant ? `<div class="pnote gift">✔ <b>${esc(grant.planName)}</b> granted to this account by the
       operator, active until ${new Date(grant.expiresAt).toLocaleDateString()}.</div>` : "";
     head = granted + (cfg && cfg.proOpen === false
-      ? `<div class="pnote">BILLING OFFLINE: analyses are free and unmetered, but the Ind AS 116
-      and Reverse DCF models are reserved for accounts the operator has granted ANALYST PRO
-      or above, until checkout is connected.</div>`
-      : `<div class="pnote">BILLING OFFLINE: analyses are free and unmetered, and the Ind AS 116
-      and Reverse DCF models are open to every signed-in account until checkout is connected.</div>`);
+      ? `<div class="pnote">MONTHLY LIMITS ARE NOT ENFORCED right now: analyses are unlimited, but the
+      Ind AS 116 and Reverse DCF models are reserved for accounts the operator has granted ANALYST PRO
+      or above.</div>`
+      : `<div class="pnote">MONTHLY LIMITS ARE NOT ENFORCED right now: analyses are unlimited, and the
+      Ind AS 116 and Reverse DCF models are open to every signed-in account.</div>`);
   } else if (!isOtp) {
     head = `<div class="pnote warn">Plans attach to a server-backed account. You're browsing as
       <b>${(u && u.provider ? u.provider : "guest").toUpperCase()}</b> — SIGN OUT and sign back in
@@ -3269,7 +3306,7 @@ async function renderPlanTab(body) {
       gift = `<div class="pnote gift">🎁 <b>COMPLIMENTARY ACCESS</b> — ${us.planName} granted
         free of charge, active until ${us.expiresAt ? new Date(us.expiresAt).toLocaleDateString() : "—"}.</div>`;
     }
-    head = gift + `<div class="pusage">
+    head = manualNote + gift + `<div class="pusage">
       <div class="purow"><span>SIGNED IN AS</span><b>${esc(String(u.name || u.uid).toUpperCase().slice(0, 28))}</b></div>
       <div class="purow"><span>CURRENT PLAN</span><b class="${current !== "free" ? "paid" : ""}">${us.planName}</b></div>
       <div class="purow"><span>UPLOADS THIS MONTH (${us.month || ""})</span><b>${us.used} / ${lim}</b></div>
@@ -3296,8 +3333,7 @@ async function renderPlanTab(body) {
     { id: "enterprise", name: "ENTERPRISE", periods: null, uploads: null, contact: true, seats: 20,
       blurb: "Unrestricted access to the entire platform with unlimited analyses, guaranteed priority compute during peak traffic, provisioning for up to 20 team members, and early access to new capabilities ahead of general release — with dedicated onboarding and priority support." },
   ];
-  const salesEmail = (cfg && cfg.contactEmail) || "sales@finmodels.app";
-  const canBuy = cfg && cfg.billing && isOtp;
+  const canBuy = cfg && cfg.checkout && isOtp;
   //: INTERIM manual-UPI flow for early users — a stopgap so we can take
   //  payments now WITHOUT the Razorpay integration. This is NOT a replacement
   //  for Razorpay: buyButtons()/startCheckout() below stay fully intact and
@@ -3310,6 +3346,11 @@ async function renderPlanTab(body) {
   const buyButtons = (p) => {
     if (current === p.id) return `<button class="pbuy" disabled>CURRENT PLAN</button>`;
     if (!cfg || !cfg.billing) return `<button class="pbuy" disabled>OFFLINE</button>`;
+    if (!cfg.checkout) {
+      const subject = encodeURIComponent(`Access request: ${p.name}`);
+      const who = u && u.uid ? encodeURIComponent(`Account: ${u.uid}\n\n`) : "";
+      return `<a class="pbuy" href="mailto:${esc(salesEmail)}?subject=${subject}&body=${who}">REQUEST ACCESS</a>`;
+    }
     const cur = planCurrency();
     return `<div class="pbuyrow">
       <button class="pbuy" data-plan="${p.id}" data-period="monthly" ${canBuy ? "" : "disabled"}>
@@ -3450,7 +3491,7 @@ async function devFakeSignature(msg) {
 async function startCheckout(plan, period) {
   const cfg = await getBillingCfg();
   const u = state.user;
-  if (!cfg || !cfg.billing || !isServerBacked(u)) return;
+  if (!cfg || !cfg.checkout || !isServerBacked(u)) return;
   planMsg("CREATING ORDER…");
   let order;
   try {

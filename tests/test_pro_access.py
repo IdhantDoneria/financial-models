@@ -91,11 +91,12 @@ def test_the_client_gate_leaves_the_decision_to_the_server_when_billing_is_offli
     assert "if (!cfg || !cfg.billing) return { allowed: true };" in gate
 
 
-def test_the_offline_banner_says_what_the_switch_is_set_to():
+def test_the_unenforced_banner_says_what_the_switch_is_set_to():
     js = (ROOT / "public" / "assets" / "terminal.js").read_text()
-    banner = js[js.index("BILLING OFFLINE"):]
-    banner = banner[:banner.index("until checkout is connected.</div>`);")]
-    assert "cfg.proOpen === false" in js[js.index("BILLING OFFLINE") - 200:]
+    start = js.index("MONTHLY LIMITS ARE NOT ENFORCED")
+    end = js.index("</div>`);", start)
+    banner = js[start:end]
+    assert "cfg.proOpen === false" in js[start - 200:start]
     assert "open to every signed-in account" in banner and "reserved for accounts" in banner
 
 
@@ -242,7 +243,7 @@ def test_the_plan_chip_and_tab_show_a_plan_the_operator_granted_while_billing_is
     tab = js[js.index("async function renderPlanTab"):js.index("const canBuy")]
     assert "us.grant" in tab and "granted to this account by the" in tab
     usage = (ROOT / "api" / "usage.js").read_text()
-    assert "out.grant = grant" in usage
+    assert "base.grant = " in usage
 
 
 def test_over_http_bad_input_is_a_422_with_the_reason_and_other_methods_get_json(monkeypatch):
@@ -270,3 +271,34 @@ def test_over_http_bad_input_is_a_422_with_the_reason_and_other_methods_get_json
                 assert json.loads(e.read())["ok"] is False
     finally:
         server.shutdown()
+
+
+def test_the_client_gates_follow_the_operator_switches_when_checkout_is_off():
+    """Plans are enforced without a gateway: buy buttons become REQUEST ACCESS,
+    a checkout can never start, and the Pro gate honours the open switch."""
+    js = (ROOT / "public" / "assets" / "terminal.js").read_text()
+    gate = js[js.index("async function premiumModelGate"):]
+    gate = gate[:gate.index("\n}\n")]
+    assert "!cfg.checkout && cfg.proOpen" in gate
+    tab = js[js.index("async function renderPlanTab"):js.index("async function startCheckout")]
+    assert "REQUEST ACCESS" in tab and "const canBuy = cfg && cfg.checkout && isOtp;" in tab
+    start = js[js.index("async function startCheckout"):]
+    assert "if (!cfg || !cfg.checkout || !isServerBacked(u)) return;" in start[:400]
+    upload = js[js.index("async function uploadGate"):]
+    upload = upload[:upload.index("\n}\n")]
+    assert "cfg.tracking && isServerBacked(state.user)" in upload
+
+
+def test_premium_runs_are_logged_in_the_same_shape_as_the_node_activity_log(monkeypatch):
+    calls = []
+    monkeypatch.setattr(premium, "_redis_pipeline", lambda cmds: calls.append(cmds) or [1] * len(cmds))
+    premium._track("a@b.co", "RDCF", "OK")
+    cmds = calls[0]
+    ev = json.loads(cmds[0][2])
+    assert cmds[0][:2] == ["LPUSH", "events:a@b.co"] and cmds[1] == ["LTRIM", "events:a@b.co", "0", "199"]
+    assert cmds[2][:2] == ["LPUSH", "events:all"] and cmds[3] == ["LTRIM", "events:all", "0", "499"]
+    assert ev["type"] == "premium" and ev["model"] == "RDCF" and ev["email"] == "a@b.co"
+    js = (ROOT / "api" / "_lib" / "activity.js").read_text()
+    assert "const PER_USER = 200;" in js and "const ALL = 500;" in js and "premium: [\"model\", \"status\"]" in js
+    monkeypatch.setattr(premium, "_redis_pipeline", lambda cmds: (_ for _ in ()).throw(RuntimeError("down")))
+    premium._track("a@b.co", "RDCF", "OK")          # never raises
