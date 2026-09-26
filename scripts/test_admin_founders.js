@@ -244,6 +244,18 @@ const ADMIN = { "x-admin-key": "devadmin" };
   const cfgPub = await call(require("../api/_handlers/billing-config.js"));
   check("billing-config exposes proOpen (false while billing is live)", cfgPub.body.proOpen === false);
 
+  // -- usage: an admin-granted plan is visible even while checkout is offline
+  const gu = results[0];                      // user1@example.com, created above
+  const noGrant = await handlers.usage.offlineGrant({ headers: { authorization: `Bearer ${gu.body.token}` } });
+  check("usage: the test account has a session token", !!gu.body.token, JSON.stringify(gu.body).slice(0, 160));
+  check("usage: no grant -> offlineGrant is null", noGrant === null);
+  await call(handlers.admin, { method: "POST", headers: ADMIN,
+    body: { action: "grant", email: "user1@example.com", plan: "pro", days: 5 } });
+  const withGrant = await handlers.usage.offlineGrant({ headers: { authorization: `Bearer ${gu.body.token}` } });
+  check("usage: a granted plan is reported (plan, name, expiry) for the plan chip",
+    withGrant && withGrant.plan === "pro" && withGrant.planName === "ANALYST PRO" && !!withGrant.expiresAt);
+  check("usage: no session -> offlineGrant is null", (await handlers.usage.offlineGrant({ headers: {} })) === null);
+
   console.log(`\n${passed} passed · ${failed} failed`);
   process.exit(failed ? 1 : 0);
 })().catch((err) => { console.error(err); process.exit(1); });

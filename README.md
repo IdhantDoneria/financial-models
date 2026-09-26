@@ -535,6 +535,14 @@ free premium — it works even before they sign up (the pass is waiting at first
 re-granting stacks days, and REVOKE ends a plan instantly. Backed by `/api/admin`; tested
 by `node scripts/test_admin_founders.js` and `python scripts/e2e_founders_admin.py`.
 
+**Pro-models switch.** While Razorpay is not connected nobody can buy Analyst Pro, so the
+two Pro models (Ind AS 116, Reverse DCF) are open to every signed-in account by default.
+The desk's **PRO MODELS** panel locks them back to granted accounts (`pro_access`, stored
+as `flag:pro_open`; `api/premium.py` and `api/mcp.py` read it directly). The switch is
+ignored once `RAZORPAY_KEY_ID` and `RAZORPAY_KEY_SECRET` exist: then the plan decides.
+Accounts using only the open access have a 150-call daily cap each. While billing is
+offline, a granted plan is still shown on the account's plan chip and PLAN tab.
+
 #### 🌍 Visitor geography & IP-derived local time
 
 `GET /api/geo` resolves the caller's IP to a city/country/timezone via `ipwho.is` (free,

@@ -1422,6 +1422,44 @@ console.log("\n· Balance sheet — every line from one date, debt summed by rol
     ok(U.dividend_per_share === null, "unmapped 20-F filer: per-ordinary-share dividend withheld");
     eq(U.current_price, 40, "its price is still reported");
 
+    // Infosys-style: total dividends paid is tagged, no per-share dividend. The
+    // per-share figure is derived from the year's weighted-average shares, and
+    // labelled as derived (it read as "no dividend disclosed" before).
+    const inf = await runCase({
+      ticker: "SAP", cik: "0001000184",
+      factsByCik: { "0001000184": { entityName: "Infosys Ltd", facts: { "ifrs-full": {
+        Revenue: { units: { EUR: [yr(2025, 19e9)] } },
+        ProfitLossAttributableToOwnersOfParent: { units: { EUR: [yr(2025, 3.2e9)] } },
+        DividendsPaidClassifiedAsFinancingActivities: { units: { EUR: [yr(2025, 2.4e9)] } },
+        WeightedAverageShares: { units: { shares: [yr(2025, 4.0e9)] } },
+        NumberOfSharesOutstanding: { units: { shares: [inst("2025-12-31", 4.0e9)] } },
+        CashAndCashEquivalents: { units: { EUR: [inst("2025-12-31", 2e9)] } },
+      } } } },
+      quotes: { SAP: [18, "USD"], "SAP.DE": [18 * 0.8774, "EUR"] },
+      rates: { EUR: 0.8774 },
+    });
+    const I = inf && inf.fields || {};
+    ok(I.dividend_per_share !== null && Math.abs(I.dividend_per_share - 0.6) < 1e-9,
+      "a filer that tags only total dividends paid gets a derived per-share dividend (2.4bn / 4.0bn)",
+      String(I.dividend_per_share));
+    ok((inf.notes || []).some((n) => /Dividend per share is derived/.test(n)), "the derived dividend is labelled as derived");
+    const tagged = await runCase({
+      ticker: "SAP", cik: "0001000184",
+      factsByCik: { "0001000184": { entityName: "Tagged Co", facts: { "ifrs-full": {
+        Revenue: { units: { EUR: [yr(2025, 19e9)] } },
+        ProfitLossAttributableToOwnersOfParent: { units: { EUR: [yr(2025, 3.2e9)] } },
+        DividendsPaidClassifiedAsFinancingActivities: { units: { EUR: [yr(2025, 2.4e9)] } },
+        DividendsPaidOrdinarySharePerShare: { units: { "EUR/shares": [yr(2025, 0.55)] } },
+        WeightedAverageShares: { units: { shares: [yr(2025, 4.0e9)] } },
+        NumberOfSharesOutstanding: { units: { shares: [inst("2025-12-31", 4.0e9)] } },
+        CashAndCashEquivalents: { units: { EUR: [inst("2025-12-31", 2e9)] } },
+      } } } },
+      quotes: { SAP: [18, "USD"], "SAP.DE": [18 * 0.8774, "EUR"] },
+      rates: { EUR: 0.8774 },
+    });
+    ok(Math.abs((tagged.fields || {}).dividend_per_share - 0.55) < 1e-9,
+      "a filed per-share dividend always wins over the derived one");
+
     // HDB-style ratio 3: shares divided, dividend multiplied.
     const hdb = await runCase({
       ticker: "HDB", cik: "0001144967",
@@ -1729,6 +1767,51 @@ console.log("\n· Balance sheet — every line from one date, debt summed by rol
   } finally {
     global.fetch = realFetch;
   }
+  console.log("\n· Newest annual report read from its own inline XBRL when companyfacts trails it");
+  {
+    const { inlineToCompanyFacts, mergeNewestAnnualReport, parseInlineXbrl } = _internals;
+    const html = `
+      <xbrli:context id="d25"><xbrli:period><xbrli:startDate>2025-04-01</xbrli:startDate><xbrli:endDate>2026-03-31</xbrli:endDate></xbrli:period></xbrli:context>
+      <xbrli:context id="i25"><xbrli:period><xbrli:instant>2026-03-31</xbrli:instant></xbrli:period></xbrli:context>
+      <xbrli:context id="seg"><xbrli:entity><xbrli:segment><xbrldi:explicitMember dimension="ifrs-full:SegmentsAxis">x:MusicMember</xbrldi:explicitMember></xbrli:segment></xbrli:entity><xbrli:period><xbrli:startDate>2025-04-01</xbrli:startDate><xbrli:endDate>2026-03-31</xbrli:endDate></xbrli:period></xbrli:context>
+      <xbrli:unit id="JPY"><xbrli:measure>iso4217:JPY</xbrli:measure></xbrli:unit>
+      <xbrli:unit id="JPYps"><xbrli:divide><xbrli:unitNumerator><xbrli:measure>iso4217:JPY</xbrli:measure></xbrli:unitNumerator><xbrli:unitDenominator><xbrli:measure>xbrli:shares</xbrli:measure></xbrli:unitDenominator></xbrli:divide></xbrli:unit>
+      <ix:nonFraction name="ifrs-full:Revenue" contextRef="d25" unitRef="JPY" scale="6" decimals="-6">12,479,620</ix:nonFraction>
+      <ix:nonFraction name="ifrs-full:Revenue" contextRef="d25" unitRef="JPY" scale="6" decimals="-6">12,479,620</ix:nonFraction>
+      <ix:nonFraction name="ifrs-full:Revenue" contextRef="seg" unitRef="JPY" scale="6">3,000,000</ix:nonFraction>
+      <ix:nonFraction name="ifrs-full:ProfitLoss" contextRef="d25" unitRef="JPY" scale="6" sign="-">302,492</ix:nonFraction>
+      <ix:nonFraction name="ifrs-full:CashAndCashEquivalents" contextRef="i25" unitRef="JPY" scale="6">2,237,046</ix:nonFraction>
+      <ix:nonFraction name="ifrs-full:DividendsPaidOrdinarySharesPerShare" contextRef="d25" unitRef="JPYps">22.5</ix:nonFraction>
+      <ix:nonFraction name="sony:CompanyOwnTag" contextRef="d25" unitRef="JPY">5</ix:nonFraction>`;
+    const cf = inlineToCompanyFacts(parseInlineXbrl(html), "ifrs-full", "20-F", "2026-06-20");
+    eq(cf.Revenue.units.JPY.length, 1, "a repeated fact is kept once and the dimensioned (segment) one is dropped");
+    eq(cf.Revenue.units.JPY[0].val, 12479620000000, "scale applied (millions)");
+    eq(cf.ProfitLoss.units.JPY[0].val, -302492000000, "sign applied");
+    eq(cf.CashAndCashEquivalents.units.JPY[0].start, undefined, "an instant fact has no start");
+    eq(cf.CashAndCashEquivalents.units.JPY[0].end, "2026-03-31", "an instant fact is keyed on its date");
+    ok(cf.DividendsPaidOrdinarySharesPerShare.units["JPY/shares"], "a divide unit becomes CCY/shares like companyfacts");
+    ok(!cf.CompanyOwnTag && !("sony:CompanyOwnTag" in cf), "company-extension tags are left out");
+    eq(cf.Revenue.units.JPY[0].form, "20-F", "rows carry the filing's form and date so the newest wins");
+  
+    // The guard: only when the newest annual report is >300 days past the data.
+    const older = { Revenue: { units: { JPY: [{ start: "2024-04-01", end: "2025-03-31", val: 1, form: "20-F", filed: "2025-06-20" }] } } };
+    const realFetch = global.fetch;
+    global.fetch = async () => ({ ok: true, status: 200, text: async () => html });
+    const doc = (reportDate) => ({ latestAnnualDoc: { form: "20-F", reportDate, filed: "2026-06-20", url: "https://www.sec.gov/x.htm" } });
+    try {
+      const merged = await mergeNewestAnnualReport(older, "ifrs-full", doc("2026-03-31"), ["Revenue"]);
+      ok(merged && merged.facts.Revenue.units.JPY.length === 2, "a lagging companyfacts gets the newer year merged in");
+      ok(await mergeNewestAnnualReport(older, "ifrs-full", doc("2025-06-30"), ["Revenue"]) === null,
+        "not read when the data is within 300 days of the newest report");
+      ok(await mergeNewestAnnualReport(older, "ifrs-full", { latestAnnualDoc: null }, ["Revenue"]) === null,
+        "not read when the newest report is not inline XBRL");
+      global.fetch = async () => { throw new Error("network down"); };
+      ok(await mergeNewestAnnualReport(older, "ifrs-full", doc("2026-03-31"), ["Revenue"]) === null,
+        "a failed read leaves the older figures standing");
+    } finally { global.fetch = realFetch; }
+  }
+  
+  
   console.log(`\n${passed} passed · ${failed} failed`);
   process.exit(failed ? 1 : 0);
 })();

@@ -11,11 +11,30 @@ const store = require("./_lib/store");
 const A = require("./_lib/auth");
 const B = require("./_lib/billing");
 
+//: The signed-in account's admin-granted plan, or null (no session, no store,
+//  no active grant). Never throws: this only decorates an unmetered reply.
+async function offlineGrant(req) {
+  try {
+    if (!store.configured()) return null;
+    const sess = await A.getSession(req);
+    if (!sess) return null;
+    const { plan, sub } = await B.effectivePlan(sess.email);
+    if (plan === "free") return null;
+    return { plan, planName: B.PLANS[plan].name, expiresAt: sub.expiresAt, via: sub.via || "grant" };
+  } catch { return null; }
+}
+
 module.exports = async (req, res) => {
   const billing = B.configured() && store.configured();
   if (!billing) {
-    return A.json(res, 200, { ok: true, billing: false, metered: false,
-                              plan: "free", planName: "FREE", used: 0, limit: null });
+    // Checkout is offline, so nothing is metered and `plan` stays "free". An
+    // account the operator has granted a plan still gets to see it: `grant`
+    // carries the real plan, so the plan chip and tab stop showing FREE for it.
+    const out = { ok: true, billing: false, metered: false,
+                  plan: "free", planName: "FREE", used: 0, limit: null };
+    const grant = await offlineGrant(req);
+    if (grant) out.grant = grant;
+    return A.json(res, 200, out);
   }
 
   const sess = await A.getSession(req);
@@ -44,3 +63,5 @@ module.exports = async (req, res) => {
     return A.json(res, 502, { error: String(err.message || err).slice(0, 180) });
   }
 };
+
+module.exports.offlineGrant = offlineGrant;
