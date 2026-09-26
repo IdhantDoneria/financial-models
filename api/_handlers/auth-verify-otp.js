@@ -12,6 +12,7 @@
 
 const store = require("../_lib/store");
 const A = require("../_lib/auth");
+const activity = require("../_lib/activity");
 const B = require("../_lib/billing");
 
 module.exports = async (req, res) => {
@@ -97,6 +98,7 @@ module.exports = async (req, res) => {
     }
 
     await store.set(`user:${addr}`, JSON.stringify(user));
+    await activity.track(addr, "signin", { method: "email-code" });
     await store.sadd("users:index", addr);     // admin-desk registry
 
     const token = A.newToken();

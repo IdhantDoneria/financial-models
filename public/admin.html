@@ -113,12 +113,28 @@
     </div>
     <table id="users"><thead><tr>
       <th>EMAIL</th><th>NAME</th><th>PLAN</th><th>ACCESS VIA</th><th>EXPIRES</th>
-      <th>UPLOADS (MO)</th><th>SIGN-INS</th><th>LAST SEEN</th><th>JOINED</th><th>PASSWORD</th><th></th>
+      <th>ANALYSES (MO)</th><th>SIGN-INS</th><th>LAST SIGN-IN</th><th>LAST ACTIVE</th><th>JOINED</th><th>PASSWORD</th><th></th>
     </tr></thead><tbody></tbody></table>
     <div style="color:var(--dim);font-size:10px;line-height:1.6;margin-top:6px">
       Passwords are never stored or shown in plaintext (scrypt-hashed, one-way) — there is
       nothing to display here by design. RESET clears the current password and forces the
       owner back through EMAIL CODE to set a new one; use it if an account may be compromised.</div>
+
+    <div class="bar" style="margin-top:28px">
+      <div class="t" style="color:var(--cyan);font-size:11px;letter-spacing:.12em" id="act-title">RECENT ACTIVITY · EVERY ACCOUNT</div>
+      <button id="act-all" class="ghost" style="display:none">SHOW EVERY ACCOUNT</button>
+    </div>
+    <div style="color:var(--dim);font-size:10px;line-height:1.6;margin-bottom:8px">
+      Sign-ins, analyses (ticker symbol, or "pdf" for an upload; the file never leaves the user's
+      browser), report runs, exports, Pro-model runs and PLAN-tab visits, recorded server-side for
+      signed-in accounts (<b>events:*</b>). The last 200 per account and 500 overall are kept.
+      Click ACTIVITY on a row to see one account.</div>
+    <table id="daily"><thead><tr><th>DAY</th><th class="num-h">SIGN-INS</th><th class="num-h">ANALYSES</th>
+      <th class="num-h">REPORTS</th><th class="num-h">EXPORTS</th><th class="num-h">PRO RUNS</th><th class="num-h">PLAN VIEWS</th>
+    </tr></thead><tbody></tbody></table>
+    <table id="activity" style="margin-top:10px"><thead><tr>
+      <th>WHEN</th><th>ACCOUNT</th><th>EVENT</th><th>DETAIL</th>
+    </tr></thead><tbody></tbody></table>
 
     <div class="bar" style="margin-top:28px">
       <div class="t" style="color:var(--cyan);font-size:11px;letter-spacing:.12em">PENDING UPI CLAIMS</div>
@@ -142,7 +158,7 @@
     <table id="geo"><thead><tr><th>COUNTRY</th><th class="num-h">VISITS</th><th class="num-h">SHARE</th></tr></thead><tbody></tbody></table>
 
     <div class="foot">Every value comes live from the Redis store (<b>user:*</b>,
-      <b>sub:*</b>, <b>use:*</b>, <b>geo:*</b> keys) via <b>/api/admin</b>. Complimentary access
+      <b>sub:*</b>, <b>use:*</b>, <b>events:*</b>, <b>geo:*</b> keys) via <b>/api/admin</b>. Complimentary access
       is now granted manually (GRANT box above) after a request to <b>finmodels10@gmail.com</b>;
       the automatic first-20 founders promo is retired, though founders already granted keep it.</div>
   </div>

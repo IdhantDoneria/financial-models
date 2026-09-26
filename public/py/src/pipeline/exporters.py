@@ -153,7 +153,10 @@ def _fmt(v: Any) -> str:
             return f"{v:,.0f}"
         return f"{v:.4f}"
     if isinstance(v, list) and v and isinstance(v[0], (int, float)):
-        return ", ".join(f"{x:,.2f}" for x in v[:8])
+        # A year the filing did not tag is None (Apple's interest expense has
+        # two); formatting it as a number crashed the Excel and PDF export for
+        # 6 of 83 live tickers.
+        return ", ".join(f"{x:,.2f}" if isinstance(x, (int, float)) else "n/a" for x in v[:8])
     if isinstance(v, dict):
         return ", ".join(f"{k}={_fmt(val)}" for k, val in list(v.items())[:6])
     return str(v)

@@ -39,7 +39,12 @@ const store = require("./store");
 const KEY_ID = process.env.RAZORPAY_KEY_ID || "";
 const KEY_SECRET = process.env.RAZORPAY_KEY_SECRET || "";
 const WEBHOOK_SECRET = process.env.RAZORPAY_WEBHOOK_SECRET || "";
-const DEV = process.env.AUTH_DEV_MEMORY === "1" && !(KEY_ID && KEY_SECRET);
+//: DEV_CHECKOUT=0 runs the in-memory harness with NO checkout, the way
+//  production runs before Razorpay is connected (plans assigned by the
+//  operator). Only meaningful beside AUTH_DEV_MEMORY=1, which store.js
+//  refuses to boot in production.
+const DEV = process.env.AUTH_DEV_MEMORY === "1" && process.env.DEV_CHECKOUT !== "0"
+  && !(KEY_ID && KEY_SECRET);
 const DEV_SECRET = "devsecret";
 
 const ORDER_TTL = 3600;            // pending order records live 1 hour
@@ -126,6 +131,19 @@ const proOpen = async () => {
   try { return (await store.get(PRO_OPEN_KEY)) !== "0"; } catch { return true; }
 };
 const setProOpen = (open) => store.set(PRO_OPEN_KEY, open ? "1" : "0");
+
+//: Plans and metering run without a payment gateway: the operator assigns
+//  plans from the admin desk, and the monthly allowance is counted and
+//  enforced. Only checkout (configured() above) waits for Razorpay. The admin
+//  desk can switch enforcement off ("0"), which leaves usage still counted and
+//  activity still recorded; once checkout is live, enforcement is always on.
+const METERING_KEY = "flag:metering";
+const metering = async () => {
+  if (!store.configured()) return false;
+  if (configured()) return true;
+  try { return (await store.get(METERING_KEY)) !== "0"; } catch { return true; }
+};
+const setMetering = (on) => store.set(METERING_KEY, on ? "1" : "0");
 const mode = () => (DEV ? "dev-fake" : KEY_ID && KEY_SECRET ? "razorpay" : "unconfigured");
 const keyId = () => (DEV ? "rzp_test_devfake" : KEY_ID);
 const secret = () => (DEV ? DEV_SECRET : KEY_SECRET);
@@ -274,7 +292,7 @@ const consumeUpload = (email) => store.incr(`use:${email}:${monthKey()}`, 35 * 8
 
 module.exports = {
   PLANS, PERIODS, PURCHASABLE_PLANS, ORDER_TTL, FOUNDER_CAP, FOUNDER_PLAN, FOUNDER_DAYS, USD_TO_INR,
-  configured, mode, keyId, proOpen, setProOpen, PRO_OPEN_KEY,
+  configured, mode, keyId, proOpen, setProOpen, PRO_OPEN_KEY, metering, setMetering, METERING_KEY,
   createOrder, verifyCheckoutSig, verifyWebhookSig,
   getSub, effectivePlan, activate, getUsed, consumeUpload, monthKey,
   grant, claimFounderSlot, foundersLeft,

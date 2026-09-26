@@ -8,6 +8,7 @@
 
 const store = require("../_lib/store");
 const A = require("../_lib/auth");
+const activity = require("../_lib/activity");
 
 module.exports = async (req, res) => {
   if (req.method !== "POST") return A.json(res, 405, { error: "POST only" });
@@ -73,6 +74,7 @@ module.exports = async (req, res) => {
     user.lastLoginAt = now;
     user.loginCount = (user.loginCount || 0) + 1;
     await store.set(`user:${addr}`, JSON.stringify(user));
+    await activity.track(addr, "signin", { method: "password" });
     await store.sadd("users:index", addr);
 
     const token = A.newToken();

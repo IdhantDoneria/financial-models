@@ -84,7 +84,7 @@
   <header>
     <span class="eyebrow">Legal</span>
     <h1>Privacy Policy</h1>
-    <p class="updated">Effective date: 12 September 2026</p>
+    <p class="updated">Effective date: 26 September 2026</p>
     <p class="lede">FINMODELS TERMINAL is operated by an individual, Idhant Doneria, not a company. This page says exactly what is collected, why, where it lives, and what is <strong>not</strong> collected — the same standard the product itself holds its numbers to.</p>
   </header>
 
@@ -106,7 +106,9 @@
       <tr><td>Name</td><td>You, or your Google account</td><td>Optional for the email-code path</td></tr>
       <tr><td>Password</td><td>You</td><td>Stored only as a salted <strong>scrypt hash</strong> — never in plain text, never visible to me</td></tr>
       <tr><td>Sign-in count &amp; last sign-in time</td><td>Derived</td><td>Used only to distinguish a new account from a returning one</td></tr>
-      <tr><td>Plan / subscription status</td><td>Razorpay, on payment</td><td>See §4</td></tr>
+      <tr><td>Plan / subscription status</td><td>Assigned by me, or Razorpay on payment</td><td>See §4</td></tr>
+      <tr><td>Analyses this month</td><td>Derived</td><td>A count per calendar month, used to apply your plan's monthly allowance</td></tr>
+      <tr><td>Activity log</td><td>Derived, from what you do while signed in</td><td>Each sign-in, company analysis (the ticker symbol, or just "PDF upload" for a file), report run (which models), export (which format), paid-model run and PLAN-tab visit, with its time. Never the contents of a file or the figures in it. Only your most recent 200 events are kept; I use it to manage access and to understand how the product is used</td></tr>
     </tbody>
   </table>
   <p>Signing in issues a random 32-byte session token, set as an <code>fm_sess</code> cookie (<code>HttpOnly; Secure; SameSite=Strict</code>) — it does not contain your email or any other readable data, only an opaque reference the server looks up. It is never readable by page scripts and is sent only to this site, never to any third party.</p>
@@ -121,7 +123,7 @@
   <h2>5. What I do <em>not</em> collect</h2>
   <ul>
     <li>No third-party analytics, advertising, or tracking scripts of any kind currently run on this site.</li>
-    <li>No behavioral profiling, no ad targeting, no data sold or shared with data brokers.</li>
+    <li>No ad targeting, no data sold or shared with data brokers. The activity log in §2.2 is seen only by me, is not combined with any other source, and is not used for advertising.</li>
     <li>No plaintext passwords, ever, in any mode.</li>
   </ul>
   <p>Your IP address is used only transiently, to enforce rate limits on abuse (e.g. "30 requests/minute per IP") — it is held for the length of that rate-limit window (seconds to a day) and is not logged permanently or linked to your account.</p>

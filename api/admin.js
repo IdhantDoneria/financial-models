@@ -8,6 +8,11 @@
 //   POST {action:"grant", email, plan, days}   -> free premium for anyone —
 //        type an email + duration; works even before that person signs up
 //        (the pass is waiting when they first verify their email).
+//   GET  ?action=activity[&email=]             -> recent activity (one account,
+//        or every account plus 14 days of daily counts). See _lib/activity.js.
+//   POST {action:"metering", on:true|false}   -> enforce the monthly allowance
+//        (default) or only count it; checkout off only.
+//   POST {action:"reset_usage", email}         -> zero this month's count.
 //   POST {action:"pro_access", open:true|false} -> open (default) or lock the two
 //        Pro models for every signed-in account while billing is offline.
 //   POST {action:"revoke", email}              -> end a plan immediately.
@@ -48,6 +53,7 @@ const store = require("./_lib/store");
 const A = require("./_lib/auth");
 const B = require("./_lib/billing");
 const { clientIp } = require("./_lib/net");
+const activity = require("./_lib/activity");
 
 const DEV = process.env.AUTH_DEV_MEMORY === "1";
 const KEY = process.env.ADMIN_KEY || (DEV ? "devadmin" : "");
@@ -80,10 +86,11 @@ function authorized(req) {
 async function listUsers() {
   const emails = await store.smembers("users:index");
   const month = B.monthKey();
-  const [users, subs, uses] = await Promise.all([
+  const [users, subs, uses, acts] = await Promise.all([
     store.mget(emails.map((e) => `user:${e}`)),
     store.mget(emails.map((e) => `sub:${e}`)),
     store.mget(emails.map((e) => `use:${e}:${month}`)),
+    store.mget(emails.map((e) => `act:${e}`)),
   ]);
   const now = Date.now();
   const rows = emails.map((email, i) => {
@@ -106,6 +113,8 @@ async function listUsers() {
       via: active ? s.via || "checkout" : null,
       expiresAt: active ? s.expiresAt : null,
       usedThisMonth: parseInt(uses[i] || "0", 10) || 0,
+      limit: (B.PLANS[plan] || B.PLANS.free).uploads,     // null = unlimited
+      lastActiveAt: acts[i] || null,
     };
   }).sort((a, b) => (b.createdAt || "9") > (a.createdAt || "9") ? -1 : 1);
   return {
@@ -152,7 +161,7 @@ async function listClaims() {
 
 // `billingLive` true means the plan decides and the switch is ignored.
 async function proAccessState() {
-  return { open: await B.proOpen(), billingLive: B.configured() };
+  return { open: await B.proOpen(), billingLive: B.configured(), metering: await B.metering() };
 }
 
 module.exports = async (req, res) => {
@@ -194,6 +203,13 @@ module.exports = async (req, res) => {
       const url = new URL(req.url || "/", "http://internal");
       if (url.searchParams.get("action") === "claims")
         return A.json(res, 200, { ok: true, claims: await listClaims() });
+      if (url.searchParams.get("action") === "activity") {
+        const who = String(url.searchParams.get("email") || "").trim().toLowerCase();
+        if (who && !A.EMAIL_RE.test(who)) return A.json(res, 400, { error: "ENTER A VALID EMAIL" });
+        return A.json(res, 200, { ok: true, email: who || null,
+          events: await activity.recent(who || null, who ? activity.PER_USER : 200),
+          daily: who ? null : await activity.daily(14) });
+      }
       return A.json(res, 200, { ok: true, ...(await listUsers()), geo: await geoBreakdown(),
                                 proAccess: await proAccessState() });
     }
@@ -207,6 +223,15 @@ module.exports = async (req, res) => {
 
     // Open or lock the two Pro models for every signed-in account while
     // checkout is offline. Granted accounts keep access either way.
+    // Enforce the monthly allowance (on), or only count it (off). Usage is
+    // counted and activity recorded either way.
+    if (body.action === "metering") {
+      if (typeof body.on !== "boolean") return A.json(res, 400, { error: "on MUST BE true OR false" });
+      if (B.configured()) return A.json(res, 409, { error: "CHECKOUT IS LIVE: METERING IS ALWAYS ON" });
+      await B.setMetering(body.on);
+      return A.json(res, 200, { ok: true, proAccess: await proAccessState() });
+    }
+
     if (body.action === "pro_access") {
       if (typeof body.open !== "boolean") return A.json(res, 400, { error: "open MUST BE true OR false" });
       await B.setProOpen(body.open);
@@ -222,7 +247,7 @@ module.exports = async (req, res) => {
     // approve_claim/reject_claim are id-based, not email-based — the email
     // extraction+validation below only gates the three email actions, so an
     // id-only claim-review request isn't rejected for lacking an `email`.
-    const EMAIL_ACTIONS = new Set(["grant", "revoke", "reset_password"]);
+    const EMAIL_ACTIONS = new Set(["grant", "revoke", "reset_password", "reset_usage"]);
     if (EMAIL_ACTIONS.has(body.action)) {
       const email = String(body.email || "").trim().toLowerCase();
       if (!A.EMAIL_RE.test(email)) return A.json(res, 400, { error: "ENTER A VALID EMAIL" });
@@ -238,6 +263,10 @@ module.exports = async (req, res) => {
         await store.sadd("users:index", email);   // visible even pre-signup
         return A.json(res, 200, { ok: true, granted: plan, email, days,
                                   expiresAt: sub.expiresAt });
+      }
+      if (body.action === "reset_usage") {
+        await store.del(`use:${email}:${B.monthKey()}`);
+        return A.json(res, 200, { ok: true, resetUsage: email, month: B.monthKey() });
       }
       if (body.action === "revoke") {
         await store.del(`sub:${email}`);
@@ -289,7 +318,7 @@ module.exports = async (req, res) => {
     }
 
     return A.json(res, 400,
-      { error: "action MUST BE grant, revoke, reset_password, pro_access, approve_claim OR reject_claim" });
+      { error: "action MUST BE grant, revoke, reset_password, reset_usage, metering, pro_access, approve_claim OR reject_claim" });
   } catch (err) {
     return A.json(res, 502, { error: String(err.message || err).slice(0, 180) });
   }

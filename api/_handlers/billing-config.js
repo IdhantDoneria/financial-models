@@ -29,7 +29,11 @@ const UPI_NOTE = process.env.UPI_NOTE || "FINMODELS plan";
 module.exports = async (req, res) => {
   res.setHeader("Content-Type", "application/json; charset=utf-8");
   res.setHeader("Cache-Control", "public, s-maxage=60, stale-while-revalidate=300");
-  const billing = B.configured() && store.configured();
+  //: `billing` = the monthly allowance is enforced (plans assigned by the
+  //  operator, or bought once checkout is live); `checkout` = Razorpay is live
+  //  and plans can be bought; `tracking` = usage and activity are recorded.
+  const checkout = B.configured() && store.configured();
+  const billing = await B.metering();
   let foundersLeft = null;
   if (store.configured()) {
     try { foundersLeft = await B.foundersLeft(); } catch { /* store hiccup */ }
@@ -37,14 +41,16 @@ module.exports = async (req, res) => {
   res.status(200).json({
     foundersLeft,
     billing,
+    checkout,
+    tracking: store.configured(),
     proOpen: await B.proOpen(),   // Pro models open to every signed-in account (billing offline only)
     mode: B.mode(),
     paymentMode: PAYMENTS_MODE,
     ...(PAYMENTS_MODE === "upi-manual"
       ? { upi: { vpa: UPI_VPA, name: UPI_NAME, note: UPI_NOTE } }
       : {}),
-    keyId: billing ? B.keyId() : null,
-    devFake: billing && B.mode() === "dev-fake",
+    keyId: checkout ? B.keyId() : null,
+    devFake: checkout && B.mode() === "dev-fake",
     // Actual settlement currency (Razorpay charges INR only). `usdToInr` is
     // the fixed rate `priceUsd` was derived from — the same rate for every
     // plan and every buyer, i.e. no geo discount; it's exposed so the client
